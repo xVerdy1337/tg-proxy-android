@@ -1,0 +1,17 @@
+<resources>
+    <string name="app_name">TG WS Proxy</string>
+    <string name="proxy_running">Прокси запущен</string>
+    <string name="proxy_stopped">Прокси остановлен</string>
+    <string name="proxy_notification_title">TG WS Proxy активен</string>
+    <string name="proxy_notification_text">Локальный MTProto-прокси работает</string>
+    <string name="connect_telegram">Подключить Telegram</string>
+    <string name="start_proxy">Запустить прокси</string>
+    <string name="stop_proxy">Остановить прокси</string>
+    <string name="status">Статус</string>
+    <string name="address">Адрес</string>
+    <string name="port">Порт</string>
+    <string name="secret">Секрет</string>
+    <string name="logs">Логи</string>
+    <string name="copy_link">Копировать ссылку</string>
+    <string name="link_copied">Ссылка скопирована</string>
+</resources>
