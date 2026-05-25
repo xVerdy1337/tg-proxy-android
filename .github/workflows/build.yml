@@ -34,7 +34,7 @@ jobs:
 
       - name: Generate CI keystore
         run: |
-          keytool -genkey -v -keystore ci.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+          keytool -genkey -v -keystore app/ci.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
           echo "KEYSTORE_PATH=ci.keystore" >> $GITHUB_ENV
           echo "KEYSTORE_PASSWORD=android" >> $GITHUB_ENV
           echo "KEY_ALIAS=androiddebugkey" >> $GITHUB_ENV
