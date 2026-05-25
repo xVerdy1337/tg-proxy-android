@@ -30,7 +30,11 @@ class WebSocketBridge {
         // Use domain in URL → correct TLS SNI (*.web.telegram.org)
         // DNS override routes that domain to the specific DC IP without a real DNS lookup.
         val client = baseClient.newBuilder()
-            .dns { _: String -> listOf(java.net.InetAddress.getByName(targetIp)) }
+            .dns(object : okhttp3.Dns {
+                override fun lookup(hostname: String): List<java.net.InetAddress> {
+                    return listOf(java.net.InetAddress.getByName(targetIp))
+                }
+            })
             .build()
 
         val request = Request.Builder()
