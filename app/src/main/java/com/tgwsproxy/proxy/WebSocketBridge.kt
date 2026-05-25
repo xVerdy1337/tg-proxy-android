@@ -8,57 +8,37 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLContext
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
 class WebSocketBridge {
 
-    private val client: OkHttpClient
+    private val client: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        // Standard TLS validation — Telegram servers have valid certificates
+        .build()
+
     private var webSocket: WebSocket? = null
     private val receiveChannel = Channel<ByteArray>(Channel.BUFFERED)
     private var isConnected = false
     private var isClosed = false
 
-    init {
-        // Create trust-all manager for Telegram's self-signed/edge certificates
-        val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {}
-            override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {}
-            override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
-        })
-
-        val sslContext = SSLContext.getInstance("TLS").apply {
-            init(null, trustAllCerts, java.security.SecureRandom())
-        }
-
-        client = OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
-            .sslSocketFactory(sslContext.socketFactory, trustAllCerts[0] as X509TrustManager)
-            .hostnameVerifier { _, _ -> true }
-            .build()
-    }
-
     fun connect(targetIp: String, domain: String, path: String = "/apiws"): Boolean {
         if (isConnected) return true
 
+        // Use domain in URL for correct TLS SNI, but override DNS to resolve to targetIp
+        val dnsClient = client.newBuilder()
+            .dns { _, _ -> listOf(java.net.InetAddress.getByName(targetIp)) }
+            .build()
+
         val request = Request.Builder()
-            .url("wss://$targetIp$path")
-            .header("Host", domain)
-            .header("Upgrade", "websocket")
-            .header("Connection", "Upgrade")
-            .header("Sec-WebSocket-Key", generateKey())
-            .header("Sec-WebSocket-Version", "13")
-            .header("Sec-WebSocket-Protocol", "binary")
+            .url("wss://$domain$path")
             .build()
 
         val latch = java.util.concurrent.CountDownLatch(1)
         var connected = false
-        var error: Throwable? = null
 
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+        webSocket = dnsClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 connected = true
                 isConnected = true
@@ -83,8 +63,9 @@ class WebSocketBridge {
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                error = t
                 isConnected = false
+                isClosed = true
+                receiveChannel.close()
                 latch.countDown()
             }
         })

@@ -23,7 +23,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.security.SecureRandom
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 
 class ProxyService : Service() {
 
@@ -114,7 +117,8 @@ class ProxyService : Service() {
     }
 
     private fun stopProxy() {
-        serviceScope.launch {
+        // Block until the server fully stops before tearing down the service
+        runBlocking(Dispatchers.IO) {
             try {
                 proxyServer?.stop()
                 proxyServer = null
@@ -124,8 +128,7 @@ class ProxyService : Service() {
         _serviceState.update {
             it.copy(
                 isRunning = false,
-                connectionCount = 0,
-                logs = it.logs + "Прокси остановлен"
+                connectionCount = 0
             )
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -136,9 +139,12 @@ class ProxyService : Service() {
         _serviceState.update { it.copy(logs = emptyList()) }
     }
 
+    private val logTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
+
     private fun addLog(line: String) {
+        val timestamp = LocalTime.now().format(logTimeFormatter)
         _serviceState.update { state ->
-            val newLogs = (state.logs + line).takeLast(200)
+            val newLogs = (state.logs + "[$timestamp] $line").takeLast(200)
             state.copy(logs = newLogs)
         }
     }
@@ -188,7 +194,7 @@ class ProxyService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // proxyServer already stopped in stopProxy(); cancel remaining coroutines
         serviceScope.cancel()
-        proxyServer?.stop()
     }
 }

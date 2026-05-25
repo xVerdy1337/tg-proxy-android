@@ -21,6 +21,7 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
 
     private var proxyService: ProxyService? = null
     private var serviceBound = false
+    private var collectingState = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -33,6 +34,9 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
         override fun onServiceDisconnected(name: ComponentName?) {
             proxyService = null
             serviceBound = false
+            collectingState = false
+            // Reflect disconnection in UI
+            _uiState.value = _uiState.value.copy(isRunning = false, connectionCount = 0)
         }
     }
 
@@ -47,6 +51,10 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun collectServiceState() {
+        // Guard against duplicate collection if service reconnects
+        if (collectingState) return
+        collectingState = true
+
         viewModelScope.launch {
             proxyService?.serviceState?.collect { serviceState ->
                 _uiState.value = _uiState.value.copy(
@@ -59,6 +67,8 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
                     proxyLink = serviceState.proxyLink
                 )
             }
+            // Flow ended (service died) — reset flag
+            collectingState = false
         }
     }
 
