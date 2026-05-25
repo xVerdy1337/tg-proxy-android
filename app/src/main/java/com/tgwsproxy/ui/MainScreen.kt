@@ -26,8 +26,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.material3.ExperimentalMaterial3Api
 import com.tgwsproxy.ui.theme.*
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsState()
@@ -232,12 +234,10 @@ private fun ControlButtons(
                     .fillMaxWidth()
                     .height(52.dp),
                 shape = RoundedCornerShape(12.dp),
-                colors = OutlinedButtonDefaults.outlinedButtonColors(
+                colors = ButtonDefaults.outlinedButtonColors(
                     contentColor = TextPrimary
                 ),
-                border = ButtonDefaults.outlinedButtonBorder.copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(Border)
-                )
+                border = androidx.compose.foundation.BorderStroke(1.dp, Border)
             ) {
                 Icon(
                     imageVector = Icons.Default.OpenInNew,
@@ -262,12 +262,10 @@ private fun ControlButtons(
                     .fillMaxWidth()
                     .height(48.dp),
                 shape = RoundedCornerShape(12.dp),
-                colors = OutlinedButtonDefaults.outlinedButtonColors(
+                colors = ButtonDefaults.outlinedButtonColors(
                     contentColor = TextSecondary
                 ),
-                border = ButtonDefaults.outlinedButtonBorder.copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(Border)
-                )
+                border = androidx.compose.foundation.BorderStroke(1.dp, Border)
             ) {
                 Icon(
                     imageVector = Icons.Default.ContentCopy,
