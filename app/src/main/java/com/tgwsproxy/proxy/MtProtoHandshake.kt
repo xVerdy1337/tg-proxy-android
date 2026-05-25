@@ -135,14 +135,18 @@ object MtProtoHandshake {
         secret: ByteArray,
         relayInit: ByteArray
     ): CryptoContext {
-        // Client decrypt: key = SHA256(prekey + secret), iv from handshake
+        // Client decrypt: key = SHA256(client_prekey + secret), iv from handshake
         val cltDecPrekey = clientDecPrekeyIv.copyOfRange(0, MtProtoConstants.PREKEY_LEN)
         val cltDecIv = clientDecPrekeyIv.copyOfRange(MtProtoConstants.PREKEY_LEN, MtProtoConstants.PREKEY_LEN + MtProtoConstants.IV_LEN)
         val cltDecKey = sha256(cltDecPrekey + secret)
 
-        val cltEncPrekeyIv = clientDecPrekeyIv.reversedArray()
-        val cltEncKey = sha256(cltEncPrekeyIv.copyOfRange(0, MtProtoConstants.PREKEY_LEN) + secret)
-        val cltEncIv = cltEncPrekeyIv.copyOfRange(MtProtoConstants.PREKEY_LEN, MtProtoConstants.PREKEY_LEN + MtProtoConstants.IV_LEN)
+        // Client encrypt: key = SHA256(relay_prekey + secret), iv from relay init
+        val cltEncPrekey = relayInit.copyOfRange(MtProtoConstants.SKIP_LEN, MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN)
+        val cltEncIv = relayInit.copyOfRange(
+            MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN,
+            MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN + MtProtoConstants.IV_LEN
+        )
+        val cltEncKey = sha256(cltEncPrekey + secret)
 
         val cltDecryptor = Cipher.getInstance("AES/CTR/NoPadding").apply {
             init(Cipher.ENCRYPT_MODE, SecretKeySpec(cltDecKey, "AES"), IvParameterSpec(cltDecIv))
@@ -152,31 +156,10 @@ object MtProtoHandshake {
         val cltEncryptor = Cipher.getInstance("AES/CTR/NoPadding").apply {
             init(Cipher.ENCRYPT_MODE, SecretKeySpec(cltEncKey, "AES"), IvParameterSpec(cltEncIv))
         }
+        cltEncryptor.update(MtProtoConstants.ZERO_64)
 
-        // Relay side
-        val relayEncKey = relayInit.copyOfRange(MtProtoConstants.SKIP_LEN, MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN)
-        val relayEncIv = relayInit.copyOfRange(
-            MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN,
-            MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN + MtProtoConstants.IV_LEN
-        )
-
-        val relayDecPrekeyIv = relayInit.copyOfRange(
-            MtProtoConstants.SKIP_LEN,
-            MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN + MtProtoConstants.IV_LEN
-        ).reversedArray()
-        val relayDecKey = relayDecPrekeyIv.copyOfRange(0, MtProtoConstants.KEY_LEN)
-        val relayDecIv = relayDecPrekeyIv.copyOfRange(MtProtoConstants.KEY_LEN, MtProtoConstants.KEY_LEN + MtProtoConstants.IV_LEN)
-
-        val tgEncryptor = Cipher.getInstance("AES/CTR/NoPadding").apply {
-            init(Cipher.ENCRYPT_MODE, SecretKeySpec(relayEncKey, "AES"), IvParameterSpec(relayEncIv))
-        }
-        tgEncryptor.update(MtProtoConstants.ZERO_64)
-
-        val tgDecryptor = Cipher.getInstance("AES/CTR/NoPadding").apply {
-            init(Cipher.ENCRYPT_MODE, SecretKeySpec(relayDecKey, "AES"), IvParameterSpec(relayDecIv))
-        }
-
-        return CryptoContext(cltDecryptor, cltEncryptor, tgEncryptor, tgDecryptor)
+        // Telegram side needs no extra crypto (WebSocket is already over TLS)
+        return CryptoContext(cltDecryptor, cltEncryptor)
     }
 
     fun wsDomains(dc: Int, isMedia: Boolean): List<String> {
@@ -201,7 +184,5 @@ object MtProtoHandshake {
 
 data class CryptoContext(
     val cltDecryptor: Cipher,  // decrypt from client
-    val cltEncryptor: Cipher,  // encrypt to client
-    val tgEncryptor: Cipher,   // encrypt to telegram
-    val tgDecryptor: Cipher    // decrypt from telegram
+    val cltEncryptor: Cipher   // encrypt to client
 )

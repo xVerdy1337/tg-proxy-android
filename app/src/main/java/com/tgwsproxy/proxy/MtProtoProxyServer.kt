@@ -114,6 +114,9 @@ class MtProtoProxyServer(
 
             // Generate relay init and crypto context
             val relayInit = MtProtoHandshake.generateRelayInit(result.protoTag, dcIdx)
+            output.write(relayInit)
+            output.flush()
+
             val cryptoCtx = MtProtoHandshake.buildCryptoContext(
                 result.clientDecPrekeyIv,
                 secretBytes,
@@ -138,15 +141,12 @@ class MtProtoProxyServer(
             if (!connected) {
                 onLog("[$label] WS connection failed, trying TCP fallback")
                 // TCP fallback
-                val fallbackOk = tcpFallback(clientSocket, input, output, relayInit, cryptoCtx, targetIp)
+                val fallbackOk = tcpFallback(clientSocket, input, output, cryptoCtx, targetIp)
                 if (!fallbackOk) {
                     onLog("[$label] TCP fallback failed")
                 }
                 return
             }
-
-            // Send relay init through WS
-            wsBridge.send(relayInit)
 
             // Bridge data
             bridgeData(clientSocket, input, output, wsBridge, cryptoCtx, label, result.dcId, result.isMedia)
@@ -179,8 +179,7 @@ class MtProtoProxyServer(
                     if (read <= 0) break
                     val chunk = buffer.copyOfRange(0, read)
                     val plain = ctx.cltDecryptor.update(chunk)
-                    val encrypted = ctx.tgEncryptor.update(plain)
-                    if (!wsBridge.send(encrypted)) break
+                    if (!wsBridge.send(plain)) break
                 }
             } catch (_: Exception) {
             }
@@ -190,8 +189,7 @@ class MtProtoProxyServer(
             try {
                 while (running && clientSocket.isConnected && !clientSocket.isClosed) {
                     val data = wsBridge.receive() ?: break
-                    val plain = ctx.tgDecryptor.update(data)
-                    val encrypted = ctx.cltEncryptor.update(plain)
+                    val encrypted = ctx.cltEncryptor.update(data)
                     clientOutput.write(encrypted)
                     clientOutput.flush()
                 }
@@ -212,7 +210,6 @@ class MtProtoProxyServer(
         clientSocket: Socket,
         clientInput: java.io.InputStream,
         clientOutput: java.io.OutputStream,
-        relayInit: ByteArray,
         ctx: CryptoContext,
         targetIp: String
     ): Boolean {
@@ -222,9 +219,6 @@ class MtProtoProxyServer(
             val remoteOutput = remoteSocket.getOutputStream()
             val remoteInput = remoteSocket.getInputStream()
 
-            remoteOutput.write(relayInit)
-            remoteOutput.flush()
-
             val clientToRemote = serverScope.async {
                 try {
                     val buffer = ByteArray(65536)
@@ -233,8 +227,7 @@ class MtProtoProxyServer(
                         if (read <= 0) break
                         val chunk = buffer.copyOfRange(0, read)
                         val plain = ctx.cltDecryptor.update(chunk)
-                        val encrypted = ctx.tgEncryptor.update(plain)
-                        remoteOutput.write(encrypted)
+                        remoteOutput.write(plain)
                         remoteOutput.flush()
                     }
                 } catch (_: Exception) {}
@@ -247,8 +240,7 @@ class MtProtoProxyServer(
                         val read = remoteInput.read(buffer)
                         if (read <= 0) break
                         val chunk = buffer.copyOfRange(0, read)
-                        val plain = ctx.tgDecryptor.update(chunk)
-                        val encrypted = ctx.cltEncryptor.update(plain)
+                        val encrypted = ctx.cltEncryptor.update(chunk)
                         clientOutput.write(encrypted)
                         clientOutput.flush()
                     }
