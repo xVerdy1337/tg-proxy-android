@@ -15,9 +15,22 @@ android {
         versionName = "1.0"
     }
 
+    signingConfigs {
+        create("ci") {
+            storeFile = file(System.getenv("KEYSTORE_PATH") ?: "ci.keystore")
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "android"
+            keyAlias = System.getenv("KEY_ALIAS") ?: "androiddebugkey"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("ci")
+        }
         release {
             isMinifyEnabled = true
+            signingConfig = signingConfigs.getByName("ci")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
