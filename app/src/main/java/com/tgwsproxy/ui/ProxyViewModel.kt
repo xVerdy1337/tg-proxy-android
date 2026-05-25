@@ -9,6 +9,7 @@ import android.os.IBinder
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tgwsproxy.service.ProxyService
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,7 +22,7 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
 
     private var proxyService: ProxyService? = null
     private var serviceBound = false
-    private var collectingState = false
+    private var collectJob: Job? = null
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -34,9 +35,13 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
         override fun onServiceDisconnected(name: ComponentName?) {
             proxyService = null
             serviceBound = false
-            collectingState = false
-            // Reflect disconnection in UI
-            _uiState.value = _uiState.value.copy(isRunning = false, connectionCount = 0)
+            collectJob?.cancel()
+            collectJob = null
+            _uiState.value = _uiState.value.copy(
+                isLoading = false,
+                isRunning = false,
+                connectionCount = 0
+            )
         }
     }
 
@@ -51,13 +56,11 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun collectServiceState() {
-        // Guard against duplicate collection if service reconnects
-        if (collectingState) return
-        collectingState = true
-
-        viewModelScope.launch {
+        collectJob?.cancel()
+        collectJob = viewModelScope.launch {
             proxyService?.serviceState?.collect { serviceState ->
-                _uiState.value = _uiState.value.copy(
+                _uiState.value = ProxyUiState(
+                    isLoading = false,
                     isRunning = serviceState.isRunning,
                     host = serviceState.host,
                     port = serviceState.port,
@@ -67,8 +70,6 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
                     proxyLink = serviceState.proxyLink
                 )
             }
-            // Flow ended (service died) — reset flag
-            collectingState = false
         }
     }
 
@@ -93,6 +94,7 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        collectJob?.cancel()
         if (serviceBound) {
             getApplication<Application>().unbindService(serviceConnection)
             serviceBound = false
@@ -101,6 +103,7 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
 }
 
 data class ProxyUiState(
+    val isLoading: Boolean = true,
     val isRunning: Boolean = false,
     val host: String = "127.0.0.1",
     val port: Int = 1443,

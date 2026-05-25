@@ -5,11 +5,11 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -40,9 +40,18 @@ fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
     val context = LocalContext.current
     val listState = rememberLazyListState()
 
-    LaunchedEffect(uiState.logs.size) {
-        if (uiState.logs.isNotEmpty()) {
-            listState.animateScrollToItem(uiState.logs.size - 1)
+    // Smart auto-scroll: only when the user is already at the bottom
+    val isAtBottom by remember {
+        derivedStateOf {
+            val lastVisibleItem = listState.layoutInfo.visibleItemsInfo.lastOrNull()
+            lastVisibleItem != null && lastVisibleItem.index >= listState.layoutInfo.totalItemsCount - 2
+        }
+    }
+
+    LaunchedEffect(uiState.logs.size, isAtBottom) {
+        val totalItems = listState.layoutInfo.totalItemsCount
+        if (isAtBottom && totalItems > 0) {
+            listState.animateScrollToItem(totalItems - 1)
         }
     }
 
@@ -74,6 +83,19 @@ fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
         },
         containerColor = Background
     ) { padding ->
+
+        if (uiState.isLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(color = Accent)
+            }
+            return@Scaffold
+        }
+
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -91,7 +113,23 @@ fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
             }
 
             item {
-                ControlButtons(uiState, viewModel, context)
+                ControlButtons(
+                    uiState = uiState,
+                    onToggle = { viewModel.toggleProxy() },
+                    onOpenTelegram = {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uiState.proxyLink))
+                        context.startActivity(intent)
+                    },
+                    onCopyLink = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = ClipData.newPlainText("TG Proxy", uiState.proxyLink)
+                        clipboard.setPrimaryClip(clip)
+                        // Android 13+ shows its own clipboard toast
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                            Toast.makeText(context, "Ссылка скопирована", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
             }
 
             if (uiState.logs.isNotEmpty()) {
@@ -104,8 +142,8 @@ fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
                     )
                 }
 
-                item {
-                    LogPanel(uiState.logs)
+                items(uiState.logs, key = null) { log ->
+                    LogItem(log)
                 }
             }
 
@@ -164,7 +202,6 @@ private fun StatusCard(uiState: ProxyUiState) {
 
 @Composable
 private fun ProxyInfoCard(uiState: ProxyUiState) {
-    // Track whether the secret is revealed
     var secretRevealed by remember { mutableStateOf(false) }
 
     Card(
@@ -180,7 +217,7 @@ private fun ProxyInfoCard(uiState: ProxyUiState) {
         ) {
             InfoRow(label = "Сервер", value = "${uiState.host}:${uiState.port}")
 
-            // Secret row with tap-to-reveal
+            // Secret row with tap-to-reveal (48dp minimum touch target)
             Column {
                 Text(
                     text = "Секрет",
@@ -190,9 +227,7 @@ private fun ProxyInfoCard(uiState: ProxyUiState) {
                 Spacer(modifier = Modifier.height(2.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable { secretRevealed = !secretRevealed }
+                    modifier = Modifier.heightIn(min = 48.dp)
                 ) {
                     Text(
                         text = if (secretRevealed || uiState.secret.isEmpty()) {
@@ -207,13 +242,16 @@ private fun ProxyInfoCard(uiState: ProxyUiState) {
                         modifier = Modifier.weight(1f, fill = false)
                     )
                     if (uiState.secret.isNotEmpty()) {
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Icon(
-                            imageVector = if (secretRevealed) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                            contentDescription = if (secretRevealed) "Скрыть" else "Показать",
-                            tint = TextSecondary,
-                            modifier = Modifier.size(16.dp)
-                        )
+                        IconButton(
+                            onClick = { secretRevealed = !secretRevealed }
+                        ) {
+                            Icon(
+                                imageVector = if (secretRevealed) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (secretRevealed) "Скрыть" else "Показать",
+                                tint = TextSecondary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -247,14 +285,15 @@ private fun InfoRow(label: String, value: String) {
 @Composable
 private fun ControlButtons(
     uiState: ProxyUiState,
-    viewModel: ProxyViewModel,
-    context: Context
+    onToggle: () -> Unit,
+    onOpenTelegram: () -> Unit,
+    onCopyLink: () -> Unit
 ) {
     Column(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Button(
-            onClick = { viewModel.toggleProxy() },
+            onClick = onToggle,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(56.dp),
@@ -277,10 +316,7 @@ private fun ControlButtons(
 
         if (uiState.isRunning && uiState.proxyLink.isNotEmpty()) {
             OutlinedButton(
-                onClick = {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uiState.proxyLink))
-                    context.startActivity(intent)
-                },
+                onClick = onOpenTelegram,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
@@ -303,12 +339,7 @@ private fun ControlButtons(
             }
 
             OutlinedButton(
-                onClick = {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    val clip = ClipData.newPlainText("TG Proxy", uiState.proxyLink)
-                    clipboard.setPrimaryClip(clip)
-                    Toast.makeText(context, "Ссылка скопирована", Toast.LENGTH_SHORT).show()
-                },
+                onClick = onCopyLink,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp),
@@ -334,32 +365,13 @@ private fun ControlButtons(
     }
 }
 
-/** All logs in one card with monospace font and color-coded lines */
-@Composable
-private fun LogPanel(logs: List<String>) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF0A1020))
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            logs.forEach { log -> LogItem(log) }
-        }
-    }
-}
-
 @Composable
 private fun LogItem(log: String) {
     val color = when {
-        log.contains("ERROR", ignoreCase = true)   -> Destructive
-        log.contains("WARN", ignoreCase = true)     -> Color(0xFFF59E0B)
-        log.contains("handshake ok", ignoreCase = true) -> Accent
-        log.contains("WS connected", ignoreCase = true) -> Color(0xFF38BDF8)
+        log.contains("ERROR", ignoreCase = true)          -> Destructive
+        log.contains("WARN", ignoreCase = true)            -> Color(0xFFF59E0B)
+        log.contains("handshake ok", ignoreCase = true)    -> Accent
+        log.contains("WS connected", ignoreCase = true)    -> Color(0xFF38BDF8)
         else -> TextSecondary
     }
 
@@ -371,6 +383,10 @@ private fun LogItem(log: String) {
             lineHeight = 16.sp
         ),
         color = color,
-        modifier = Modifier.padding(vertical = 1.dp)
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(4.dp))
+            .background(Color(0xFF0A1020))
+            .padding(horizontal = 8.dp, vertical = 3.dp)
     )
 }
