@@ -11,11 +11,12 @@ import java.util.concurrent.TimeUnit
 
 class WebSocketBridge {
 
-    private val client: OkHttpClient = OkHttpClient.Builder()
+    // Base client with standard TLS validation — Telegram servers have valid certificates.
+    // DNS override is applied per-connect so each call can target a different IP.
+    private val baseClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
-        // Standard TLS validation — Telegram servers have valid certificates
         .build()
 
     private var webSocket: WebSocket? = null
@@ -26,9 +27,10 @@ class WebSocketBridge {
     fun connect(targetIp: String, domain: String, path: String = "/apiws"): Boolean {
         if (isConnected) return true
 
-        // Use domain in URL for correct TLS SNI, but override DNS to resolve to targetIp
-        val dnsClient = client.newBuilder()
-            .dns { _, _ -> listOf(java.net.InetAddress.getByName(targetIp)) }
+        // Use domain in URL → correct TLS SNI (*.web.telegram.org)
+        // DNS override routes that domain to the specific DC IP without a real DNS lookup.
+        val client = baseClient.newBuilder()
+            .dns { _ -> listOf(java.net.InetAddress.getByName(targetIp)) }
             .build()
 
         val request = Request.Builder()
@@ -38,7 +40,7 @@ class WebSocketBridge {
         val latch = java.util.concurrent.CountDownLatch(1)
         var connected = false
 
-        webSocket = dnsClient.newWebSocket(request, object : WebSocketListener() {
+        webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 connected = true
                 isConnected = true
@@ -87,11 +89,5 @@ class WebSocketBridge {
         isClosed = true
         webSocket?.close(1000, "Closing")
         receiveChannel.close()
-    }
-
-    private fun generateKey(): String {
-        val bytes = ByteArray(16)
-        java.security.SecureRandom().nextBytes(bytes)
-        return java.util.Base64.getEncoder().encodeToString(bytes)
     }
 }
