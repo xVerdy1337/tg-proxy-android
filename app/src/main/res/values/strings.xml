@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Jevio</string>
+    <string name="app_name">Jevio Unblocker</string>
     <string name="app_tagline">Telegram без блокировок</string>
     <string name="proxy_running">Прокси запущен</string>
     <string name="proxy_stopped">Прокси остановлен</string>
@@ -17,8 +17,8 @@
     <string name="logs">Логи</string>
     <string name="copy_link">Копировать ссылку</string>
     <string name="link_copied">Ссылка скопирована</string>
-    <string name="tile_label">Jevio</string>
+    <string name="tile_label">Jevio Unblocker</string>
     <string name="battery_warning_title">Прокси может отключаться</string>
-    <string name="battery_warning_text">Система экономии батареи может выгружать Jevio в фоне — тогда Telegram перестаёт работать, пока вы не откроете приложение. Отключите оптимизацию батареи, чтобы прокси работал всегда.</string>
+    <string name="battery_warning_text">Система экономии батареи может выгружать Jevio Unblocker в фоне — тогда Telegram перестаёт работать, пока вы не откроете приложение. Отключите оптимизацию батареи, чтобы прокси работал всегда.</string>
     <string name="battery_warning_button">Отключить оптимизацию</string>
 </resources>
