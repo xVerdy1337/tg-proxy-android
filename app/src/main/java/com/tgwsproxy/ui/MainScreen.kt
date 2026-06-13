@@ -126,13 +126,13 @@ fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Image(
                             painter = painterResource(id = R.drawable.ic_jevio_logo),
-                            contentDescription = "Jevio",
+                            contentDescription = "Jevio Unblocker",
                             modifier = Modifier.size(34.dp)
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
-                                "Jevio",
+                                "Jevio Unblocker",
                                 style = MaterialTheme.typography.headlineMedium,
                                 color = TextPrimary
                             )
