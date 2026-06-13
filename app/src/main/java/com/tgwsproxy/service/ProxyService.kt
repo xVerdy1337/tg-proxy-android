@@ -9,6 +9,10 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
@@ -21,7 +25,10 @@ import com.tgwsproxy.R
 import com.tgwsproxy.proxy.MtProtoProxyServer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -42,6 +49,7 @@ class ProxyService : Service() {
         private const val CHANNEL_ID = "proxy_channel"
         const val PREFS = "tgwsproxy_prefs"
         private const val KEY_CF_DOMAIN = "cf_domain"
+        private const val KEY_FAKE_TLS_DOMAIN = "fake_tls_domain"
         private const val KEY_SECRET = "proxy_secret"
         // Shared with ProxyTileService so the Quick Settings tile reflects live state.
         const val KEY_RUNNING = "proxy_running"
@@ -55,7 +63,13 @@ class ProxyService : Service() {
         val connectionCount: Int = 0,
         val logs: List<String> = emptyList(),
         val proxyLink: String = "",
-        val cfDomain: String = ""
+        val cfDomain: String = "",
+        val fakeTlsDomain: String = "",
+        // Live traffic stats for the UI.
+        val bytesUp: Long = 0,
+        val bytesDown: Long = 0,
+        val startedAt: Long = 0,      // epoch millis when the proxy started (0 = stopped)
+        val route: String = ""        // active upstream: cloudflare / direct / tcp
     )
 
     private val _serviceState = MutableStateFlow(ServiceState())
@@ -64,6 +78,13 @@ class ProxyService : Service() {
     private val binder = ProxyBinder()
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var proxyServer: MtProtoProxyServer? = null
+    private var statsJob: Job? = null
+
+    // Watches Wi-Fi ↔ mobile transitions so active sessions reconnect on the new network.
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var lastNetworkId: String? = null
+    @Volatile private var lastNetworkChangeAt: Long = 0
 
     // Wake locks keep the CPU and Wi-Fi radio alive while the proxy is running,
     // so the local relay survives screen-off / Doze instead of silently dying.
@@ -82,6 +103,7 @@ class ProxyService : Service() {
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         // Restore the saved Cloudflare-proxy domain so the UI reflects it on launch.
         val savedDomain = prefs.getString(KEY_CF_DOMAIN, "") ?: ""
+        val savedFakeTls = prefs.getString(KEY_FAKE_TLS_DOMAIN, "") ?: ""
         // Restore (or create) the stable secret so the tg:// link stays the same
         // across stop/start — the user no longer has to re-add the proxy each time.
         val secret = getOrCreateSecret()
@@ -90,14 +112,27 @@ class ProxyService : Service() {
         _serviceState.update {
             it.copy(
                 cfDomain = savedDomain,
+                fakeTlsDomain = savedFakeTls,
                 secret = secret,
-                proxyLink = buildProxyLink(host, port, secret)
+                proxyLink = buildProxyLink(host, port, secret, savedFakeTls)
             )
         }
     }
 
-    private fun buildProxyLink(host: String, port: Int, secret: String): String =
-        "tg://proxy?server=$host&port=$port&secret=dd$secret"
+    /**
+     * Build the tg:// proxy link. With a Fake-TLS domain we emit an `ee` secret
+     * (secret + hex(domain)) so Telegram wraps the stream in TLS-to-that-domain; otherwise
+     * we use the `dd` (secure/padded) secret on the raw path.
+     */
+    private fun buildProxyLink(host: String, port: Int, secret: String, fakeTlsDomain: String = ""): String {
+        val domain = fakeTlsDomain.trim()
+        return if (domain.isNotEmpty()) {
+            val domainHex = domain.toByteArray(Charsets.UTF_8).joinToString("") { "%02x".format(it) }
+            "tg://proxy?server=$host&port=$port&secret=ee$secret$domainHex"
+        } else {
+            "tg://proxy?server=$host&port=$port&secret=dd$secret"
+        }
+    }
 
     /** Returns the persisted secret, generating and saving one on first run. */
     private fun getOrCreateSecret(): String {
@@ -122,8 +157,9 @@ class ProxyService : Service() {
             .apply()
         val host = _serviceState.value.host
         val port = _serviceState.value.port
+        val ftls = _serviceState.value.fakeTlsDomain
         _serviceState.update {
-            it.copy(secret = secret, proxyLink = buildProxyLink(host, port, secret))
+            it.copy(secret = secret, proxyLink = buildProxyLink(host, port, secret, ftls))
         }
     }
 
@@ -135,6 +171,27 @@ class ProxyService : Service() {
             .putString(KEY_CF_DOMAIN, cleaned)
             .apply()
         _serviceState.update { it.copy(cfDomain = cleaned) }
+    }
+
+    /**
+     * Persist the Fake-TLS masking domain and rebuild the link (ee/dd switches with it).
+     * Takes effect on the next start; the user must re-add the new link in Telegram.
+     */
+    fun setFakeTlsDomain(domain: String) {
+        val cleaned = domain.trim()
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_FAKE_TLS_DOMAIN, cleaned)
+            .apply()
+        val host = _serviceState.value.host
+        val port = _serviceState.value.port
+        val secret = _serviceState.value.secret
+        _serviceState.update {
+            it.copy(
+                fakeTlsDomain = cleaned,
+                proxyLink = buildProxyLink(host, port, secret, cleaned)
+            )
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -151,7 +208,8 @@ class ProxyService : Service() {
         val secret = getOrCreateSecret()
         val host = "127.0.0.1"
         val port = 1443
-        val proxyLink = buildProxyLink(host, port, secret)
+        val fakeTlsDomain = _serviceState.value.fakeTlsDomain
+        val proxyLink = buildProxyLink(host, port, secret, fakeTlsDomain)
 
         _serviceState.update {
             it.copy(
@@ -161,11 +219,17 @@ class ProxyService : Service() {
                 secret = secret,
                 proxyLink = proxyLink,
                 connectionCount = 0,
+                bytesUp = 0,
+                bytesDown = 0,
+                startedAt = System.currentTimeMillis(),
+                route = "",
                 logs = listOf("Прокси запускается...")
             )
         }
         persistRunning(true)
         acquireWakeLocks()
+        registerNetworkCallback()
+        startStatsPump()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
@@ -188,7 +252,8 @@ class ProxyService : Service() {
                         _serviceState.update { it.copy(connectionCount = count) }
                         updateNotification()
                     },
-                    cfDomain = _serviceState.value.cfDomain
+                    cfDomain = _serviceState.value.cfDomain,
+                    fakeTlsDomain = fakeTlsDomain
                 )
                 proxyServer?.start()
             } catch (e: Exception) {
@@ -245,6 +310,10 @@ class ProxyService : Service() {
     }
 
     private fun stopProxy() {
+        statsJob?.cancel()
+        statsJob = null
+        unregisterNetworkCallback()
+
         // Block until the server fully stops before tearing down the service
         runBlocking(Dispatchers.IO) {
             try {
@@ -256,13 +325,79 @@ class ProxyService : Service() {
         _serviceState.update {
             it.copy(
                 isRunning = false,
-                connectionCount = 0
+                connectionCount = 0,
+                startedAt = 0,
+                route = ""
             )
         }
         persistRunning(false)
         releaseWakeLocks()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    /** Poll the proxy server's live counters once a second and push them to the UI. */
+    private fun startStatsPump() {
+        statsJob?.cancel()
+        statsJob = serviceScope.launch {
+            while (isActive) {
+                val server = proxyServer
+                if (server != null) {
+                    val up = server.bytesUp.get()
+                    val down = server.bytesDown.get()
+                    val route = server.lastRoute
+                    _serviceState.update { it.copy(bytesUp = up, bytesDown = down, route = route) }
+                }
+                delay(1000)
+            }
+        }
+    }
+
+    /**
+     * Listen for the device's default network changing (Wi-Fi ↔ mobile). When the active
+     * network actually changes we re-acquire the Wi-Fi lock and tell the proxy to drop its
+     * stale upstream sockets so Telegram reconnects instantly over the new link.
+     */
+    private fun registerNetworkCallback() {
+        if (networkCallback != null) return
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            connectivityManager = cm
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) = onNetworkChanged(network.toString())
+                override fun onLost(network: Network) = onNetworkChanged("lost")
+            }
+            networkCallback = cb
+            cm.registerNetworkCallback(request, cb)
+        } catch (_: Exception) {
+            // Some OEMs throttle callback registrations; reconnect is best-effort.
+        }
+    }
+
+    private fun onNetworkChanged(id: String) {
+        if (!_serviceState.value.isRunning) return
+        val now = System.currentTimeMillis()
+        // Debounce: ignore duplicate callbacks and bursts within 1.5s.
+        if (id == lastNetworkId && now - lastNetworkChangeAt < 1500) return
+        lastNetworkId = id
+        lastNetworkChangeAt = now
+        serviceScope.launch {
+            // Small settle delay so the new network is actually usable before redialing.
+            delay(700)
+            acquireWakeLocks()
+            try { proxyServer?.resetConnections() } catch (_: Exception) {}
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        try {
+            networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
+        } catch (_: Exception) {}
+        networkCallback = null
+        lastNetworkId = null
     }
 
     /**
@@ -364,6 +499,8 @@ class ProxyService : Service() {
         super.onDestroy()
         // Safety net: make sure locks are gone even if onDestroy hits before stopProxy.
         releaseWakeLocks()
+        statsJob?.cancel()
+        unregisterNetworkCallback()
         // proxyServer already stopped in stopProxy(); cancel remaining coroutines
         serviceScope.cancel()
     }

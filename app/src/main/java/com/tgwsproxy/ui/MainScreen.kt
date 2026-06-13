@@ -12,18 +12,25 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.rememberInfiniteTransition
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -54,14 +61,39 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.material3.ExperimentalMaterial3Api
 import com.tgwsproxy.R
 import com.tgwsproxy.ui.theme.*
+import kotlinx.coroutines.delay
+import java.util.Locale
 
 private fun copyToClipboard(context: Context, label: String, text: String, toast: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
-    // Android 13+ shows its own clipboard confirmation chip.
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
         Toast.makeText(context, toast, Toast.LENGTH_SHORT).show()
     }
+}
+
+private fun formatBytes(b: Long): String {
+    if (b < 1024) return "$b Б"
+    val kb = b / 1024.0
+    if (kb < 1024) return String.format(Locale.US, "%.1f КБ", kb)
+    val mb = kb / 1024.0
+    if (mb < 1024) return String.format(Locale.US, "%.1f МБ", mb)
+    return String.format(Locale.US, "%.2f ГБ", mb / 1024.0)
+}
+
+private fun formatUptime(startedAt: Long, now: Long): String {
+    if (startedAt <= 0) return "—"
+    val s = ((now - startedAt) / 1000).coerceAtLeast(0)
+    val h = s / 3600; val m = (s % 3600) / 60; val sec = s % 60
+    return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, sec)
+    else String.format(Locale.US, "%02d:%02d", m, sec)
+}
+
+private fun routeLabel(route: String): String = when (route) {
+    "cloudflare" -> "Cloudflare"
+    "direct" -> "Прямое"
+    "tcp" -> "TCP"
+    else -> "—"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -71,10 +103,8 @@ fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
     val context = LocalContext.current
     val listState = rememberLazyListState()
 
-    // Logs are hidden by default — the user opens them only when needed.
     var logsExpanded by remember { mutableStateOf(false) }
 
-    // Smart auto-scroll: only when the user is already at the bottom
     val isAtBottom by remember {
         derivedStateOf {
             val lastVisibleItem = listState.layoutInfo.visibleItemsInfo.lastOrNull()
@@ -179,6 +209,8 @@ fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
                 )
             }
 
+            item { FakeTlsCard(uiState, onSave = { viewModel.setFakeTlsDomain(it) }) }
+
             item { SettingsCard(uiState, onSaveCfDomain = { viewModel.setCfDomain(it) }) }
 
             if (uiState.logs.isNotEmpty()) {
@@ -233,12 +265,11 @@ fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
 private fun HeroStatusCard(uiState: ProxyUiState) {
     val running = uiState.isRunning
     val statusColor by animateColorAsState(
-        targetValue = if (running) AccentSoft else Destructive,
+        targetValue = if (running) AccentSoft else TextMuted,
         animationSpec = tween(300),
         label = "statusColor"
     )
 
-    // Gentle pulsing for the live status dot.
     val transition = rememberInfiniteTransition(label = "pulse")
     val pulse by transition.animateFloat(
         initialValue = 0.35f,
@@ -250,9 +281,18 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
         label = "pulseAlpha"
     )
 
+    // Live ticking clock for the uptime readout.
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(running) {
+        while (running) {
+            now = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = Surface)
     ) {
         Column(
@@ -261,9 +301,9 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
                 .background(
                     Brush.verticalGradient(
                         colors = if (running) {
-                            listOf(Color(0xFF0E2A22), Surface)
+                            listOf(Color(0xFF3A2740), Surface)
                         } else {
-                            listOf(Color(0xFF2A1115), Surface)
+                            listOf(Color(0xFF2A2233), Surface)
                         }
                     )
                 )
@@ -287,6 +327,23 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
                         color = statusColor,
                         fontWeight = FontWeight.Bold
                     )
+                    if (running && uiState.route.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.CloudDone,
+                                contentDescription = null,
+                                tint = Mauve,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = "Маршрут: ${routeLabel(uiState.route)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary
+                            )
+                        }
+                    }
                 }
                 Box(
                     modifier = Modifier
@@ -297,19 +354,36 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
                 )
             }
 
-            if (running) {
-                Spacer(modifier = Modifier.height(18.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    StatChip(
-                        icon = Icons.Default.Link,
-                        label = "Подключения",
-                        value = uiState.connectionCount.toString()
-                    )
-                    StatChip(
-                        icon = Icons.Default.Dns,
-                        label = "Порт",
-                        value = uiState.port.toString()
-                    )
+            AnimatedVisibility(visible = running) {
+                Column {
+                    Spacer(modifier = Modifier.height(18.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        StatChip(
+                            icon = Icons.Default.Timer,
+                            label = "Аптайм",
+                            value = formatUptime(uiState.startedAt, now)
+                        )
+                        StatChip(
+                            icon = Icons.Default.Link,
+                            label = "Подключения",
+                            value = uiState.connectionCount.toString()
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        StatChip(
+                            icon = Icons.Default.ArrowUpward,
+                            label = "Отправлено",
+                            value = formatBytes(uiState.bytesUp),
+                            tint = Mauve
+                        )
+                        StatChip(
+                            icon = Icons.Default.ArrowDownward,
+                            label = "Получено",
+                            value = formatBytes(uiState.bytesDown),
+                            tint = Primary
+                        )
+                    }
                 }
             }
         }
@@ -317,16 +391,21 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
 }
 
 @Composable
-private fun RowScope.StatChip(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: String) {
+private fun RowScope.StatChip(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    value: String,
+    tint: Color = AccentSoft
+) {
     Row(
         modifier = Modifier
             .weight(1f)
-            .clip(RoundedCornerShape(12.dp))
-            .background(Color(0x33000000))
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0x40000000))
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, contentDescription = null, tint = AccentSoft, modifier = Modifier.size(18.dp))
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
         Column {
             Text(value, style = MaterialTheme.typography.titleMedium, color = TextPrimary, fontWeight = FontWeight.SemiBold)
@@ -345,7 +424,7 @@ private fun ProxyInfoCard(
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = Surface)
     ) {
         Column(
@@ -362,7 +441,6 @@ private fun ProxyInfoCard(
 
             HorizontalDivider(color = Border)
 
-            // Secret row with tap-to-reveal + copy (48dp minimum touch target)
             Column {
                 Text(
                     text = "Секрет",
@@ -406,7 +484,6 @@ private fun ProxyInfoCard(
                                 modifier = Modifier.size(18.dp)
                             )
                         }
-                        // Rotate the key — only while stopped (changing it needs a re-add in TG).
                         if (!uiState.isRunning) {
                             IconButton(onClick = onRegenerateSecret) {
                                 Icon(
@@ -421,7 +498,9 @@ private fun ProxyInfoCard(
                 }
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = if (uiState.isRunning) {
+                    text = if (uiState.fakeTlsDomain.isNotEmpty()) {
+                        "Режим Fake TLS (ee-секрет) под домен ${uiState.fakeTlsDomain}."
+                    } else if (uiState.isRunning) {
                         "Секрет постоянный — ссылку в Telegram повторно добавлять не нужно."
                     } else {
                         "Секрет сохраняется между запусками. Нажмите ↻, чтобы сгенерировать новый."
@@ -463,6 +542,144 @@ private fun CopyableRow(label: String, value: String, onCopy: () -> Unit) {
     }
 }
 
+/**
+ * Fake-TLS card. Lets the user mask the proxy as HTTPS to a real domain (the strongest DPI
+ * bypass) by entering a masking domain — the link switches to an `ee...` secret. Empty = off.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
+    val enabled = uiState.fakeTlsDomain.isNotEmpty()
+    var expanded by remember { mutableStateOf(false) }
+    var domainInput by remember(uiState.fakeTlsDomain) { mutableStateOf(uiState.fakeTlsDomain) }
+
+    val presets = listOf("www.microsoft.com", "www.cloudflare.com", "dl.google.com", "www.bing.com")
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = Surface),
+        border = if (enabled) BorderStroke(1.dp, Primary.copy(alpha = 0.45f)) else null
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.Shield, contentDescription = null, tint = if (enabled) Primary else TextSecondary, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = "Fake TLS маскировка",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = TextPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = if (enabled) "Вкл · ${uiState.fakeTlsDomain}" else "Выкл",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (enabled) Primary else TextSecondary
+                        )
+                    }
+                }
+                IconButton(onClick = { expanded = !expanded }) {
+                    Icon(
+                        imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (expanded) "Свернуть" else "Развернуть",
+                        tint = TextSecondary
+                    )
+                }
+            }
+
+            Text(
+                text = "Маскирует прокси под HTTPS к настоящему сайту — самый надёжный обход DPI. Укажите домен, и ссылка станет ee-секретом.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary
+            )
+
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column {
+                    Spacer(Modifier.height(14.dp))
+                    Text("Быстрый выбор домена:", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                    Spacer(Modifier.height(8.dp))
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        presets.forEach { p ->
+                            val sel = domainInput.trim() == p
+                            Text(
+                                text = p,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (sel) Background else TextPrimary,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (sel) Primary else SurfaceVariant)
+                                    .clickable { domainInput = p }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(14.dp))
+                    OutlinedTextField(
+                        value = domainInput,
+                        onValueChange = { domainInput = it },
+                        label = { Text("Домен маскировки", color = TextSecondary) },
+                        placeholder = { Text("www.example.com", color = TextSecondary) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            focusedBorderColor = Primary,
+                            unfocusedBorderColor = Border,
+                            cursorColor = Primary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(
+                            onClick = { onSave(domainInput.trim()) },
+                            enabled = domainInput.trim() != uiState.fakeTlsDomain,
+                            modifier = Modifier.weight(1f).height(48.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Primary, contentColor = Background)
+                        ) {
+                            Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Включить", fontWeight = FontWeight.SemiBold)
+                        }
+                        if (enabled) {
+                            OutlinedButton(
+                                onClick = { domainInput = ""; onSave("") },
+                                modifier = Modifier.height(48.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
+                                border = BorderStroke(1.dp, Border)
+                            ) {
+                                Text("Выключить", color = TextSecondary)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "После изменения добавьте новую ссылку в Telegram заново.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Warning
+                    )
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit) {
@@ -471,7 +688,7 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = Surface)
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
@@ -507,53 +724,59 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
                 color = TextSecondary
             )
 
-            if (expanded) {
-                Spacer(Modifier.height(16.dp))
-                OutlinedTextField(
-                    value = domainInput,
-                    onValueChange = { domainInput = it },
-                    label = { Text("Свой Cloudflare-домен", color = TextSecondary) },
-                    placeholder = { Text("example.com", color = TextSecondary) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Uri,
-                        imeAction = ImeAction.Done
-                    ),
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary,
-                        focusedBorderColor = Accent,
-                        unfocusedBorderColor = Border,
-                        cursorColor = Accent
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "Оставьте пустым, чтобы использовать встроенные домены.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextSecondary
-                )
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = { onSaveCfDomain(domainInput.trim()) },
-                    enabled = domainInput.trim() != uiState.cfDomain,
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Accent)
-                ) {
-                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Сохранить", fontWeight = FontWeight.SemiBold)
-                }
-                if (uiState.isRunning) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = "Изменения применятся после перезапуска прокси.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Warning
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column {
+                    Spacer(Modifier.height(16.dp))
+                    OutlinedTextField(
+                        value = domainInput,
+                        onValueChange = { domainInput = it },
+                        label = { Text("Свой Cloudflare-домен", color = TextSecondary) },
+                        placeholder = { Text("example.com", color = TextSecondary) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Uri,
+                            imeAction = ImeAction.Done
+                        ),
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            focusedBorderColor = Accent,
+                            unfocusedBorderColor = Border,
+                            cursorColor = Accent
+                        ),
+                        modifier = Modifier.fillMaxWidth()
                     )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Оставьте пустым, чтобы использовать встроенные домены.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = { onSaveCfDomain(domainInput.trim()) },
+                        enabled = domainInput.trim() != uiState.cfDomain,
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Background)
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Сохранить", fontWeight = FontWeight.SemiBold)
+                    }
+                    if (uiState.isRunning) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "Изменения применятся после перезапуска прокси.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Warning
+                        )
+                    }
                 }
             }
         }
@@ -574,10 +797,11 @@ private fun ControlButtons(
             onClick = onToggle,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp),
-            shape = RoundedCornerShape(14.dp),
+                .height(58.dp),
+            shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = if (uiState.isRunning) Destructive else Accent
+                containerColor = if (uiState.isRunning) Destructive else Primary,
+                contentColor = Background
             )
         ) {
             Icon(
@@ -588,7 +812,7 @@ private fun ControlButtons(
             Text(
                 text = if (uiState.isRunning) "Остановить прокси" else "Запустить прокси",
                 style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.SemiBold
+                fontWeight = FontWeight.Bold
             )
         }
 
@@ -599,12 +823,12 @@ private fun ControlButtons(
                     modifier = Modifier
                         .weight(1f)
                         .height(52.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceVariant)
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Mauve, contentColor = Cream)
                 ) {
                     Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Подключить", fontWeight = FontWeight.Medium)
+                    Text("Подключить", fontWeight = FontWeight.SemiBold)
                 }
 
                 OutlinedButton(
@@ -612,7 +836,7 @@ private fun ControlButtons(
                     modifier = Modifier
                         .weight(1f)
                         .height(52.dp),
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
                     border = BorderStroke(1.dp, Border)
                 ) {
@@ -632,6 +856,7 @@ private fun LogItem(log: String) {
         log.contains("failed", ignoreCase = true)         -> Warning
         log.contains("WARN", ignoreCase = true)           -> Warning
         log.contains("handshake ok", ignoreCase = true)   -> AccentSoft
+        log.contains("Fake TLS", ignoreCase = true)       -> Primary
         log.contains("Cloudflare", ignoreCase = true)     -> Info
         log.contains("WS connected", ignoreCase = true)   -> Info
         else -> TextSecondary
@@ -654,11 +879,8 @@ private fun LogItem(log: String) {
 }
 
 /**
- * Warns the user when Jevio is NOT exempt from battery optimization. In that
- * state Android (especially MIUI/EMUI/Samsung) can freeze the foreground
- * service in the background, which silently drops the proxy until the app is
- * reopened. The button launches the system dialog to whitelist the app.
- * The card hides itself automatically once the exemption is granted.
+ * Warns the user when Jevio is NOT exempt from battery optimization. The button launches
+ * the system whitelist dialog; the card hides itself once the exemption is granted.
  */
 @Composable
 private fun BatteryOptimizationCard() {
@@ -673,7 +895,6 @@ private fun BatteryOptimizationCard() {
 
     var ignoring by remember { mutableStateOf(isIgnoring()) }
 
-    // Re-check whenever the user comes back to the app (e.g. after the dialog).
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) ignoring = isIgnoring()
@@ -721,7 +942,6 @@ private fun BatteryOptimizationCard() {
                         )
                         context.startActivity(intent)
                     } catch (_: Exception) {
-                        // Fallback to the generic battery-optimization settings list.
                         try {
                             context.startActivity(
                                 Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
