@@ -194,9 +194,6 @@ fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
                     onOpenTelegram = {
                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uiState.proxyLink))
                         context.startActivity(intent)
-                    },
-                    onCopyLink = {
-                        copyToClipboard(context, "TG Proxy", uiState.proxyLink, "Ссылка скопирована")
                     }
                 )
             }
@@ -787,8 +784,7 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
 private fun ControlButtons(
     uiState: ProxyUiState,
     onToggle: () -> Unit,
-    onOpenTelegram: () -> Unit,
-    onCopyLink: () -> Unit
+    onOpenTelegram: () -> Unit
 ) {
     Column(
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -817,33 +813,25 @@ private fun ControlButtons(
         }
 
         if (uiState.isRunning && uiState.proxyLink.isNotEmpty()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(
-                    onClick = onOpenTelegram,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(52.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Mauve, contentColor = Cream)
-                ) {
-                    Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Подключить", fontWeight = FontWeight.SemiBold)
-                }
-
-                OutlinedButton(
-                    onClick = onCopyLink,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(52.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
-                    border = BorderStroke(1.dp, Border)
-                ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Ссылка", color = TextSecondary)
-                }
+            // Single full-width "open in Telegram" action — the primary thing the user wants
+            // after the proxy is up. Copying the raw link lived in a separate button that just
+            // added clutter; the secret/server rows already have their own copy icons.
+            Button(
+                onClick = onOpenTelegram,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Mauve, contentColor = Cream)
+            ) {
+                Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    "Подключить Telegram",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1
+                )
             }
         }
     }
