@@ -16,4 +16,7 @@
     <string name="copy_link">Копировать ссылку</string>
     <string name="link_copied">Ссылка скопирована</string>
     <string name="tile_label">Jevio</string>
+    <string name="battery_warning_title">Прокси может отключаться</string>
+    <string name="battery_warning_text">Система экономии батареи может выгружать Jevio в фоне — тогда Telegram перестаёт работать, пока вы не откроете приложение. Отключите оптимизацию батареи, чтобы прокси работал всегда.</string>
+    <string name="battery_warning_button">Отключить оптимизацию</string>
 </resources>

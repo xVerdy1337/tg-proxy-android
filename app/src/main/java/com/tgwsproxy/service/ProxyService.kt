@@ -9,8 +9,10 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.content.Intent
+import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
+import android.os.PowerManager
 import android.service.quicksettings.TileService
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -62,6 +64,11 @@ class ProxyService : Service() {
     private val binder = ProxyBinder()
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var proxyServer: MtProtoProxyServer? = null
+
+    // Wake locks keep the CPU and Wi-Fi radio alive while the proxy is running,
+    // so the local relay survives screen-off / Doze instead of silently dying.
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     inner class ProxyBinder : Binder() {
         fun getService(): ProxyService = this@ProxyService
@@ -158,6 +165,7 @@ class ProxyService : Service() {
             )
         }
         persistRunning(true)
+        acquireWakeLocks()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
@@ -187,9 +195,53 @@ class ProxyService : Service() {
                 addLog("Ошибка: ${e.message}")
                 _serviceState.update { it.copy(isRunning = false) }
                 persistRunning(false)
+                releaseWakeLocks()
                 stopForeground(STOP_FOREGROUND_REMOVE)
             }
         }
+    }
+
+    /**
+     * Hold a partial CPU wake lock plus a high-performance Wi-Fi lock while the
+     * proxy runs. Without these the system can park the CPU / Wi-Fi radio on
+     * screen-off, which drops the relay until the user reopens the app.
+     */
+    private fun acquireWakeLocks() {
+        try {
+            if (wakeLock == null) {
+                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                wakeLock = pm.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "Jevio:ProxyWakeLock"
+                ).apply { setReferenceCounted(false) }
+            }
+            if (wakeLock?.isHeld == false) wakeLock?.acquire()
+
+            if (wifiLock == null) {
+                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                } else {
+                    @Suppress("DEPRECATION")
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
+                wifiLock = wm.createWifiLock(mode, "Jevio:ProxyWifiLock").apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (wifiLock?.isHeld == false) wifiLock?.acquire()
+        } catch (_: Exception) {
+            // Wake locks are best-effort; never let them crash the service.
+        }
+    }
+
+    private fun releaseWakeLocks() {
+        try {
+            if (wakeLock?.isHeld == true) wakeLock?.release()
+        } catch (_: Exception) {}
+        try {
+            if (wifiLock?.isHeld == true) wifiLock?.release()
+        } catch (_: Exception) {}
     }
 
     private fun stopProxy() {
@@ -208,6 +260,7 @@ class ProxyService : Service() {
             )
         }
         persistRunning(false)
+        releaseWakeLocks()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -309,6 +362,8 @@ class ProxyService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // Safety net: make sure locks are gone even if onDestroy hits before stopProxy.
+        releaseWakeLocks()
         // proxyServer already stopped in stopProxy(); cancel remaining coroutines
         serviceScope.cancel()
     }
