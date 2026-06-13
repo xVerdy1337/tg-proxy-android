@@ -12,6 +12,11 @@ import javax.crypto.spec.SecretKeySpec
  * It keeps a parallel AES-CTR keystream identical to the relay encryptor (same key/iv,
  * same ZERO_64 fast-forward) so it can recover the plaintext lengths from the ciphertext
  * and cut the cipher buffer at packet boundaries.
+ *
+ * Buffering note: the unconsumed cipher/plain bytes are kept in plain [ByteArray]s with a
+ * single trim per `split()` call. The previous implementation used `ArrayList<Byte>` with
+ * `removeAt(0)` per consumed byte, which boxes every byte and is O(n²) on the hot path —
+ * a real CPU/latency cost on active traffic. This version is O(n) amortized.
  */
 class MsgSplitter(relayInit: ByteArray, private val protoInt: Long) {
 
@@ -24,8 +29,9 @@ class MsgSplitter(relayInit: ByteArray, private val protoInt: Long) {
         init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
     }
 
-    private val cipherBuf = ArrayList<Byte>()
-    private val plainBuf = ArrayList<Byte>()
+    // Unconsumed cipher bytes and their decrypted plaintext, kept in lock-step.
+    private var cipherBuf = ByteArray(0)
+    private var plainBuf = ByteArray(0)
     private var disabled = false
 
     init {
@@ -37,9 +43,9 @@ class MsgSplitter(relayInit: ByteArray, private val protoInt: Long) {
         if (chunk.isEmpty()) return emptyList()
         if (disabled) return listOf(chunk)
 
-        for (b in chunk) cipherBuf.add(b)
         val plain = dec.update(chunk)
-        for (b in plain) plainBuf.add(b)
+        cipherBuf = cipherBuf + chunk
+        plainBuf = plainBuf + plain
 
         val parts = ArrayList<ByteArray>()
         var offset = 0
@@ -48,37 +54,29 @@ class MsgSplitter(relayInit: ByteArray, private val protoInt: Long) {
             val packetLen = nextPacketLen(offset, bufLen - offset) ?: break
             if (packetLen <= 0) {
                 // Unknown framing -> stop splitting, flush the rest as one frame.
-                parts.add(sliceCipher(offset, bufLen))
+                parts.add(cipherBuf.copyOfRange(offset, bufLen))
                 offset = bufLen
                 disabled = true
                 break
             }
-            parts.add(sliceCipher(offset, offset + packetLen))
+            parts.add(cipherBuf.copyOfRange(offset, offset + packetLen))
             offset += packetLen
         }
 
         if (offset > 0) {
-            // Drop consumed prefix from both buffers.
-            repeat(offset) {
-                cipherBuf.removeAt(0)
-                plainBuf.removeAt(0)
-            }
+            // Drop consumed prefix from both buffers in a single allocation each.
+            cipherBuf = cipherBuf.copyOfRange(offset, cipherBuf.size)
+            plainBuf = plainBuf.copyOfRange(offset, plainBuf.size)
         }
         return parts
     }
 
     fun flush(): List<ByteArray> {
         if (cipherBuf.isEmpty()) return emptyList()
-        val tail = sliceCipher(0, cipherBuf.size)
-        cipherBuf.clear()
-        plainBuf.clear()
+        val tail = cipherBuf
+        cipherBuf = ByteArray(0)
+        plainBuf = ByteArray(0)
         return listOf(tail)
-    }
-
-    private fun sliceCipher(from: Int, to: Int): ByteArray {
-        val out = ByteArray(to - from)
-        for (i in from until to) out[i - from] = cipherBuf[i]
-        return out
     }
 
     private fun nextPacketLen(offset: Int, avail: Int): Int? {
