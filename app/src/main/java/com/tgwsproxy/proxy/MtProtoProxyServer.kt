@@ -113,6 +113,7 @@ class MtProtoProxyServer(
     fun stop() {
         running = false
         serverScope.cancel()
+        routeCache.clear()
         activeConnections.forEach { try { it.close() } catch (_: Exception) {} }
         activeConnections.clear()
         try { serverSocket?.close() } catch (_: Exception) {}
@@ -130,6 +131,9 @@ class MtProtoProxyServer(
         val n = activeConnections.size
         activeConnections.forEach { try { it.close() } catch (_: Exception) {} }
         activeConnections.clear()
+        // Re-evaluate routes on the new network: an endpoint that worked on Wi-Fi may be
+        // blocked on mobile (or vice-versa), so drop the cache and let the next connect race.
+        routeCache.clear()
         if (n > 0) onLog("Сеть изменилась — переподключаю ($n)")
     }
 
@@ -300,7 +304,27 @@ class MtProtoProxyServer(
 
     private data class WsCandidate(val pinnedIp: String?, val host: String, val kind: String)
 
+    // Remembers the last endpoint that worked, keyed by "dcId/isMedia". On a reconnect we try
+    // it alone first instead of racing ~18 TLS handshakes again — big battery/radio saver,
+    // especially when a network switch forces every session to redial at once. Falls back to
+    // the full race if the cached endpoint no longer answers.
+    private val routeCache = ConcurrentHashMap<String, WsCandidate>()
+
     private suspend fun connectAnyWs(dcId: Int, isMedia: Boolean, label: String): WebSocketBridge? {
+        val cacheKey = "$dcId/$isMedia"
+
+        routeCache[cacheKey]?.let { cached ->
+            val b = WebSocketBridge()
+            val ok = try { b.connect(cached.pinnedIp, cached.host) } catch (_: Exception) { false }
+            if (ok) {
+                lastRoute = cached.kind
+                onLog("[$label] WS reconnected via ${cached.host} (${cached.kind}, cached)")
+                return b
+            }
+            try { b.close() } catch (_: Exception) {}
+            routeCache.remove(cacheKey) // cached endpoint went stale — fall back to full race
+        }
+
         val candidates = ArrayList<WsCandidate>()
 
         val wsTargetIp = wsFrontIps[dcId] ?: wsFrontIps[2]!!
@@ -317,6 +341,7 @@ class MtProtoProxyServer(
 
         val winner = kotlinx.coroutines.CompletableDeferred<WebSocketBridge?>()
         val bridges = java.util.Collections.synchronizedList(ArrayList<WebSocketBridge>())
+        val winningCandidate = java.util.concurrent.atomic.AtomicReference<WsCandidate?>(null)
 
         val jobs = candidates.map { c ->
             serverScope.launch {
@@ -324,6 +349,7 @@ class MtProtoProxyServer(
                 bridges.add(b)
                 val ok = try { b.connect(c.pinnedIp, c.host) } catch (_: Exception) { false }
                 if (ok && !winner.isCompleted && winner.complete(b)) {
+                    winningCandidate.set(c)
                     lastRoute = c.kind
                     onLog("[$label] WS connected via ${c.host} (${c.kind})")
                 } else {
@@ -342,7 +368,11 @@ class MtProtoProxyServer(
         synchronized(bridges) {
             for (b in bridges) if (b !== bridge) try { b.close() } catch (_: Exception) {}
         }
-        if (bridge == null) onLog("[$label] all WS endpoints failed")
+        if (bridge != null) {
+            winningCandidate.get()?.let { routeCache[cacheKey] = it }
+        } else {
+            onLog("[$label] all WS endpoints failed")
+        }
         return bridge
     }
 

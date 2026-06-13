@@ -97,6 +97,11 @@ class ProxyService : Service() {
     private var proxyServer: MtProtoProxyServer? = null
     private var statsJob: Job? = null
 
+    // True while the UI is bound to us. The 1s stats pump is only useful when someone is
+    // actually watching the screen; when the app is closed we poll far less often to avoid
+    // waking the CPU every second 24/7 (battery win on an always-on background proxy).
+    @Volatile private var uiBound = false
+
     // Watches Wi-Fi ↔ mobile transitions so active sessions reconnect on the new network.
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -112,7 +117,19 @@ class ProxyService : Service() {
         fun getService(): ProxyService = this@ProxyService
     }
 
-    override fun onBind(intent: Intent?): IBinder = binder
+    override fun onBind(intent: Intent?): IBinder {
+        uiBound = true
+        return binder
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        uiBound = false
+        return true // allow onRebind when the UI comes back
+    }
+
+    override fun onRebind(intent: Intent?) {
+        uiBound = true
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -352,13 +369,15 @@ class ProxyService : Service() {
         statsJob = serviceScope.launch {
             while (isActive) {
                 val server = proxyServer
-                if (server != null) {
+                if (server != null && uiBound) {
+                    // Only refresh the live counters when the UI is actually on screen.
                     val up = server.bytesUp.get()
                     val down = server.bytesDown.get()
                     val route = server.lastRoute
                     _serviceState.update { it.copy(bytesUp = up, bytesDown = down, route = route) }
                 }
-                delay(1000)
+                // 1s cadence for a smooth live UI, 5s when backgrounded to save battery.
+                delay(if (uiBound) 1000 else 5000)
             }
         }
     }
