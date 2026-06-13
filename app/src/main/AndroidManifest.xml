@@ -5,6 +5,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Keep the CPU/Wi-Fi awake so the relay survives Doze / screen-off. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Ask the OS to exempt Jevio from battery optimization so OEM killers
+         (MIUI/EMUI/Samsung) don't kill the proxy service in the background. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:name=".TgWsProxyApp"
