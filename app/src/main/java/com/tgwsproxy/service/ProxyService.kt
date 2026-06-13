@@ -38,6 +38,7 @@ class ProxyService : Service() {
         private const val CHANNEL_ID = "proxy_channel"
         private const val PREFS = "tgwsproxy_prefs"
         private const val KEY_CF_DOMAIN = "cf_domain"
+        private const val KEY_SECRET = "proxy_secret"
     }
 
     data class ServiceState(
@@ -67,11 +68,51 @@ class ProxyService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         // Restore the saved Cloudflare-proxy domain so the UI reflects it on launch.
-        val saved = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_CF_DOMAIN, "") ?: ""
-        if (saved.isNotEmpty()) {
-            _serviceState.update { it.copy(cfDomain = saved) }
+        val savedDomain = prefs.getString(KEY_CF_DOMAIN, "") ?: ""
+        // Restore (or create) the stable secret so the tg:// link stays the same
+        // across stop/start — the user no longer has to re-add the proxy each time.
+        val secret = getOrCreateSecret()
+        val host = _serviceState.value.host
+        val port = _serviceState.value.port
+        _serviceState.update {
+            it.copy(
+                cfDomain = savedDomain,
+                secret = secret,
+                proxyLink = buildProxyLink(host, port, secret)
+            )
+        }
+    }
+
+    private fun buildProxyLink(host: String, port: Int, secret: String): String =
+        "tg://proxy?server=$host&port=$port&secret=dd$secret"
+
+    /** Returns the persisted secret, generating and saving one on first run. */
+    private fun getOrCreateSecret(): String {
+        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val saved = prefs.getString(KEY_SECRET, "") ?: ""
+        if (saved.isNotEmpty()) return saved
+        val secret = generateSecret()
+        prefs.edit().putString(KEY_SECRET, secret).apply()
+        return secret
+    }
+
+    /**
+     * Rotate the secret on demand. Only allowed while stopped — the new key
+     * needs a proxy restart and the user must re-add the link in Telegram.
+     */
+    fun regenerateSecret() {
+        if (_serviceState.value.isRunning) return
+        val secret = generateSecret()
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_SECRET, secret)
+            .apply()
+        val host = _serviceState.value.host
+        val port = _serviceState.value.port
+        _serviceState.update {
+            it.copy(secret = secret, proxyLink = buildProxyLink(host, port, secret))
         }
     }
 
@@ -96,10 +137,10 @@ class ProxyService : Service() {
     private fun startProxy() {
         if (_serviceState.value.isRunning) return
 
-        val secret = generateSecret()
+        val secret = getOrCreateSecret()
         val host = "127.0.0.1"
         val port = 1443
-        val proxyLink = "tg://proxy?server=$host&port=$port&secret=dd$secret"
+        val proxyLink = buildProxyLink(host, port, secret)
 
         _serviceState.update {
             it.copy(

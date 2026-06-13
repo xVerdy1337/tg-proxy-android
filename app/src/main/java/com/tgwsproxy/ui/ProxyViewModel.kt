@@ -93,6 +93,11 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
         proxyService?.clearLogs()
     }
 
+    /** Rotate the proxy secret (only effective while the proxy is stopped). */
+    fun regenerateSecret() {
+        proxyService?.regenerateSecret()
+    }
+
     fun setCfDomain(domain: String) {
         // Optimistically reflect in the UI even before the service flow emits.
         _uiState.value = _uiState.value.copy(cfDomain = domain)
