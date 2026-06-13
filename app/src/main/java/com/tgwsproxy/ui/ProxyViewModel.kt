@@ -68,7 +68,12 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
                     connectionCount = serviceState.connectionCount,
                     logs = serviceState.logs,
                     proxyLink = serviceState.proxyLink,
-                    cfDomain = serviceState.cfDomain
+                    cfDomain = serviceState.cfDomain,
+                    fakeTlsDomain = serviceState.fakeTlsDomain,
+                    bytesUp = serviceState.bytesUp,
+                    bytesDown = serviceState.bytesDown,
+                    startedAt = serviceState.startedAt,
+                    route = serviceState.route
                 )
             }
         }
@@ -104,6 +109,11 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
         proxyService?.setCfDomain(domain)
     }
 
+    fun setFakeTlsDomain(domain: String) {
+        _uiState.value = _uiState.value.copy(fakeTlsDomain = domain)
+        proxyService?.setFakeTlsDomain(domain)
+    }
+
     override fun onCleared() {
         super.onCleared()
         collectJob?.cancel()
@@ -123,5 +133,10 @@ data class ProxyUiState(
     val connectionCount: Int = 0,
     val logs: List<String> = emptyList(),
     val proxyLink: String = "",
-    val cfDomain: String = ""
+    val cfDomain: String = "",
+    val fakeTlsDomain: String = "",
+    val bytesUp: Long = 0,
+    val bytesDown: Long = 0,
+    val startedAt: Long = 0,
+    val route: String = ""
 )
