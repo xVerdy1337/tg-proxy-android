@@ -17,6 +17,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -63,6 +64,9 @@ fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val listState = rememberLazyListState()
+
+    // Logs are hidden by default — the user opens them only when needed.
+    var logsExpanded by remember { mutableStateOf(false) }
 
     // Smart auto-scroll: only when the user is already at the bottom
     val isAtBottom by remember {
@@ -159,7 +163,13 @@ fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
                 )
             }
 
-            item { ProxyInfoCard(uiState, context) }
+            item {
+                ProxyInfoCard(
+                    uiState = uiState,
+                    context = context,
+                    onRegenerateSecret = { viewModel.regenerateSecret() }
+                )
+            }
 
             item { SettingsCard(uiState, onSaveCfDomain = { viewModel.setCfDomain(it) }) }
 
@@ -167,28 +177,42 @@ fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
                 item {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 4.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { logsExpanded = !logsExpanded }
+                            .padding(top = 4.dp, bottom = 4.dp)
                     ) {
-                        Text(
-                            text = "Логи",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = TextSecondary
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = "${uiState.logs.size}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextSecondary,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(SurfaceVariant)
-                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "Логи",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = TextSecondary
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "${uiState.logs.size}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(SurfaceVariant)
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                        Icon(
+                            imageVector = if (logsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            contentDescription = if (logsExpanded) "Скрыть логи" else "Показать логи",
+                            tint = TextSecondary
                         )
                     }
                 }
 
-                items(uiState.logs, key = null) { log ->
-                    LogItem(log)
+                if (logsExpanded) {
+                    items(uiState.logs, key = null) { log ->
+                        LogItem(log)
+                    }
                 }
             }
 
@@ -304,7 +328,11 @@ private fun RowScope.StatChip(icon: androidx.compose.ui.graphics.vector.ImageVec
 }
 
 @Composable
-private fun ProxyInfoCard(uiState: ProxyUiState, context: Context) {
+private fun ProxyInfoCard(
+    uiState: ProxyUiState,
+    context: Context,
+    onRegenerateSecret: () -> Unit
+) {
     var secretRevealed by remember { mutableStateOf(false) }
 
     Card(
@@ -370,8 +398,29 @@ private fun ProxyInfoCard(uiState: ProxyUiState, context: Context) {
                                 modifier = Modifier.size(18.dp)
                             )
                         }
+                        // Rotate the key — only while stopped (changing it needs a re-add in TG).
+                        if (!uiState.isRunning) {
+                            IconButton(onClick = onRegenerateSecret) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Сменить секрет",
+                                    tint = TextSecondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
                     }
                 }
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = if (uiState.isRunning) {
+                        "Секрет постоянный — ссылку в Telegram повторно добавлять не нужно."
+                    } else {
+                        "Секрет сохраняется между запусками. Нажмите ↻, чтобы сгенерировать новый."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary
+                )
             }
         }
     }
