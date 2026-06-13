@@ -148,6 +148,7 @@ class MtProtoProxyServer(
         val label = clientSocket.inetAddress?.hostAddress ?: "?"
         try {
             clientSocket.tcpNoDelay = true
+            clientSocket.keepAlive = true
             clientSocket.receiveBufferSize = 256 * 1024
             clientSocket.sendBufferSize = 256 * 1024
 
@@ -421,6 +422,7 @@ class MtProtoProxyServer(
         return try {
             val remoteSocket = Socket(targetIp, 443)
             remoteSocket.tcpNoDelay = true
+            remoteSocket.keepAlive = true
             val remoteOutput = remoteSocket.getOutputStream()
             val remoteInput = remoteSocket.getInputStream()
 
