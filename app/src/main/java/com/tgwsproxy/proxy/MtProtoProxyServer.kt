@@ -160,44 +160,12 @@ class MtProtoProxyServer(
                 relayInit
             )
 
-            // Connect WebSocket. A WebSocketBridge can only be used for ONE connection
-            // attempt (its receive channel is closed on failure), so every attempt gets a
-            // fresh instance. tryConnect returns a connected bridge or null.
-            //
-            // 1) Direct: web-front IPs that serve /apiws (SNI = kwsN.web.telegram.org).
-            val domains = MtProtoHandshake.wsDomains(result.dcId, result.isMedia)
-            val wsTargetIp = wsFrontIps[result.dcId] ?: wsFrontIps[2]!!
-            var wsBridge: WebSocketBridge? = null
-
-            for (domain in domains) {
-                onLog("[$label] connecting WS to $domain via $wsTargetIp")
-                val b = WebSocketBridge()
-                if (b.connect(wsTargetIp, domain)) {
-                    wsBridge = b
-                    onLog("[$label] WS connected to $domain")
-                    break
-                }
-            }
-
-            // 2) Cloudflare proxy: if the direct web-front WS failed (most likely the network
-            // blocks Telegram IPs), connect to kwsN.<cf-domain>. That host resolves to
-            // Cloudflare anycast IPs and is bridged to /apiws server-side — same crypto and
-            // framing, just a transport host that survives IP-based blocking (DPI / TSPU).
-            if (wsBridge == null) {
-                onLog("[$label] direct WS failed, trying Cloudflare proxy")
-                val cfDc = if (result.dcId == 203) 2 else result.dcId
-                for (base in cfDomains) {
-                    val cfHost = "kws$cfDc.$base"
-                    onLog("[$label] connecting WS via Cloudflare $cfHost")
-                    val b = WebSocketBridge()
-                    // targetIp = null → resolve through the system DNS to Cloudflare IPs.
-                    if (b.connect(null, cfHost)) {
-                        wsBridge = b
-                        onLog("[$label] WS connected via Cloudflare $cfHost")
-                        break
-                    }
-                }
-            }
+            // Connect WebSocket by RACING every transport candidate concurrently and taking
+            // the first one that opens. On a censored network (TSPU/DPI) the direct
+            // web-front IPs are blocked and just time out, while the Cloudflare-fronted
+            // hosts connect in ~1s; racing means we no longer waste up to 20s on the dead
+            // direct attempts before reaching CF. On a clean network the direct path wins.
+            val wsBridge = connectAnyWs(result.dcId, result.isMedia, label)
 
             if (wsBridge == null) {
                 onLog("[$label] WS connection failed, trying TCP fallback")
@@ -226,6 +194,69 @@ class MtProtoProxyServer(
             val count = connectionCount.decrementAndGet()
             onConnectionChange(count)
         }
+    }
+
+    /**
+     * One transport candidate: a /apiws host plus an optional pinned IP.
+     *  - pinnedIp != null  → direct web-front (DNS is overridden to that Telegram IP).
+     *  - pinnedIp == null  → Cloudflare-fronted host, resolved via the system DNS to
+     *                        Cloudflare anycast IPs (the censorship-resistant path).
+     */
+    private data class WsCandidate(val pinnedIp: String?, val host: String, val kind: String)
+
+    /**
+     * Connect a WebSocket to /apiws by racing all candidates at once and returning the
+     * first that opens; every loser is cancelled and closed. A [WebSocketBridge] is single
+     * use (its receive channel closes on failure), so each candidate gets a fresh instance.
+     */
+    private suspend fun connectAnyWs(dcId: Int, isMedia: Boolean, label: String): WebSocketBridge? {
+        val candidates = ArrayList<WsCandidate>()
+
+        // Direct web-front candidates (pinned to the DC's web-front IP).
+        val wsTargetIp = wsFrontIps[dcId] ?: wsFrontIps[2]!!
+        for (domain in MtProtoHandshake.wsDomains(dcId, isMedia)) {
+            candidates.add(WsCandidate(wsTargetIp, domain, "direct"))
+        }
+
+        // Cloudflare-fronted candidates (system DNS → Cloudflare anycast).
+        val cfDc = if (dcId == 203) 2 else dcId
+        for (base in cfDomains) {
+            candidates.add(WsCandidate(null, "kws$cfDc.$base", "cloudflare"))
+        }
+
+        onLog("[$label] connecting WS: racing ${candidates.size} endpoints (direct + Cloudflare)")
+
+        val winner = kotlinx.coroutines.CompletableDeferred<WebSocketBridge?>()
+        val bridges = java.util.Collections.synchronizedList(ArrayList<WebSocketBridge>())
+
+        val jobs = candidates.map { c ->
+            serverScope.launch {
+                val b = WebSocketBridge()
+                bridges.add(b)
+                val ok = try { b.connect(c.pinnedIp, c.host) } catch (_: Exception) { false }
+                if (ok && !winner.isCompleted && winner.complete(b)) {
+                    onLog("[$label] WS connected via ${c.host} (${c.kind})")
+                } else {
+                    // Either failed, or someone else already won → drop this bridge.
+                    try { b.close() } catch (_: Exception) {}
+                }
+            }
+        }
+
+        // When every attempt has finished without a winner, resolve with null.
+        serverScope.launch {
+            jobs.joinAll()
+            winner.complete(null)
+        }
+
+        val bridge = winner.await()
+        // Stop the losers and free their sockets.
+        jobs.forEach { it.cancel() }
+        synchronized(bridges) {
+            for (b in bridges) if (b !== bridge) try { b.close() } catch (_: Exception) {}
+        }
+        if (bridge == null) onLog("[$label] all WS endpoints failed")
+        return bridge
     }
 
     private suspend fun bridgeData(

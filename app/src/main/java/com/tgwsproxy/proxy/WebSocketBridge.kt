@@ -14,7 +14,7 @@ class WebSocketBridge {
     // Base client with standard TLS validation — Telegram servers have valid certificates.
     // DNS override is applied per-connect so each call can target a different IP.
     private val baseClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
@@ -91,7 +91,7 @@ class WebSocketBridge {
             }
         })
 
-        latch.await(10, TimeUnit.SECONDS)
+        latch.await(5, TimeUnit.SECONDS)
         return connected
     }
 
