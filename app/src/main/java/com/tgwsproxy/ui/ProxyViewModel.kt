@@ -17,8 +17,44 @@ import kotlinx.coroutines.launch
 
 class ProxyViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val _uiState = MutableStateFlow(ProxyUiState())
+    private val _uiState = MutableStateFlow(initialStateFromPrefs())
     val uiState: StateFlow<ProxyUiState> = _uiState.asStateFlow()
+
+    /**
+     * Seed the UI synchronously from persisted prefs so the very first frame already shows
+     * the correct status. Without this, every cold open started with `isLoading = true` and
+     * flashed the full-screen "connecting" spinner for the 1–2s it takes the service to bind
+     * and emit — which looked like the proxy briefly dropping into a connecting state.
+     * The real service state reconciles this within a moment once the binding completes.
+     */
+    private fun initialStateFromPrefs(): ProxyUiState {
+        return try {
+            val prefs = getApplication<Application>()
+                .getSharedPreferences(ProxyService.PREFS, Context.MODE_PRIVATE)
+            val running = prefs.getBoolean(ProxyService.KEY_RUNNING, false)
+            val secret = prefs.getString(ProxyService.KEY_SECRET, "") ?: ""
+            val cfDomain = prefs.getString(ProxyService.KEY_CF_DOMAIN, "") ?: ""
+            val fakeTlsDomain = prefs.getString(ProxyService.KEY_FAKE_TLS_DOMAIN, "") ?: ""
+            val host = ProxyService.DEFAULT_HOST
+            val port = ProxyService.DEFAULT_PORT
+            ProxyUiState(
+                isLoading = false,
+                isRunning = running,
+                host = host,
+                port = port,
+                secret = secret,
+                cfDomain = cfDomain,
+                fakeTlsDomain = fakeTlsDomain,
+                proxyLink = if (secret.isNotEmpty()) {
+                    ProxyService.buildProxyLink(host, port, secret, fakeTlsDomain)
+                } else {
+                    ""
+                }
+            )
+        } catch (_: Exception) {
+            ProxyUiState(isLoading = false)
+        }
+    }
 
     private var proxyService: ProxyService? = null
     private var serviceBound = false

@@ -48,11 +48,28 @@ class ProxyService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "proxy_channel"
         const val PREFS = "tgwsproxy_prefs"
-        private const val KEY_CF_DOMAIN = "cf_domain"
-        private const val KEY_FAKE_TLS_DOMAIN = "fake_tls_domain"
-        private const val KEY_SECRET = "proxy_secret"
+        const val KEY_CF_DOMAIN = "cf_domain"
+        const val KEY_FAKE_TLS_DOMAIN = "fake_tls_domain"
+        const val KEY_SECRET = "proxy_secret"
         // Shared with ProxyTileService so the Quick Settings tile reflects live state.
         const val KEY_RUNNING = "proxy_running"
+
+        const val DEFAULT_HOST = "127.0.0.1"
+        const val DEFAULT_PORT = 1443
+
+        /**
+         * Build the tg:// proxy link. Pure helper so the UI can render the link
+         * immediately from persisted prefs without waiting for the service to bind.
+         */
+        fun buildProxyLink(host: String, port: Int, secret: String, fakeTlsDomain: String = ""): String {
+            val domain = fakeTlsDomain.trim()
+            return if (domain.isNotEmpty()) {
+                val domainHex = domain.toByteArray(Charsets.UTF_8).joinToString("") { "%02x".format(it) }
+                "tg://proxy?server=$host&port=$port&secret=ee$secret$domainHex"
+            } else {
+                "tg://proxy?server=$host&port=$port&secret=dd$secret"
+            }
+        }
     }
 
     data class ServiceState(
@@ -124,15 +141,8 @@ class ProxyService : Service() {
      * (secret + hex(domain)) so Telegram wraps the stream in TLS-to-that-domain; otherwise
      * we use the `dd` (secure/padded) secret on the raw path.
      */
-    private fun buildProxyLink(host: String, port: Int, secret: String, fakeTlsDomain: String = ""): String {
-        val domain = fakeTlsDomain.trim()
-        return if (domain.isNotEmpty()) {
-            val domainHex = domain.toByteArray(Charsets.UTF_8).joinToString("") { "%02x".format(it) }
-            "tg://proxy?server=$host&port=$port&secret=ee$secret$domainHex"
-        } else {
-            "tg://proxy?server=$host&port=$port&secret=dd$secret"
-        }
-    }
+    private fun buildProxyLink(host: String, port: Int, secret: String, fakeTlsDomain: String = ""): String =
+        Companion.buildProxyLink(host, port, secret, fakeTlsDomain)
 
     /** Returns the persisted secret, generating and saving one on first run. */
     private fun getOrCreateSecret(): String {
