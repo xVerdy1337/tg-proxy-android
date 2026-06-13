@@ -8,4 +8,5 @@
     <color name="text_secondary">#94A3B8</color>
     <color name="surface">#1E293B</color>
     <color name="border">#334155</color>
+    <color name="icon_background">#000000</color>
 </resources>
