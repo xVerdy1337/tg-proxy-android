@@ -24,18 +24,30 @@ class WebSocketBridge {
     private var isConnected = false
     private var isClosed = false
 
-    fun connect(targetIp: String, domain: String, path: String = "/apiws"): Boolean {
+    /**
+     * Connect the WebSocket to Telegram's /apiws endpoint.
+     *
+     * @param targetIp When non-null, the [domain] is pinned to this exact IP via a DNS
+     *   override (used for the direct web-front connection where we hardcode the DC IP).
+     *   When null, the domain is resolved through the system resolver — this is what the
+     *   Cloudflare-proxy fallback needs, since the CF domains must resolve to Cloudflare's
+     *   own anycast IPs (which censors can't easily block) rather than a raw Telegram IP.
+     */
+    fun connect(targetIp: String?, domain: String, path: String = "/apiws"): Boolean {
         if (isConnected) return true
 
-        // Use domain in URL → correct TLS SNI (*.web.telegram.org)
-        // DNS override routes that domain to the specific DC IP without a real DNS lookup.
-        val client = baseClient.newBuilder()
-            .dns(object : okhttp3.Dns {
+        // Use domain in URL → correct TLS SNI. With a pinned targetIp we override DNS so the
+        // domain routes to the specific DC IP without a real lookup; otherwise fall back to
+        // the system resolver (Cloudflare-fronted domains).
+        val builder = baseClient.newBuilder()
+        if (targetIp != null) {
+            builder.dns(object : okhttp3.Dns {
                 override fun lookup(hostname: String): List<java.net.InetAddress> {
                     return listOf(java.net.InetAddress.getByName(targetIp))
                 }
             })
-            .build()
+        }
+        val client = builder.build()
 
         val request = Request.Builder()
             .url("wss://$domain$path")

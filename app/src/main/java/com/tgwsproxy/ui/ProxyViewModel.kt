@@ -67,7 +67,8 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
                     secret = serviceState.secret,
                     connectionCount = serviceState.connectionCount,
                     logs = serviceState.logs,
-                    proxyLink = serviceState.proxyLink
+                    proxyLink = serviceState.proxyLink,
+                    cfDomain = serviceState.cfDomain
                 )
             }
         }
@@ -92,6 +93,12 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
         proxyService?.clearLogs()
     }
 
+    fun setCfDomain(domain: String) {
+        // Optimistically reflect in the UI even before the service flow emits.
+        _uiState.value = _uiState.value.copy(cfDomain = domain)
+        proxyService?.setCfDomain(domain)
+    }
+
     override fun onCleared() {
         super.onCleared()
         collectJob?.cancel()
@@ -110,5 +117,6 @@ data class ProxyUiState(
     val secret: String = "",
     val connectionCount: Int = 0,
     val logs: List<String> = emptyList(),
-    val proxyLink: String = ""
+    val proxyLink: String = "",
+    val cfDomain: String = ""
 )

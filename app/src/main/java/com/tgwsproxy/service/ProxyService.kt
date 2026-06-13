@@ -36,6 +36,8 @@ class ProxyService : Service() {
         const val ACTION_STOP = "com.tgwsproxy.action.STOP"
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "proxy_channel"
+        private const val PREFS = "tgwsproxy_prefs"
+        private const val KEY_CF_DOMAIN = "cf_domain"
     }
 
     data class ServiceState(
@@ -45,7 +47,8 @@ class ProxyService : Service() {
         val secret: String = "",
         val connectionCount: Int = 0,
         val logs: List<String> = emptyList(),
-        val proxyLink: String = ""
+        val proxyLink: String = "",
+        val cfDomain: String = ""
     )
 
     private val _serviceState = MutableStateFlow(ServiceState())
@@ -64,6 +67,22 @@ class ProxyService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        // Restore the saved Cloudflare-proxy domain so the UI reflects it on launch.
+        val saved = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_CF_DOMAIN, "") ?: ""
+        if (saved.isNotEmpty()) {
+            _serviceState.update { it.copy(cfDomain = saved) }
+        }
+    }
+
+    /** Persist the user's Cloudflare-proxy domain. Takes effect on the next start. */
+    fun setCfDomain(domain: String) {
+        val cleaned = domain.trim()
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_CF_DOMAIN, cleaned)
+            .apply()
+        _serviceState.update { it.copy(cfDomain = cleaned) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -114,7 +133,8 @@ class ProxyService : Service() {
                     onConnectionChange = { count ->
                         _serviceState.update { it.copy(connectionCount = count) }
                         updateNotification()
-                    }
+                    },
+                    cfDomain = _serviceState.value.cfDomain
                 )
                 proxyServer?.start()
             } catch (e: Exception) {

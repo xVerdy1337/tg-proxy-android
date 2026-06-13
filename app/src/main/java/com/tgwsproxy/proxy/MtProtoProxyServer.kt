@@ -13,7 +13,10 @@ class MtProtoProxyServer(
     private val port: Int,
     private val secret: String,
     private val onLog: (String) -> Unit,
-    private val onConnectionChange: (Int) -> Unit
+    private val onConnectionChange: (Int) -> Unit,
+    // Optional user-supplied Cloudflare-proxy base domain (e.g. "mydomain.com").
+    // When set it is tried FIRST in the CF fallback, before the bundled defaults.
+    private val cfDomain: String = ""
 ) {
     private var serverSocket: ServerSocket? = null
     private var running = false
@@ -42,6 +45,29 @@ class MtProtoProxyServer(
         5 to "149.154.170.100",
         203 to "149.154.167.99"
     )
+
+    // Cloudflare-proxy fallback domains. Each is fronted by Cloudflare: kwsN.<domain>
+    // resolves to Cloudflare anycast IPs (NOT Telegram IPs), and Cloudflare proxies the
+    // /apiws WebSocket through to Telegram. This is what makes the proxy survive networks
+    // that block Telegram's IP ranges directly (DPI / TSPU) — both the direct WS and the
+    // TCP fallback target Telegram IPs and die there; only the CF path stays reachable.
+    // Source/idea: Flowseal/tg-ws-proxy + Nekogram/WSProxy.
+    private val defaultCfDomains = listOf(
+        "noskomnadzor.co.uk",
+        "kartoshka.co.uk",
+        "cakeisalie.co.uk",
+        "lovetrue.co.uk",
+        "sorokdva.co.uk",
+        "havegreatday.co.uk",
+        "pomogite.co.uk",
+        "pclead.co.uk",
+        "offshor.co.uk"
+    )
+
+    private val cfDomains: List<String> by lazy {
+        val user = cfDomain.trim()
+        if (user.isNotEmpty()) listOf(user) + defaultCfDomains else defaultCfDomains
+    }
 
     fun start() {
         running = true
@@ -134,23 +160,46 @@ class MtProtoProxyServer(
                 relayInit
             )
 
-            // Connect WebSocket — target the web-front IPs that serve /apiws (NOT the raw
-            // MTProto core IPs), with SNI = the kwsN.web.telegram.org domain.
+            // Connect WebSocket. A WebSocketBridge can only be used for ONE connection
+            // attempt (its receive channel is closed on failure), so every attempt gets a
+            // fresh instance. tryConnect returns a connected bridge or null.
+            //
+            // 1) Direct: web-front IPs that serve /apiws (SNI = kwsN.web.telegram.org).
             val domains = MtProtoHandshake.wsDomains(result.dcId, result.isMedia)
             val wsTargetIp = wsFrontIps[result.dcId] ?: wsFrontIps[2]!!
-            val wsBridge = WebSocketBridge()
-            var connected = false
+            var wsBridge: WebSocketBridge? = null
 
             for (domain in domains) {
                 onLog("[$label] connecting WS to $domain via $wsTargetIp")
-                if (wsBridge.connect(wsTargetIp, domain)) {
-                    connected = true
+                val b = WebSocketBridge()
+                if (b.connect(wsTargetIp, domain)) {
+                    wsBridge = b
                     onLog("[$label] WS connected to $domain")
                     break
                 }
             }
 
-            if (!connected) {
+            // 2) Cloudflare proxy: if the direct web-front WS failed (most likely the network
+            // blocks Telegram IPs), connect to kwsN.<cf-domain>. That host resolves to
+            // Cloudflare anycast IPs and is bridged to /apiws server-side — same crypto and
+            // framing, just a transport host that survives IP-based blocking (DPI / TSPU).
+            if (wsBridge == null) {
+                onLog("[$label] direct WS failed, trying Cloudflare proxy")
+                val cfDc = if (result.dcId == 203) 2 else result.dcId
+                for (base in cfDomains) {
+                    val cfHost = "kws$cfDc.$base"
+                    onLog("[$label] connecting WS via Cloudflare $cfHost")
+                    val b = WebSocketBridge()
+                    // targetIp = null → resolve through the system DNS to Cloudflare IPs.
+                    if (b.connect(null, cfHost)) {
+                        wsBridge = b
+                        onLog("[$label] WS connected via Cloudflare $cfHost")
+                        break
+                    }
+                }
+            }
+
+            if (wsBridge == null) {
                 onLog("[$label] WS connection failed, trying TCP fallback")
                 // TCP fallback to the raw MTProto core IP.
                 val fallbackIp = dcDefaultIps[result.dcId] ?: dcDefaultIps[2]!!
@@ -161,11 +210,13 @@ class MtProtoProxyServer(
                 return
             }
 
+            val bridge = wsBridge
+
             // Hand Telegram the relay obfuscation init as the very first WS frame.
-            wsBridge.send(relayInit)
+            bridge.send(relayInit)
 
             // Bridge data with full re-encryption + per-packet WS framing.
-            bridgeData(clientSocket, input, output, wsBridge, cryptoCtx, relayInit, protoInt, label, result.dcId, result.isMedia)
+            bridgeData(clientSocket, input, output, bridge, cryptoCtx, relayInit, protoInt, label, result.dcId, result.isMedia)
 
         } catch (e: Exception) {
             onLog("[$label] error: ${e.message}")

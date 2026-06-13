@@ -14,3 +14,9 @@ val TextSecondary = Color(0xFF94A3B8)
 val Border = Color(0xFF334155)
 val Destructive = Color(0xFFDC2626)
 val ErrorContainer = Color(0xFF450A0A)
+
+// Accents used across the redesigned UI
+val AccentSoft = Color(0xFF10B981)
+val Warning = Color(0xFFF59E0B)
+val Info = Color(0xFF38BDF8)
+val LogSurface = Color(0xFF0A1020)
