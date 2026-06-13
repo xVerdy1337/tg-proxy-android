@@ -308,10 +308,10 @@ class ProxyService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "TG WS Proxy",
+                "Jevio Unblocker",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Уведомление о работе прокси"
+                description = "Статус работы прокси Jevio Unblocker"
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
@@ -338,19 +338,23 @@ class ProxyService : Service() {
         )
 
         val count = _serviceState.value.connectionCount
-        val contentText = if (count > 0) {
-            "Активных подключений: $count"
+        val statusLine = if (count > 0) {
+            getString(R.string.proxy_notification_connections, count)
         } else {
             getString(R.string.proxy_notification_text)
         }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.proxy_notification_title))
-            .setContentText(contentText)
-            .setSmallIcon(android.R.drawable.ic_menu_share)
+            .setContentText(statusLine)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(statusLine))
+            .setSmallIcon(R.drawable.ic_tile_shield)
+            .setColor(0xFF22C55E.toInt())
+            .setColorized(true)
             .setContentIntent(pendingIntent)
-            .addAction(0, getString(R.string.stop_proxy), stopPendingIntent)
+            .addAction(0, getString(R.string.notification_disable), stopPendingIntent)
             .setOngoing(true)
+            .setShowWhen(false)
             .build()
     }
 
