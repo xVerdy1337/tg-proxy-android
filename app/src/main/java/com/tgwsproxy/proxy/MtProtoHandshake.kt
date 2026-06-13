@@ -135,31 +135,58 @@ object MtProtoHandshake {
         secret: ByteArray,
         relayInit: ByteArray
     ): CryptoContext {
-        // Client decrypt: key = SHA256(client_prekey + secret), iv from handshake
+        // --- Client side ---
+        // Client decrypt (data FROM client): key = SHA256(client_prekey + secret), iv from handshake
         val cltDecPrekey = clientDecPrekeyIv.copyOfRange(0, MtProtoConstants.PREKEY_LEN)
         val cltDecIv = clientDecPrekeyIv.copyOfRange(MtProtoConstants.PREKEY_LEN, MtProtoConstants.PREKEY_LEN + MtProtoConstants.IV_LEN)
         val cltDecKey = sha256(cltDecPrekey + secret)
 
-        // Client encrypt: key = SHA256(relay_prekey + secret), iv from relay init
-        val cltEncPrekey = relayInit.copyOfRange(MtProtoConstants.SKIP_LEN, MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN)
-        val cltEncIv = relayInit.copyOfRange(
-            MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN,
-            MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN + MtProtoConstants.IV_LEN
-        )
-        val cltEncKey = sha256(cltEncPrekey + secret)
+        // Client encrypt (data TO client): derived from the REVERSED client prekey+iv.
+        // key = SHA256(reversed[:32] + secret), iv = reversed[32:48]. (NOT from relayInit!)
+        val cltEncPrekeyIv = clientDecPrekeyIv.reversedArray()
+        val cltEncKey = sha256(cltEncPrekeyIv.copyOfRange(0, MtProtoConstants.PREKEY_LEN) + secret)
+        val cltEncIv = cltEncPrekeyIv.copyOfRange(MtProtoConstants.PREKEY_LEN, MtProtoConstants.PREKEY_LEN + MtProtoConstants.IV_LEN)
 
         val cltDecryptor = Cipher.getInstance("AES/CTR/NoPadding").apply {
             init(Cipher.ENCRYPT_MODE, SecretKeySpec(cltDecKey, "AES"), IvParameterSpec(cltDecIv))
         }
+        // Client's first 64 bytes were the obfuscation init already consumed -> skip keystream.
         cltDecryptor.update(MtProtoConstants.ZERO_64)
 
         val cltEncryptor = Cipher.getInstance("AES/CTR/NoPadding").apply {
             init(Cipher.ENCRYPT_MODE, SecretKeySpec(cltEncKey, "AES"), IvParameterSpec(cltEncIv))
         }
-        cltEncryptor.update(MtProtoConstants.ZERO_64)
+        // NOTE: client encryptor is NOT fast-forwarded (no init prefix is sent back to client).
 
-        // Telegram side needs no extra crypto (WebSocket is already over TLS)
-        return CryptoContext(cltDecryptor, cltEncryptor)
+        // --- Telegram (relay) side ---
+        // The /apiws transport speaks obfuscated2 too. We obfuscate with the relayInit keys
+        // (raw keys, NO secret hash). relayInit itself is sent as the first WS frame.
+        // Encrypt TO telegram: key = relayInit[8:40], iv = relayInit[40:56].
+        val tgEncKey = relayInit.copyOfRange(MtProtoConstants.SKIP_LEN, MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN)
+        val tgEncIv = relayInit.copyOfRange(
+            MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN,
+            MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN + MtProtoConstants.IV_LEN
+        )
+        // Decrypt FROM telegram: reversed relayInit prekey+iv.
+        val tgDecPrekeyIv = relayInit.copyOfRange(
+            MtProtoConstants.SKIP_LEN,
+            MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN + MtProtoConstants.IV_LEN
+        ).reversedArray()
+        val tgDecKey = tgDecPrekeyIv.copyOfRange(0, MtProtoConstants.KEY_LEN)
+        val tgDecIv = tgDecPrekeyIv.copyOfRange(MtProtoConstants.KEY_LEN, MtProtoConstants.KEY_LEN + MtProtoConstants.IV_LEN)
+
+        val tgEncryptor = Cipher.getInstance("AES/CTR/NoPadding").apply {
+            init(Cipher.ENCRYPT_MODE, SecretKeySpec(tgEncKey, "AES"), IvParameterSpec(tgEncIv))
+        }
+        // relayInit's own 64 bytes are sent raw -> skip the keystream for them.
+        tgEncryptor.update(MtProtoConstants.ZERO_64)
+
+        val tgDecryptor = Cipher.getInstance("AES/CTR/NoPadding").apply {
+            init(Cipher.ENCRYPT_MODE, SecretKeySpec(tgDecKey, "AES"), IvParameterSpec(tgDecIv))
+        }
+        // tg decryptor is NOT fast-forwarded (telegram sends no init prefix back).
+
+        return CryptoContext(cltDecryptor, cltEncryptor, tgEncryptor, tgDecryptor)
     }
 
     fun wsDomains(dc: Int, isMedia: Boolean): List<String> {
@@ -183,6 +210,8 @@ object MtProtoHandshake {
 }
 
 data class CryptoContext(
-    val cltDecryptor: Cipher,  // decrypt from client
-    val cltEncryptor: Cipher   // encrypt to client
+    val cltDecryptor: Cipher,  // decrypt data coming FROM the client
+    val cltEncryptor: Cipher,  // encrypt data going TO the client
+    val tgEncryptor: Cipher,   // encrypt data going TO telegram (over WS)
+    val tgDecryptor: Cipher    // decrypt data coming FROM telegram (over WS)
 )

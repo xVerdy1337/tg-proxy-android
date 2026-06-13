@@ -39,6 +39,9 @@ class WebSocketBridge {
 
         val request = Request.Builder()
             .url("wss://$domain$path")
+            // Telegram's /apiws endpoint requires the "binary" WebSocket subprotocol.
+            .addHeader("Sec-WebSocket-Protocol", "binary")
+            .addHeader("Origin", "https://$domain")
             .build()
 
         val latch = java.util.concurrent.CountDownLatch(1)

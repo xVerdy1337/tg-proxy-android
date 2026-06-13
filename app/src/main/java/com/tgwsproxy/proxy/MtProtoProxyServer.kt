@@ -22,7 +22,7 @@ class MtProtoProxyServer(
     private val serverScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val secretBytes = secret.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
-    // Default DC IPs (fallback)
+    // Raw MTProto core IPs — used ONLY for the TCP fallback (port 443/raw obfuscated2).
     private val dcDefaultIps = mapOf(
         1 to "149.154.175.50",
         2 to "149.154.167.51",
@@ -30,6 +30,17 @@ class MtProtoProxyServer(
         4 to "149.154.167.91",
         5 to "149.154.171.5",
         203 to "91.105.192.100"
+    )
+
+    // Web-front IPs that actually serve the kwsN.web.telegram.org /apiws WebSocket endpoint.
+    // The raw MTProto IPs above do NOT serve /apiws, so the WS connect must target these.
+    private val wsFrontIps = mapOf(
+        1 to "149.154.174.100",
+        2 to "149.154.167.99",
+        3 to "149.154.174.100",
+        4 to "149.154.167.99",
+        5 to "149.154.170.100",
+        203 to "149.154.167.99"
     )
 
     fun start() {
@@ -112,10 +123,10 @@ class MtProtoProxyServer(
             val dcIdx = if (result.isMedia) -result.dcId else result.dcId
             onLog("[$label] handshake ok: DC${result.dcId}${if (result.isMedia) " media" else ""} proto=0x${protoInt.toString(16)}")
 
-            // Generate relay init and crypto context
+            // Generate relay init and crypto context.
+            // NOTE: relayInit is the obfuscation header for the TELEGRAM side only — it must
+            // be sent to Telegram (first WS frame / first TCP bytes), NEVER back to the client.
             val relayInit = MtProtoHandshake.generateRelayInit(result.protoTag, dcIdx)
-            output.write(relayInit)
-            output.flush()
 
             val cryptoCtx = MtProtoHandshake.buildCryptoContext(
                 result.clientDecPrekeyIv,
@@ -123,15 +134,16 @@ class MtProtoProxyServer(
                 relayInit
             )
 
-            // Connect WebSocket
+            // Connect WebSocket — target the web-front IPs that serve /apiws (NOT the raw
+            // MTProto core IPs), with SNI = the kwsN.web.telegram.org domain.
             val domains = MtProtoHandshake.wsDomains(result.dcId, result.isMedia)
-            val targetIp = dcDefaultIps[result.dcId] ?: dcDefaultIps[2]!!
+            val wsTargetIp = wsFrontIps[result.dcId] ?: wsFrontIps[2]!!
             val wsBridge = WebSocketBridge()
             var connected = false
 
             for (domain in domains) {
-                onLog("[$label] connecting WS to $domain via $targetIp")
-                if (wsBridge.connect(targetIp, domain)) {
+                onLog("[$label] connecting WS to $domain via $wsTargetIp")
+                if (wsBridge.connect(wsTargetIp, domain)) {
                     connected = true
                     onLog("[$label] WS connected to $domain")
                     break
@@ -140,16 +152,20 @@ class MtProtoProxyServer(
 
             if (!connected) {
                 onLog("[$label] WS connection failed, trying TCP fallback")
-                // TCP fallback
-                val fallbackOk = tcpFallback(clientSocket, input, output, cryptoCtx, targetIp)
+                // TCP fallback to the raw MTProto core IP.
+                val fallbackIp = dcDefaultIps[result.dcId] ?: dcDefaultIps[2]!!
+                val fallbackOk = tcpFallback(clientSocket, input, output, cryptoCtx, relayInit, fallbackIp)
                 if (!fallbackOk) {
                     onLog("[$label] TCP fallback failed")
                 }
                 return
             }
 
-            // Bridge data
-            bridgeData(clientSocket, input, output, wsBridge, cryptoCtx, label, result.dcId, result.isMedia)
+            // Hand Telegram the relay obfuscation init as the very first WS frame.
+            wsBridge.send(relayInit)
+
+            // Bridge data with full re-encryption + per-packet WS framing.
+            bridgeData(clientSocket, input, output, wsBridge, cryptoCtx, relayInit, protoInt, label, result.dcId, result.isMedia)
 
         } catch (e: Exception) {
             onLog("[$label] error: ${e.message}")
@@ -167,29 +183,51 @@ class MtProtoProxyServer(
         clientOutput: java.io.OutputStream,
         wsBridge: WebSocketBridge,
         ctx: CryptoContext,
+        relayInit: ByteArray,
+        protoInt: Long,
         label: String,
         dc: Int,
         isMedia: Boolean
     ) {
+        val splitter = try { MsgSplitter(relayInit, protoInt) } catch (_: Exception) { null }
+
+        // client (TCP) -> telegram (WS): decrypt client obfuscation, re-encrypt with relay
+        // obfuscation, split into individual MTProto packets, one per WS frame.
         val clientToWs = serverScope.async {
             try {
                 val buffer = ByteArray(65536)
                 while (running && clientSocket.isConnected && !clientSocket.isClosed) {
                     val read = clientInput.read(buffer)
-                    if (read <= 0) break
+                    if (read <= 0) {
+                        splitter?.flush()?.forEach { wsBridge.send(it) }
+                        break
+                    }
                     val chunk = buffer.copyOfRange(0, read)
                     val plain = ctx.cltDecryptor.update(chunk)
-                    if (!wsBridge.send(plain)) break
+                    val reenc = ctx.tgEncryptor.update(plain)
+                    if (splitter != null) {
+                        val parts = splitter.split(reenc)
+                        var ok = true
+                        for (p in parts) {
+                            if (!wsBridge.send(p)) { ok = false; break }
+                        }
+                        if (!ok) break
+                    } else {
+                        if (!wsBridge.send(reenc)) break
+                    }
                 }
             } catch (_: Exception) {
             }
         }
 
+        // telegram (WS) -> client (TCP): decrypt relay obfuscation, re-encrypt with client
+        // obfuscation.
         val wsToClient = serverScope.async {
             try {
                 while (running && clientSocket.isConnected && !clientSocket.isClosed) {
                     val data = wsBridge.receive() ?: break
-                    val encrypted = ctx.cltEncryptor.update(data)
+                    val plain = ctx.tgDecryptor.update(data)
+                    val encrypted = ctx.cltEncryptor.update(plain)
                     clientOutput.write(encrypted)
                     clientOutput.flush()
                 }
@@ -211,6 +249,7 @@ class MtProtoProxyServer(
         clientInput: java.io.InputStream,
         clientOutput: java.io.OutputStream,
         ctx: CryptoContext,
+        relayInit: ByteArray,
         targetIp: String
     ): Boolean {
         return try {
@@ -218,6 +257,10 @@ class MtProtoProxyServer(
             remoteSocket.tcpNoDelay = true
             val remoteOutput = remoteSocket.getOutputStream()
             val remoteInput = remoteSocket.getInputStream()
+
+            // Raw obfuscated2 transport also needs the relay init prefix first.
+            remoteOutput.write(relayInit)
+            remoteOutput.flush()
 
             val clientToRemote = serverScope.async {
                 try {
@@ -227,7 +270,8 @@ class MtProtoProxyServer(
                         if (read <= 0) break
                         val chunk = buffer.copyOfRange(0, read)
                         val plain = ctx.cltDecryptor.update(chunk)
-                        remoteOutput.write(plain)
+                        val reenc = ctx.tgEncryptor.update(plain)
+                        remoteOutput.write(reenc)
                         remoteOutput.flush()
                     }
                 } catch (_: Exception) {}
@@ -240,7 +284,8 @@ class MtProtoProxyServer(
                         val read = remoteInput.read(buffer)
                         if (read <= 0) break
                         val chunk = buffer.copyOfRange(0, read)
-                        val encrypted = ctx.cltEncryptor.update(chunk)
+                        val plain = ctx.tgDecryptor.update(chunk)
+                        val encrypted = ctx.cltEncryptor.update(plain)
                         clientOutput.write(encrypted)
                         clientOutput.flush()
                     }
