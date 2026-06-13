@@ -5,11 +5,13 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ComponentName
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.content.Intent
 import android.os.Binder
 import android.os.Build
+import android.service.quicksettings.TileService
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.tgwsproxy.MainActivity
@@ -36,9 +38,11 @@ class ProxyService : Service() {
         const val ACTION_STOP = "com.tgwsproxy.action.STOP"
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "proxy_channel"
-        private const val PREFS = "tgwsproxy_prefs"
+        const val PREFS = "tgwsproxy_prefs"
         private const val KEY_CF_DOMAIN = "cf_domain"
         private const val KEY_SECRET = "proxy_secret"
+        // Shared with ProxyTileService so the Quick Settings tile reflects live state.
+        const val KEY_RUNNING = "proxy_running"
     }
 
     data class ServiceState(
@@ -153,6 +157,7 @@ class ProxyService : Service() {
                 logs = listOf("Прокси запускается...")
             )
         }
+        persistRunning(true)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
@@ -181,6 +186,7 @@ class ProxyService : Service() {
             } catch (e: Exception) {
                 addLog("Ошибка: ${e.message}")
                 _serviceState.update { it.copy(isRunning = false) }
+                persistRunning(false)
                 stopForeground(STOP_FOREGROUND_REMOVE)
             }
         }
@@ -201,8 +207,28 @@ class ProxyService : Service() {
                 connectionCount = 0
             )
         }
+        persistRunning(false)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    /**
+     * Persist the running flag and nudge the Quick Settings tile to refresh, so the
+     * tile in the notification shade stays in sync even while the app is closed.
+     */
+    private fun persistRunning(running: Boolean) {
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_RUNNING, running)
+            .apply()
+        try {
+            TileService.requestListeningState(
+                this,
+                ComponentName(this, ProxyTileService::class.java)
+            )
+        } catch (_: Exception) {
+            // Tile may be unavailable on this device; ignore.
+        }
     }
 
     fun clearLogs() {
@@ -247,11 +273,30 @@ class ProxyService : Service() {
             PendingIntent.FLAG_IMMUTABLE
         )
 
+        // Tapping "Остановить прокси" in the shade stops the proxy without opening the app.
+        val stopIntent = Intent(this, ProxyService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this,
+            1,
+            stopIntent,
+            PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val count = _serviceState.value.connectionCount
+        val contentText = if (count > 0) {
+            "Активных подключений: $count"
+        } else {
+            getString(R.string.proxy_notification_text)
+        }
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.proxy_notification_title))
-            .setContentText(getString(R.string.proxy_notification_text))
+            .setContentText(contentText)
             .setSmallIcon(android.R.drawable.ic_menu_share)
             .setContentIntent(pendingIntent)
+            .addAction(0, getString(R.string.stop_proxy), stopPendingIntent)
             .setOngoing(true)
             .build()
     }
