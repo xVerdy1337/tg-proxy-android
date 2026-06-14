@@ -41,6 +41,17 @@
             android:foregroundServiceType="specialUse" />
 
         <service
+            android:name=".vpn.DesyncVpnService"
+            android:enabled="true"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="specialUse">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+
+        <service
             android:name=".service.ProxyTileService"
             android:exported="true"
             android:icon="@drawable/ic_tile_shield"
