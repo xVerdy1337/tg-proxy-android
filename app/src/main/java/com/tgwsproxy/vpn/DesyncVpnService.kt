@@ -146,6 +146,20 @@ class DesyncVpnService : VpnService(), Tunnel {
             "com.instagram.android",
         )
 
+        // Apps that DETECT the desync/VPN and block login — keep them off the bypass entirely
+        // (only relevant in all-apps mode; in per-app mode they're not routed anyway).
+        val EXCLUDED_APPS = listOf(
+            "ru.sberbankmobile",            // СберБанк Онлайн
+            "com.idamob.tinkoff.android",  // Т-Банк (Тинькофф)
+            "ru.rostel",                   // Госуслуги
+            "ru.ozon.app.android",         // Ozon
+            "com.wildberries.ru",          // Wildberries
+            "ru.tander.magnit",            // Магнит
+            "ru.pyaterochka.app.browser",  // Пятёрочка
+            "ru.pyaterochka.app",          // Пятёрочка (старый пакет)
+            "ru.perekrestok.app",          // Перекрёсток
+        )
+
         private val _state = MutableStateFlow(VpnState())
         val state: StateFlow<VpnState> = _state.asStateFlow()
     }
@@ -268,7 +282,13 @@ class DesyncVpnService : VpnService(), Tunnel {
             .addDnsServer("1.1.1.1")
 
         if (allApps) {
+            // Our own app must bypass the TUN (byedpi's upstream socket reaches the net directly).
             try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
+            // Banking / gov / marketplace apps detect the desync and block login — keep them OFF
+            // the bypass so they keep working normally.
+            for (pkg in EXCLUDED_APPS) {
+                try { builder.addDisallowedApplication(pkg) } catch (_: Exception) { /* not installed */ }
+            }
         } else {
             var added = 0
             for (pkg in TARGET_APPS) {
