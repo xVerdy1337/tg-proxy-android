@@ -62,6 +62,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import com.tgwsproxy.R
 import com.tgwsproxy.ui.theme.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.graphics.vector.ImageVector
 import java.util.Locale
 
 private fun copyToClipboard(context: Context, label: String, text: String, toast: String) {
@@ -111,6 +115,14 @@ fun MainScreen(
     var logsExpanded by remember { mutableStateOf(false) }
     var selectedTab by remember { mutableStateOf(0) }
     var advancedTgOpen by remember { mutableStateOf(false) }
+
+    var showOnboarding by remember { mutableStateOf(shouldShowOnboarding(context)) }
+    if (showOnboarding) {
+        OnboardingDialog(onDismiss = {
+            markOnboardingShown(context)
+            showOnboarding = false
+        })
+    }
 
     val isAtBottom by remember {
         derivedStateOf {
@@ -171,6 +183,8 @@ fun MainScreen(
     ) { padding ->
 
       Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+
+        UpdateBanner(context = context)
 
         TabRow(
             selectedTabIndex = selectedTab,
@@ -1115,5 +1129,153 @@ private fun TgAdvancedHeader(expanded: Boolean, onToggle: () -> Unit) {
             if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
             contentDescription = null, tint = TextSecondary, modifier = Modifier.size(22.dp)
         )
+    }
+}
+
+@Composable
+private fun UpdateBanner(context: Context) {
+    var updateUrl by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        updateUrl = withContext(Dispatchers.IO) { checkForUpdate(context) }
+    }
+    val url = updateUrl ?: return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Accent.copy(alpha = 0.15f))
+            .border(1.dp, Accent.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+            .clickable {
+                runCatching {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                }
+            }
+            .padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Default.Refresh, contentDescription = null, tint = Accent, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Доступна новая версия", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Нажмите, чтобы скачать обновление",
+                color = TextSecondary, style = MaterialTheme.typography.labelSmall
+            )
+        }
+        Icon(Icons.Default.OpenInNew, contentDescription = null, tint = Accent, modifier = Modifier.size(20.dp))
+    }
+}
+
+private fun currentVersionName(context: Context): String {
+    return try {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0"
+    } catch (e: Exception) { "0" }
+}
+
+private fun parseVersion(raw: String): List<Int> {
+    return raw.trim().removePrefix("v").removePrefix("V")
+        .split(Regex("[._-]"))
+        .mapNotNull { part -> part.takeWhile { c -> c.isDigit() }.toIntOrNull() }
+}
+
+private fun isNewer(latest: String, current: String): Boolean {
+    val a = parseVersion(latest); val b = parseVersion(current)
+    val n = maxOf(a.size, b.size)
+    for (i in 0 until n) {
+        val x = a.getOrElse(i) { 0 }; val y = b.getOrElse(i) { 0 }
+        if (x != y) return x > y
+    }
+    return false
+}
+
+private fun checkForUpdate(context: Context): String? {
+    return try {
+        val url = java.net.URL("https://api.github.com/repos/xVerdy1337/tg-proxy-android/releases/latest")
+        val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+            connectTimeout = 4000; readTimeout = 4000
+            setRequestProperty("Accept", "application/vnd.github+json")
+            setRequestProperty("User-Agent", "JevioUnblocker")
+        }
+        if (conn.responseCode != 200) return null
+        val text = conn.inputStream.bufferedReader().use { it.readText() }
+        val json = org.json.JSONObject(text)
+        val tag = json.optString("tag_name", "")
+        val htmlUrl = json.optString(
+            "html_url",
+            "https://github.com/xVerdy1337/tg-proxy-android/releases/latest"
+        )
+        if (tag.isNotEmpty() && isNewer(tag, currentVersionName(context))) htmlUrl else null
+    } catch (e: Exception) { null }
+}
+
+private const val PREFS_ONBOARDING = "jevio_onboarding"
+private const val KEY_ONBOARDING_SHOWN = "onboarding_shown"
+
+private fun shouldShowOnboarding(context: Context): Boolean {
+    val prefs = context.getSharedPreferences(PREFS_ONBOARDING, Context.MODE_PRIVATE)
+    return !prefs.getBoolean(KEY_ONBOARDING_SHOWN, false)
+}
+
+private fun markOnboardingShown(context: Context) {
+    context.getSharedPreferences(PREFS_ONBOARDING, Context.MODE_PRIVATE)
+        .edit().putBoolean(KEY_ONBOARDING_SHOWN, true).apply()
+}
+
+@Composable
+private fun OnboardingDialog(onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp))
+                .background(Surface)
+                .padding(24.dp)
+        ) {
+            Text(
+                "Добро пожаловать в Jevio Unblocker",
+                color = TextPrimary,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(18.dp))
+            OnboardingRow(
+                Icons.Default.Send,
+                "Telegram",
+                "Прокси для Telegram, если он заблокирован."
+            )
+            Spacer(Modifier.height(14.dp))
+            OnboardingRow(
+                Icons.Default.PlayArrow,
+                "YouTube · Instagram",
+                "Разблокировка через VPN. Нажмите «Подобрать автоматически» и включайте."
+            )
+            Spacer(Modifier.height(14.dp))
+            OnboardingRow(
+                Icons.Default.Lock,
+                "Банки и Госуслуги",
+                "Эти приложения идут напрямую — VPN их не трогает."
+            )
+            Spacer(Modifier.height(24.dp))
+            Button(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = Accent)
+            ) {
+                Text("Понятно, начать", color = Color.White, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnboardingRow(icon: ImageVector, title: String, body: String) {
+    Row(verticalAlignment = Alignment.Top) {
+        Icon(icon, contentDescription = null, tint = Accent, modifier = Modifier.size(24.dp))
+        Spacer(Modifier.width(14.dp))
+        Column {
+            Text(title, color = TextPrimary, fontWeight = FontWeight.SemiBold)
+            Text(body, color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
