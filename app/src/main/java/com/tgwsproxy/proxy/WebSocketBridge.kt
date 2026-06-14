@@ -7,6 +7,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import okio.ByteString.Companion.toByteString
 import java.util.concurrent.TimeUnit
 
 class WebSocketBridge {
@@ -113,9 +114,9 @@ class WebSocketBridge {
     }
 
     fun send(data: ByteArray): Boolean {
-        // ByteString.of(data, 0, data.size) avoids the array copy that the *data spread
-        // operator forces on every frame — send() is on the hot path.
-        return webSocket?.send(ByteString.of(data, 0, data.size)) ?: false
+        // data.toByteString(0, size) avoids the array copy that the *data spread operator
+        // forces on every frame (okio moved the 3-arg of() to this extension). send() is hot.
+        return webSocket?.send(data.toByteString(0, data.size)) ?: false
     }
 
     suspend fun receive(): ByteArray? {
