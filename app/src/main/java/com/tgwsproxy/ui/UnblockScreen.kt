@@ -10,10 +10,12 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
@@ -22,6 +24,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -30,6 +33,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.ui.window.Dialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -60,7 +64,20 @@ fun UnblockScreen(
     val probe by vm.probe.collectAsState()
     val autoTune by vm.autoTune.collectAsState()
     val running = state.isRunning
+    val installedApps by vm.installedApps.collectAsState()
+    val excluded by vm.excluded.collectAsState()
     var advancedOpen by remember { mutableStateOf(false) }
+    var showExclusions by remember { mutableStateOf(false) }
+
+    if (showExclusions) {
+        ExclusionDialog(
+            apps = installedApps,
+            excluded = excluded,
+            builtIn = vm.builtInExcluded,
+            onToggle = { pkg, on -> vm.setExcluded(pkg, on) },
+            onClose = { showExclusions = false },
+        )
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -113,6 +130,8 @@ fun UnblockScreen(
                 onApplyCmd = { vm.setByedpiCmd(it) },
                 allApps = settings.allApps,
                 onAllApps = { vm.setAllApps(it) },
+                excludedCount = excluded.size + vm.builtInExcluded.size,
+                onOpenExclusions = { vm.loadInstalledApps(); showExclusions = true },
             )
         }
 
@@ -623,6 +642,8 @@ private fun AdvancedSection(
     onApplyCmd: (String) -> Unit,
     allApps: Boolean,
     onAllApps: (Boolean) -> Unit,
+    excludedCount: Int,
+    onOpenExclusions: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         // Clickable header that expands the advanced controls.
@@ -669,6 +690,28 @@ private fun AdvancedSection(
                 checked = allApps,
                 onChange = onAllApps
             )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Surface)
+                    .border(1.dp, Border, RoundedCornerShape(14.dp))
+                    .clickable { onOpenExclusions() }
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Block, null, tint = Mauve, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Не использовать обход для…", color = TextPrimary, fontWeight = FontWeight.Medium)
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "$excludedCount приложений исключено (банки, Госуслуги и др. — чтобы не ловили VPN). Действует в режиме «все приложения»",
+                        color = TextSecondary, style = MaterialTheme.typography.labelSmall
+                    )
+                }
+                Icon(Icons.Default.KeyboardArrowDown, null, tint = TextSecondary, modifier = Modifier.size(22.dp))
+            }
         }
     }
 }
@@ -826,6 +869,91 @@ private fun Card(content: @Composable ColumnScope.() -> Unit) {
             .padding(16.dp),
         content = content
     )
+}
+
+@Composable
+private fun ExclusionDialog(
+    apps: List<AppInfo>,
+    excluded: Set<String>,
+    builtIn: Set<String>,
+    onToggle: (String, Boolean) -> Unit,
+    onClose: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    Dialog(onDismissRequest = onClose) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(Surface)
+                .border(1.dp, Border, RoundedCornerShape(16.dp))
+                .padding(16.dp)
+        ) {
+            Text("Не использовать обход для…", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Отмеченные приложения идут мимо обхода (для банков и приложений, что ловят VPN). Действует в режиме «все приложения». После изменений перезапусти VPN.",
+                color = TextSecondary, style = MaterialTheme.typography.labelSmall
+            )
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Поиск приложения", color = TextMuted) },
+                singleLine = true,
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = SurfaceVariant,
+                    unfocusedContainerColor = SurfaceVariant,
+                    focusedTextColor = TextPrimary,
+                    unfocusedTextColor = TextPrimary,
+                    cursorColor = Accent,
+                    focusedIndicatorColor = Accent,
+                    unfocusedIndicatorColor = Border,
+                )
+            )
+            Spacer(Modifier.height(10.dp))
+            if (apps.isEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
+                    Text("Загружаю список приложений…", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                }
+            } else {
+                val filtered = apps.filter {
+                    query.isBlank() || it.label.contains(query, ignoreCase = true) || it.pkg.contains(query, ignoreCase = true)
+                }
+                LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                    items(filtered, key = { it.pkg }) { app ->
+                        val checked = app.builtIn || excluded.contains(app.pkg)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable(enabled = !app.builtIn) { onToggle(app.pkg, !checked) }
+                                .padding(vertical = 8.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = checked,
+                                onCheckedChange = if (app.builtIn) null else { v -> onToggle(app.pkg, v) },
+                                enabled = !app.builtIn,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(app.label, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    if (app.builtIn) "встроенное исключение" else app.pkg,
+                                    color = TextMuted, style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            PrimaryButton("Готово", onClick = onClose)
+        }
+    }
 }
 
 private fun formatBytesShort(b: Long): String {
