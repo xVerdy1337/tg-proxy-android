@@ -80,22 +80,24 @@ class DesyncVpnService : VpnService(), Tunnel {
         private const val SOCKS_PORT = 1080
 
         /**
-         * byedpi desync arguments per preset (the real DPI bypass). Built/tuned for YouTube +
-         * Instagram on RU providers; "Авто" mirrors the spirit of zapret/alt12 (fake + auto).
+         * byedpi desync arguments per preset (the real DPI bypass). Tuned for YouTube + Instagram
+         * on RU providers; all three carry `-a1` (auto-retry) and apply to every captured flow.
          * A non-empty custom command in prefs overrides these.
-         *   -Kt   : desync TLS (HTTPS) flows
-         *   -An   : byedpi auto-strategy (probes + sticks to what defeats the DPI)
-         *   -f1+s : fake desync, split 1 byte into the SNI (decoy ClientHello via low TTL/splice)
-         *   -t8   : TTL of the fake packets
-         *   -r1+s : split the TLS record at the SNI
-         *   -s1+s : plain segment split at the SNI
+         *
+         *   Авто (AUTO)   : cascading disorder+split across many offsets — the strongest general
+         *                  strategy, confirmed to unblock YouTube + Instagram on RU TSPU.
+         *   Метод A (TLSREC): split + tlsrec + a low-TTL FAKE decoy (`-f-1 -t8`) — use when the plain
+         *                  cascade isn't enough and the operator needs a poisoning packet.
+         *   Метод B (SPLIT) : a pure multi-point SNI split (no disorder) — lighter / lower-latency
+         *                  alternative for operators where disorder breaks the flow.
+         * Flags: -d disorder, -s split, -r tlsrec, -f fake, -t fake TTL, +s = cut at the SNI.
          */
         fun presetToByedpiArgs(preset: String): String = when (preset) {
-            PRESET_AUTO -> "-Kt -An -f1+s -t8"
-            PRESET_TLSREC -> "-Kt -r1+s -An"
-            PRESET_SPLIT -> "-Kt -s1+s -An"
+            PRESET_AUTO -> "-d1 -s1+s -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1"
+            PRESET_TLSREC -> "-d1 -s1+s -r1+s -f-1 -t8 -a1"
+            PRESET_SPLIT -> "-d1 -s1+s -s3+s -s6+s -s9+s -s12+s -s15+s -s20+s -s30+s -a1"
             PRESET_OFF -> "" // plain SOCKS relay, no desync
-            else -> "-Kt -An -f1+s -t8"
+            else -> "-d1 -s1+s -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1"
         }
 
         /**
