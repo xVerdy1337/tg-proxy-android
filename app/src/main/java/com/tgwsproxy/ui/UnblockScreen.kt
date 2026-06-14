@@ -49,6 +49,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.graphics.graphicsLayer
 import com.tgwsproxy.ui.theme.*
 import com.tgwsproxy.vpn.DesyncVpnService
 import java.util.Locale
@@ -235,12 +242,20 @@ private fun HeroUnblockCard(
 @Composable
 private fun BigToggleButton(running: Boolean, onClick: () -> Unit) {
     val bg = if (running) Destructive else Accent
+    val haptic = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.97f else 1f, label = "toggleScale")
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(14.dp))
             .background(bg)
-            .clickable { onClick() }
+            .clickable(interactionSource = interaction, indication = LocalIndication.current) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onClick()
+            }
             .padding(vertical = 15.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -333,12 +348,16 @@ private fun AutoTuneCard(
 
 @Composable
 private fun PrimaryButton(label: String, enabled: Boolean = true, onClick: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(if (enabled) Accent else SurfaceVariant)
-            .clickable(enabled = enabled) { onClick() }
+            .clickable(enabled = enabled) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onClick()
+            }
             .padding(vertical = 13.dp),
         contentAlignment = Alignment.Center
     ) {
