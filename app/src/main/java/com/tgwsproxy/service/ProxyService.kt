@@ -35,7 +35,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import java.security.SecureRandom
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
@@ -225,6 +224,15 @@ class ProxyService : Service() {
         when (intent?.action) {
             ACTION_START -> startProxy()
             ACTION_STOP -> stopProxy()
+            null -> {
+                // System recreated us (START_STICKY redelivers a null intent). Re-launch
+                // the proxy if we believe it should be running; otherwise reconcile the
+                // stale flag and stand down so we don't sit as a zombie foreground service.
+                val shouldRun = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getBoolean(KEY_RUNNING, false)
+                if (shouldRun && !_serviceState.value.isRunning) startProxy()
+                else if (!shouldRun) stopSelf()
+            }
         }
         return START_STICKY
     }
@@ -341,13 +349,10 @@ class ProxyService : Service() {
         statsJob = null
         unregisterNetworkCallback()
 
-        // Block until the server fully stops before tearing down the service
-        runBlocking(Dispatchers.IO) {
-            try {
-                proxyServer?.stop()
-                proxyServer = null
-            } catch (_: Exception) {}
-        }
+        // Detach the server reference and flip state to stopped immediately so the UI
+        // and Quick Settings tile update without waiting on socket teardown.
+        val server = proxyServer
+        proxyServer = null
 
         _serviceState.update {
             it.copy(
@@ -359,8 +364,15 @@ class ProxyService : Service() {
         }
         persistRunning(false)
         releaseWakeLocks()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+
+        // Stop the server off the main thread (stop() may block on socket/coroutine
+        // shutdown), then drop the foreground service. Replaces the old
+        // runBlocking(...) on the main thread, which was a classic ANR source.
+        serviceScope.launch {
+            try { server?.stop() } catch (_: Exception) {}
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     /** Poll the proxy server's live counters once a second and push them to the UI. */
@@ -394,9 +406,13 @@ class ProxyService : Service() {
             connectivityManager = cm
             val request = NetworkRequest.Builder()
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
                 .build()
             val cb = object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) = onNetworkChanged(network.toString())
+                // networkHandle is a stable per-network id (API 23+); network.toString()
+                // isn't contractually stable and triggered spurious "network changed" events.
+                // NET_CAPABILITY_VALIDATED means we only react once the link really has internet.
+                override fun onAvailable(network: Network) = onNetworkChanged(network.networkHandle.toString())
                 override fun onLost(network: Network) = onNetworkChanged("lost")
             }
             networkCallback = cb
@@ -487,7 +503,7 @@ class ProxyService : Service() {
             this,
             0,
             Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         // Tapping "Остановить прокси" in the shade stops the proxy without opening the app.
@@ -498,7 +514,7 @@ class ProxyService : Service() {
             this,
             1,
             stopIntent,
-            PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         val count = _serviceState.value.connectionCount
