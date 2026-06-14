@@ -279,33 +279,38 @@ class MtProtoProxyServer(
     ) {
         try {
             val up = Socket(fakeTlsDomain, 443)
-            up.tcpNoDelay = true
-            up.soTimeout = RELAY_IO_TIMEOUT_MS
-            try { clientSocket.soTimeout = RELAY_IO_TIMEOUT_MS } catch (_: Exception) {}
-            val upOut = up.getOutputStream()
-            val upIn = up.getInputStream()
-            upOut.write(initialData); upOut.flush()
+            try {
+                up.tcpNoDelay = true
+                up.soTimeout = RELAY_IO_TIMEOUT_MS
+                try { clientSocket.soTimeout = RELAY_IO_TIMEOUT_MS } catch (_: Exception) {}
+                val upOut = up.getOutputStream()
+                val upIn = up.getInputStream()
+                upOut.write(initialData); upOut.flush()
 
-            val a = serverScope.async {
-                try {
-                    val b = ByteArray(16384)
-                    while (!clientSocket.isClosed) {
-                        val r = clientInput.read(b); if (r <= 0) break
-                        upOut.write(b, 0, r); upOut.flush()
-                    }
-                } catch (_: Exception) {}
+                val a = serverScope.async {
+                    try {
+                        val b = ByteArray(16384)
+                        while (!clientSocket.isClosed) {
+                            val r = clientInput.read(b); if (r <= 0) break
+                            upOut.write(b, 0, r); upOut.flush()
+                        }
+                    } catch (_: Exception) {}
+                }
+                val c = serverScope.async {
+                    try {
+                        val b = ByteArray(16384)
+                        while (!up.isClosed) {
+                            val r = upIn.read(b); if (r <= 0) break
+                            clientOutput.write(b, 0, r); clientOutput.flush()
+                        }
+                    } catch (_: Exception) {}
+                }
+                awaitAll(a, c)
+            } finally {
+                // Always drop the upstream socket, even if awaitAll throws / the coroutine is
+                // cancelled mid-relay — otherwise the fd leaks until GC.
+                try { up.close() } catch (_: Exception) {}
             }
-            val c = serverScope.async {
-                try {
-                    val b = ByteArray(16384)
-                    while (!up.isClosed) {
-                        val r = upIn.read(b); if (r <= 0) break
-                        clientOutput.write(b, 0, r); clientOutput.flush()
-                    }
-                } catch (_: Exception) {}
-            }
-            awaitAll(a, c)
-            try { up.close() } catch (_: Exception) {}
         } catch (_: Exception) {}
     }
 

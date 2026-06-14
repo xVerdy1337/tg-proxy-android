@@ -30,9 +30,11 @@ class WebSocketBridge {
         .build()
 
     private var webSocket: WebSocket? = null
-    private val receiveChannel = Channel<ByteArray>(Channel.BUFFERED)
-    private var isConnected = false
-    private var isClosed = false
+    // Bounded buffer (not Channel.BUFFERED's tiny ~64). On overflow we drop the socket
+    // instead of silently losing MTProto frames — a corrupted stream is worse than a redial.
+    private val receiveChannel = Channel<ByteArray>(capacity = 1024)
+    @Volatile private var isConnected = false
+    @Volatile private var isClosed = false
 
     /**
      * Connect the WebSocket to Telegram's /apiws endpoint.
@@ -77,7 +79,12 @@ class WebSocketBridge {
             }
 
             override fun onMessage(ws: WebSocket, bytes: ByteString) {
-                receiveChannel.trySend(bytes.toByteArray())
+                // If downstream (wsToClient) falls behind and the bounded channel fills up,
+                // tear the socket down rather than dropping frames on the floor.
+                if (!receiveChannel.trySend(bytes.toByteArray()).isSuccess) {
+                    ws.cancel()
+                    receiveChannel.close()
+                }
             }
 
             override fun onMessage(ws: WebSocket, text: String) {}
@@ -106,11 +113,14 @@ class WebSocketBridge {
     }
 
     fun send(data: ByteArray): Boolean {
-        return webSocket?.send(ByteString.of(*data)) ?: false
+        // ByteString.of(data, 0, data.size) avoids the array copy that the *data spread
+        // operator forces on every frame — send() is on the hot path.
+        return webSocket?.send(ByteString.of(data, 0, data.size)) ?: false
     }
 
     suspend fun receive(): ByteArray? {
-        if (isClosed && receiveChannel.isEmpty) return null
+        // receiveCatching returns a closed result (→ null) once the channel is closed,
+        // so there's no need to probe isEmpty (not a reliable readiness signal).
         return receiveChannel.receiveCatching().getOrNull()
     }
 

@@ -10,10 +10,13 @@ import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.content.ComponentName
+import android.service.quicksettings.TileService
 import androidx.core.app.NotificationCompat
 import com.tgwsproxy.MainActivity
 import com.tgwsproxy.R
 import com.tgwsproxy.core.ByeDpiProxy
+import com.tgwsproxy.service.DesyncTileService
 import com.tgwsproxy.desync.DesyncEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -503,6 +506,11 @@ class DesyncVpnService : VpnService(), Tunnel {
 
     private fun persistRunning(on: Boolean) {
         getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_VPN_RUNNING, on).apply()
+        // Nudge the Quick Settings tile to re-read real state, so it reflects truth after the
+        // fact instead of optimistically guessing on click (matches ProxyService behaviour).
+        try {
+            TileService.requestListeningState(this, ComponentName(this, DesyncTileService::class.java))
+        } catch (_: Exception) {}
     }
 
     private fun presetString(): String = when (method) {

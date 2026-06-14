@@ -29,8 +29,13 @@ class DesyncTileService : TileService() {
     override fun onClick() {
         super.onClick()
         if (isRunning()) {
-            startService(Intent(this, DesyncVpnService::class.java).apply { action = DesyncVpnService.ACTION_STOP })
-            setTileState(false)
+            // STOP stays on startService (not startForegroundService): if prefs are stale and no
+            // service is alive, a foreground start would be obligated to call startForeground()
+            // within 5s and would crash. The tile re-syncs from real state via
+            // requestListeningState() fired in DesyncVpnService.persistRunning().
+            runCatching {
+                startService(Intent(this, DesyncVpnService::class.java).apply { action = DesyncVpnService.ACTION_STOP })
+            }
             return
         }
         val consent = VpnService.prepare(this)
@@ -39,7 +44,7 @@ class DesyncTileService : TileService() {
             val open = Intent(this, MainActivity::class.java).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startActivityAndCollapse(
-                    PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE)
+                    PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
                 )
             } else {
                 @Suppress("DEPRECATION", "StartActivityAndCollapseDeprecated")
@@ -48,7 +53,6 @@ class DesyncTileService : TileService() {
         } else {
             val start = Intent(this, DesyncVpnService::class.java).apply { action = DesyncVpnService.ACTION_START }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(start) else startService(start)
-            setTileState(true)
         }
     }
 
