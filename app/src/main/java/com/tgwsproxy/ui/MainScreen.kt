@@ -98,12 +98,18 @@ private fun routeLabel(route: String): String = when (route) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
+fun MainScreen(
+    viewModel: ProxyViewModel = viewModel(),
+    desyncVm: DesyncViewModel = viewModel(),
+    onEnableVpn: () -> Unit = {},
+    onDisableVpn: () -> Unit = {},
+) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val listState = rememberLazyListState()
 
     var logsExpanded by remember { mutableStateOf(false) }
+    var selectedTab by remember { mutableStateOf(0) }
 
     val isAtBottom by remember {
         derivedStateOf {
@@ -163,26 +169,43 @@ fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
         containerColor = Background
     ) { padding ->
 
-        if (uiState.isLoading) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(color = Accent)
-            }
-            return@Scaffold
+      Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+
+        TabRow(
+            selectedTabIndex = selectedTab,
+            containerColor = Background,
+            contentColor = Accent
+        ) {
+            Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = { Text("Telegram", color = if (selectedTab == 0) Accent else TextSecondary) }
+            )
+            Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = { Text("Разблокировка", color = if (selectedTab == 1) Accent else TextSecondary) }
+            )
         }
 
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+          when (selectedTab) {
+            1 -> UnblockScreen(desyncVm, onEnableVpn, onDisableVpn)
+            else -> if (uiState.isLoading) {
+              Box(
+                  modifier = Modifier.fillMaxSize(),
+                  contentAlignment = Alignment.Center
+              ) {
+                  CircularProgressIndicator(color = Accent)
+              }
+            } else {
+              LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+              ) {
             item { HeroStatusCard(uiState) }
 
             item { BatteryOptimizationCard() }
@@ -256,7 +279,11 @@ fun MainScreen(viewModel: ProxyViewModel = viewModel()) {
             }
 
             item { Spacer(modifier = Modifier.height(24.dp)) }
+              }
+            }
+          }
         }
+      }
     }
 }
 
