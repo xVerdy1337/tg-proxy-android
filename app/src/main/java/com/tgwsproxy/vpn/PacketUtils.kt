@@ -74,9 +74,13 @@ object PacketUtils {
         src: ByteArray, srcPort: Int,
         dst: ByteArray, dstPort: Int,
         seq: Long, ack: Long, flags: Int, window: Int,
-        payload: ByteArray
+        payload: ByteArray,
+        mss: Int = 0,   // >0 adds a 4-byte MSS option (only meaningful on SYN/SYN-ACK)
     ): ByteArray {
-        val tcpLen = 20 + payload.size
+        // MSS option is 4 bytes (kind=2,len=4,value) — already 4-byte aligned, no padding needed.
+        val optLen = if (mss > 0) 4 else 0
+        val tcpHdr = 20 + optLen
+        val tcpLen = tcpHdr + payload.size
         val totalLen = 20 + tcpLen
         val out = ByteArray(totalLen)
 
@@ -99,11 +103,16 @@ object PacketUtils {
         putU16(out, t + 2, dstPort)
         putU32(out, t + 4, seq)
         putU32(out, t + 8, ack)
-        out[t + 12] = (5 shl 4).toByte() // data offset 5 words, no options
+        out[t + 12] = ((tcpHdr / 4) shl 4).toByte() // data offset in 32-bit words
         out[t + 13] = flags.toByte()
         putU16(out, t + 14, window)
-        // checksum (t+16) below, urgent ptr 0
-        if (payload.isNotEmpty()) System.arraycopy(payload, 0, out, t + 20, payload.size)
+        // checksum (t+16) below, urgent ptr 0 (t+18)
+        if (optLen > 0) {
+            out[t + 20] = 2            // kind = MSS
+            out[t + 21] = 4            // length
+            putU16(out, t + 22, mss)   // value
+        }
+        if (payload.isNotEmpty()) System.arraycopy(payload, 0, out, t + tcpHdr, payload.size)
         putU16(out, t + 16, l4Checksum(out, src, dst, PROTO_TCP, t, tcpLen))
 
         return out

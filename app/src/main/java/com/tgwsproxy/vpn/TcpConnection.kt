@@ -53,8 +53,10 @@ class TcpConnection(
             rcvNxt = (clientSeq + 1) and 0xFFFFFFFFL
             sndNxt = (Random.nextLong() and 0xFFFFFFFFL)
             clientWindow = window
-            // SYN+ACK
-            sendSegment(PacketUtils.TcpFlag.SYN or PacketUtils.TcpFlag.ACK, ByteArray(0))
+            // SYN+ACK — advertise our MSS so the app caps its segments at a size we (and the
+            // downstream path) handle cleanly. Without this the app assumes 1460 and can emit
+            // segments that don't round-trip well through the userspace stack.
+            sendSegment(PacketUtils.TcpFlag.SYN or PacketUtils.TcpFlag.ACK, ByteArray(0), mss = MSS)
             sndNxt = (sndNxt + 1) and 0xFFFFFFFFL
         }
         connectUpstream()
@@ -200,7 +202,7 @@ class TcpConnection(
         }
         state = State.CLOSED
         try { upstream?.close() } catch (_: Exception) {}
-        tunnel.onConnectionClosed(key)
+        tunnel.onConnectionClosed(key, udp = false)
     }
 
     fun close() = synchronized(lock) { closeLocked(sendRst = false) }

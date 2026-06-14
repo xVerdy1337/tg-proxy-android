@@ -60,6 +60,6 @@ class UdpAssociation(
         if (closed) return
         closed = true
         try { socket.close() } catch (_: Exception) {}
-        tunnel.onConnectionClosed(key)
+        tunnel.onConnectionClosed(key, udp = true)
     }
 }

@@ -38,7 +38,11 @@
             android:name=".service.ProxyService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="specialUse" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="proxy" />
+        </service>
 
         <service
             android:name=".vpn.DesyncVpnService"
@@ -46,6 +50,9 @@
             android:exported="false"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="vpn_desync" />
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>

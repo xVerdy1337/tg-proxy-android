@@ -75,7 +75,6 @@ class DesyncVpnService : VpnService(), Tunnel {
         private const val CHANNEL_ID = "desync_vpn_channel"
 
         private const val TUN_ADDR = "10.111.222.1"
-        private const val TUN_ADDR6 = "fd00:1:2::1"
         private const val MTU = 1500
         private const val UDP_IDLE_MS = 30_000L
 
@@ -136,6 +135,10 @@ class DesyncVpnService : VpnService(), Tunnel {
         createChannel()
         startForegroundCompat()
 
+        // IPv4 only on purpose: we do NOT add an IPv6 address/route. If we advertised IPv6 on the
+        // TUN, apps (YouTube/Instagram use Happy Eyeballs) would prefer AAAA/IPv6 and we'd have to
+        // silently drop those packets → multi-second connect stalls instead of an instant IPv4
+        // path. With no IPv6 on the interface, apps go straight to IPv4 where the desync applies.
         val builder = Builder()
             .setSession("Jevio Unblocker")
             .setMtu(MTU)
@@ -143,11 +146,6 @@ class DesyncVpnService : VpnService(), Tunnel {
             .addRoute("0.0.0.0", 0)
             .addDnsServer("8.8.8.8")
             .addDnsServer("1.1.1.1")
-
-        // Capture IPv6 too so we can drop it and force apps onto IPv4 (where desync applies).
-        try {
-            builder.addAddress(TUN_ADDR6, 128).addRoute("::", 0)
-        } catch (_: Exception) { /* device without IPv6 support — fine, IPv4 only */ }
 
         if (allApps) {
             try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
@@ -220,7 +218,8 @@ class DesyncVpnService : VpnService(), Tunnel {
         val ack = PacketUtils.tcpAck(packet)
         val win = PacketUtils.tcpWindow(packet)
         val payload = PacketUtils.tcpPayload(packet)
-        if (payload.isNotEmpty()) bytesUp.addAndGet(payload.size.toLong())
+        // Count the whole IP packet (matches bytesDown in writeToTun) so the UI stats are symmetric.
+        bytesUp.addAndGet(packet.size.toLong())
 
         val existing = tcpMap[key]
         if (existing != null) {
@@ -251,7 +250,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         val key = PacketUtils.flowKey(srcPort, dstIpInt, dstPort)
         val payload = PacketUtils.udpPayload(packet)
         if (payload.isEmpty()) return
-        bytesUp.addAndGet(payload.size.toLong())
+        bytesUp.addAndGet(packet.size.toLong())
 
         var assoc = udpMap[key]
         if (assoc == null) {
@@ -271,7 +270,10 @@ class DesyncVpnService : VpnService(), Tunnel {
     override fun writeToTun(packet: ByteArray) {
         synchronized(tunWriteLock) {
             try {
+                // FileOutputStream is unbuffered so flush() is a no-op today, but it keeps us
+                // correct if this is ever wrapped in a BufferedOutputStream.
                 tunOut?.write(packet)
+                tunOut?.flush()
                 bytesDown.addAndGet(packet.size.toLong())
             } catch (_: Exception) {}
         }
@@ -283,9 +285,8 @@ class DesyncVpnService : VpnService(), Tunnel {
     override fun protectUdp(socket: DatagramSocket): Boolean =
         try { protect(socket) } catch (_: Exception) { false }
 
-    override fun onConnectionClosed(key: Long) {
-        tcpMap.remove(key)
-        udpMap.remove(key)
+    override fun onConnectionClosed(key: Long, udp: Boolean) {
+        if (udp) udpMap.remove(key) else tcpMap.remove(key)
     }
 
     // ---- stats / lifecycle ----

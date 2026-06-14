@@ -17,6 +17,9 @@ interface Tunnel {
     /** Exclude an upstream UDP socket from the VPN. */
     fun protectUdp(socket: DatagramSocket): Boolean
 
-    /** A flow finished; drop it from the NAT table. */
-    fun onConnectionClosed(key: Long)
+    /**
+     * A flow finished; drop it from the NAT table. [udp] selects which table to clean so a TCP
+     * flow can never evict a UDP association that happens to share the same (port,ip,port) tuple.
+     */
+    fun onConnectionClosed(key: Long, udp: Boolean)
 }
