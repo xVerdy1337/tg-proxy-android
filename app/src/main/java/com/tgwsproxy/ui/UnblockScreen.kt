@@ -78,6 +78,7 @@ fun UnblockScreen(
                 vpnRunning = running,
                 onRun = { vm.runAutoTune() },
                 onReset = { vm.dismissAutoTune() },
+                onEnable = onEnable,
             )
         }
 
@@ -233,6 +234,7 @@ private fun AutoTuneCard(
     vpnRunning: Boolean,
     onRun: () -> Unit,
     onReset: () -> Unit,
+    onEnable: () -> Unit,
 ) {
     Card {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -268,11 +270,13 @@ private fun AutoTuneCard(
                 Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Default.Check, null, tint = OkGreen, modifier = Modifier.size(18.dp))
                     Text(
-                        "Готово: «${autoTune.foundLabel}» подобран и сохранён. Включи VPN и проверь приложения.",
+                        "Готово: «${autoTune.foundLabel}» подобран и сохранён. Нажми «Включить» — и готово.",
                         color = OkGreen, style = MaterialTheme.typography.bodySmall
                     )
                 }
                 Spacer(Modifier.height(10.dp))
+                PrimaryButton("Включить с этим методом", onClick = onEnable)
+                Spacer(Modifier.height(8.dp))
                 SecondaryButton("Подобрать заново", onReset)
             }
 
