@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tgwsproxy.net.HelloProbe
+import com.tgwsproxy.net.StrategyTester
 import com.tgwsproxy.vpn.DesyncVpnService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +44,18 @@ data class ProbeUiState(
     val finishedAt: Long = 0L,
 )
 
+/** Progress + outcome of the automatic strategy tuner ("Подобрать автоматически"). */
+data class AutoTuneUiState(
+    val running: Boolean = false,
+    val index: Int = 0,
+    val total: Int = 0,
+    val currentLabel: String = "",
+    val finished: Boolean = false,
+    val foundLabel: String? = null,
+    val foundCommand: String? = null,
+    val error: String? = null,
+)
+
 /**
  * UI state holder for the "Разблокировка" tab. Live runtime state (running / flows / bytes) comes
  * straight from [DesyncVpnService.state]; user settings are persisted to prefs and re-read so they
@@ -57,6 +70,9 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _probe = MutableStateFlow(ProbeUiState())
     val probe: StateFlow<ProbeUiState> = _probe.asStateFlow()
+
+    private val _autoTune = MutableStateFlow(AutoTuneUiState())
+    val autoTune: StateFlow<AutoTuneUiState> = _autoTune.asStateFlow()
 
     private val targets = listOf(
         "www.youtube.com" to "YouTube",
@@ -87,10 +103,54 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                 results = results,
                 finishedAt = System.currentTimeMillis(),
             )
-            // If a method clearly works for both, gently steer the preset toward it.
-            val best = results.firstNotNullOfOrNull { it.bestPreset }
-            if (best != null && results.all { it.anyPass }) setPreset(best)
         }
+    }
+
+    /**
+     * The "grandma button": run every candidate strategy through the real native byedpi engine and
+     * keep the first one that completes a TLS handshake to all targets. On success it's saved as the
+     * active byedpi command. Requires the VPN to be OFF (engine allows one instance at a time).
+     */
+    fun runAutoTune() {
+        if (_autoTune.value.running) return
+        if (vpnState.value.isRunning) {
+            _autoTune.value = AutoTuneUiState(
+                finished = true,
+                error = "Сначала выключи VPN — подбор использует движок монопольно."
+            )
+            return
+        }
+        val hosts = targets.map { it.first }
+        val strategies = StrategyTester.STRATEGIES
+        _autoTune.value = AutoTuneUiState(running = true, total = strategies.size)
+        viewModelScope.launch {
+            val found = withContext(Dispatchers.IO) {
+                var hit: StrategyTester.Strategy? = null
+                for ((i, s) in strategies.withIndex()) {
+                    _autoTune.value = _autoTune.value.copy(index = i + 1, currentLabel = s.label)
+                    val res = StrategyTester.testStrategy(s, hosts, port = 1081 + (i % 4))
+                    if (res.allOk) { hit = s; break }
+                }
+                hit
+            }
+            if (found != null) {
+                setByedpiCmd(found.command)
+                _autoTune.value = AutoTuneUiState(
+                    finished = true,
+                    foundLabel = found.label,
+                    foundCommand = found.command,
+                )
+            } else {
+                _autoTune.value = AutoTuneUiState(
+                    finished = true,
+                    error = "Ни один метод не пробил блокировку. Попробуй вручную в продвинутых настройках."
+                )
+            }
+        }
+    }
+
+    fun dismissAutoTune() {
+        if (!_autoTune.value.running) _autoTune.value = AutoTuneUiState()
     }
 
     private fun prefs() =
