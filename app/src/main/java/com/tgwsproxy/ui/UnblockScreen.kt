@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -41,6 +42,7 @@ fun UnblockScreen(
 ) {
     val state by vm.vpnState.collectAsState()
     val settings by vm.settings.collectAsState()
+    val probe by vm.probe.collectAsState()
     val running = state.isRunning
 
     LazyColumn(
@@ -53,7 +55,9 @@ fun UnblockScreen(
 
         item { HeroUnblockCard(running, state, onEnable, onDisable) }
 
-        item { ServicesRow(running) }
+        item { ServicesRow(probe) }
+
+        item { ProbeCard(probe) { vm.runProbe() } }
 
         if (running) {
             item { LiveStatsCard(state) }
@@ -176,18 +180,36 @@ private fun BigToggleButton(running: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ServicesRow(running: Boolean) {
+private val OkGreen = Color(0xFF5BBF7B)
+
+@Composable
+private fun ServicesRow(probe: ProbeUiState) {
+    val yt = probe.results.firstOrNull { it.display == "YouTube" }
+    val ig = probe.results.firstOrNull { it.display == "Instagram" }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        ServiceChip("YouTube", running, Modifier.weight(1f))
-        ServiceChip("Instagram", running, Modifier.weight(1f))
+        ServiceChip("YouTube", yt, probe.checking, Modifier.weight(1f))
+        ServiceChip("Instagram", ig, probe.checking, Modifier.weight(1f))
     }
 }
 
 @Composable
-private fun ServiceChip(name: String, running: Boolean, modifier: Modifier = Modifier) {
+private fun ServiceChip(
+    name: String,
+    result: ServiceProbe?,
+    checking: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    // Status: green if a method bypasses DPI, red if all blocked, amber on error, grey unknown.
+    val (dotColor, statusText) = when {
+        checking -> SurfaceVariant to "проверка…"
+        result == null -> SurfaceVariant to "не проверено"
+        result.anyPass -> OkGreen to "работает"
+        result.plain == com.tgwsproxy.net.HelloProbe.Outcome.BLOCKED -> Destructive to "заблокировано"
+        else -> Warning to "не удалось"
+    }
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
@@ -201,13 +223,116 @@ private fun ServiceChip(name: String, running: Boolean, modifier: Modifier = Mod
             modifier = Modifier
                 .size(20.dp)
                 .clip(CircleShape)
-                .background(if (running) Accent.copy(alpha = 0.2f) else SurfaceVariant),
+                .background(dotColor.copy(alpha = 0.22f)),
             contentAlignment = Alignment.Center
         ) {
-            if (running) Icon(Icons.Default.Check, null, tint = Accent, modifier = Modifier.size(14.dp))
+            if (checking) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 2.dp,
+                    color = TextSecondary
+                )
+            } else if (result?.anyPass == true) {
+                Icon(Icons.Default.Check, null, tint = OkGreen, modifier = Modifier.size(14.dp))
+            } else {
+                Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(dotColor))
+            }
         }
-        Text(name, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+        Column {
+            Text(name, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+            Text(statusText, color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+        }
     }
+}
+
+@Composable
+private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
+    Card {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Проверить методы", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "Напрямую проверяет, какой метод обходит блокировку у твоего оператора. Лучше при выключенном VPN.",
+                    color = TextSecondary,
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (probe.checking) SurfaceVariant else Accent)
+                    .clickable(enabled = !probe.checking) { onCheck() }
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                if (probe.checking) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = TextSecondary
+                    )
+                } else {
+                    Text("Проверить", color = Background, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        if (probe.results.isNotEmpty() && !probe.checking) {
+            Spacer(Modifier.height(12.dp))
+            for (r in probe.results) {
+                ProbeResultRow(r)
+                Spacer(Modifier.height(6.dp))
+            }
+            val anyWorks = probe.results.any { it.anyPass }
+            Spacer(Modifier.height(2.dp))
+            Text(
+                if (anyWorks)
+                    "Найден рабочий метод — он выставлен автоматически. Включи VPN и проверь приложения."
+                else
+                    "Простой desync (A/B) не пробивает DPI у твоего оператора. Нужен метод посильнее (FAKE+TTL) — следующая итерация.",
+                color = if (anyWorks) OkGreen else Warning,
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProbeResultRow(r: ServiceProbe) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(r.display, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            MethodPill("Без обхода", r.plain)
+            MethodPill("A", r.tlsrec)
+            MethodPill("B", r.split)
+        }
+    }
+}
+
+@Composable
+private fun MethodPill(label: String, outcome: com.tgwsproxy.net.HelloProbe.Outcome?) {
+    val color = when (outcome) {
+        com.tgwsproxy.net.HelloProbe.Outcome.PASS -> OkGreen
+        com.tgwsproxy.net.HelloProbe.Outcome.BLOCKED -> Destructive
+        com.tgwsproxy.net.HelloProbe.Outcome.ERROR -> Warning
+        null -> SurfaceVariant
+    }
+    Text(
+        label,
+        color = color,
+        style = MaterialTheme.typography.labelSmall,
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(color.copy(alpha = 0.16f))
+            .padding(horizontal = 8.dp, vertical = 3.dp)
+    )
 }
 
 @Composable
