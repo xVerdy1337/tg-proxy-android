@@ -110,6 +110,7 @@ fun MainScreen(
 
     var logsExpanded by remember { mutableStateOf(false) }
     var selectedTab by remember { mutableStateOf(0) }
+    var advancedTgOpen by remember { mutableStateOf(false) }
 
     val isAtBottom by remember {
         derivedStateOf {
@@ -143,7 +144,7 @@ fun MainScreen(
                                 color = TextPrimary
                             )
                             Text(
-                                "Telegram без блокировок",
+                                "Telegram, YouTube, Instagram без блокировок",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = TextSecondary
                             )
@@ -200,7 +201,7 @@ fun MainScreen(
                         modifier = Modifier.size(20.dp)
                     )
                 },
-                text = { Text("Разблокировка", color = if (selectedTab == 1) Accent else TextSecondary) }
+                text = { Text("YouTube · Instagram", color = if (selectedTab == 1) Accent else TextSecondary) }
             )
         }
 
@@ -237,17 +238,21 @@ fun MainScreen(
                 )
             }
 
-            item {
-                ProxyInfoCard(
-                    uiState = uiState,
-                    context = context,
-                    onRegenerateSecret = { viewModel.regenerateSecret() }
-                )
+            item { TgTwoStepHint(uiState.isRunning) }
+
+            item { TgAdvancedHeader(advancedTgOpen) { advancedTgOpen = !advancedTgOpen } }
+
+            if (advancedTgOpen) {
+                item {
+                    ProxyInfoCard(
+                        uiState = uiState,
+                        context = context,
+                        onRegenerateSecret = { viewModel.regenerateSecret() }
+                    )
+                }
+                item { FakeTlsCard(uiState, onSave = { viewModel.setFakeTlsDomain(it) }) }
+                item { SettingsCard(uiState, onSaveCfDomain = { viewModel.setCfDomain(it) }) }
             }
-
-            item { FakeTlsCard(uiState, onSave = { viewModel.setFakeTlsDomain(it) }) }
-
-            item { SettingsCard(uiState, onSaveCfDomain = { viewModel.setCfDomain(it) }) }
 
             item { TelegramChannelCard(context) }
 
@@ -1054,5 +1059,61 @@ private fun TelegramChannelCard(context: Context) {
                 modifier = Modifier.size(22.dp)
             )
         }
+    }
+}
+
+@Composable
+private fun TgTwoStepHint(running: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Accent.copy(alpha = 0.10f))
+            .padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Icon(
+            if (running) Icons.Default.CheckCircle else Icons.Default.Info,
+            contentDescription = null,
+            tint = if (running) AccentSoft else Accent,
+            modifier = Modifier.size(18.dp)
+        )
+        Text(
+            if (running)
+                "Прокси включён. Шаг 2: нажмите «Добавить в Telegram» ниже."
+            else
+                "1. Включите прокси.  2. Нажмите «Добавить в Telegram».",
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary
+        )
+    }
+}
+
+@Composable
+private fun TgAdvancedHeader(expanded: Boolean, onToggle: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Surface)
+            .border(1.dp, Border, RoundedCornerShape(14.dp))
+            .clickable { onToggle() }
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Default.Tune, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Продвинутые настройки", color = TextPrimary, fontWeight = FontWeight.Medium)
+            Text(
+                "Сервер и секрет, Fake TLS, свой Cloudflare-домен",
+                color = TextSecondary, style = MaterialTheme.typography.labelSmall
+            )
+        }
+        Icon(
+            if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+            contentDescription = null, tint = TextSecondary, modifier = Modifier.size(22.dp)
+        )
     }
 }
