@@ -141,7 +141,14 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         val hosts = targets.map { it.first }
-        val strategies = StrategyTester.STRATEGIES
+        // Test the currently-saved command first (instant if it still works), then the curated list.
+        val saved = _settings.value.byedpiCmd.trim()
+        val strategies = buildList {
+            if (saved.isNotEmpty()) {
+                add(StrategyTester.Strategy(saved, StrategyTester.labelForCommand(saved) ?: "текущая команда"))
+            }
+            addAll(StrategyTester.STRATEGIES.filter { it.command != saved })
+        }
         _autoTune.value = AutoTuneUiState(running = true, total = strategies.size)
         viewModelScope.launch {
             var lastHosts: Map<String, Boolean> = emptyMap()
