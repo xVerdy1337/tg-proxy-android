@@ -43,6 +43,10 @@ object StrategyTester {
         Strategy("-d1 -s4 -d8 -s1+s -d5+s -s10+s -d20+s -a1", "Микс disorder/split"),
     )
 
+    /** Friendly label for a saved command if it matches a known strategy, else null. */
+    fun labelForCommand(command: String): String? =
+        STRATEGIES.firstOrNull { it.command == command.trim() }?.label
+
     data class HostResult(val host: String, val ok: Boolean, val detail: String)
     data class StrategyResult(val strategy: Strategy, val hosts: List<HostResult>) {
         val allOk: Boolean get() = hosts.isNotEmpty() && hosts.all { it.ok }
