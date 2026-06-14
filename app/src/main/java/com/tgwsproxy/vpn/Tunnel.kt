@@ -22,4 +22,10 @@ interface Tunnel {
      * flow can never evict a UDP association that happens to share the same (port,ip,port) tuple.
      */
     fun onConnectionClosed(key: Long, udp: Boolean)
+
+    /**
+     * Surface a human-readable diagnostic (e.g. "protect failed" / "connect: timeout") so the UI
+     * can show *why* connections are dying. Used to debug the userspace data path on-device.
+     */
+    fun reportError(msg: String)
 }

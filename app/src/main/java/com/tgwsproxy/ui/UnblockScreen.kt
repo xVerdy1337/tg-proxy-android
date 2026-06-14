@@ -345,6 +345,13 @@ private fun LiveStatsCard(state: DesyncVpnService.VpnState) {
             StatItem("Отправлено", formatBytesShort(state.bytesUp))
             StatItem("Получено", formatBytesShort(state.bytesDown))
         }
+        val err = state.error
+        if (!err.isNullOrBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Text("Диагностика", color = TextMuted, style = MaterialTheme.typography.labelSmall)
+            Spacer(Modifier.height(2.dp))
+            Text(err, color = Destructive, style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
 

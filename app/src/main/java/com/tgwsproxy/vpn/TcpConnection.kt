@@ -66,9 +66,23 @@ class TcpConnection(
         thread(name = "up-tcp-$serverPort", isDaemon = true) {
             try {
                 val s = Socket()
-                if (!tunnel.protectTcp(s)) { reset(); return@thread }
+                // Force the OS-level fd to exist BEFORE protect(): a freshly-constructed,
+                // unconnected Socket may not have a file descriptor yet on some Android versions,
+                // and VpnService.protect() then silently fails → the upstream socket gets routed
+                // back into our own TUN (loop) and never connects → we RST every flow. Binding to
+                // an ephemeral local port materialises the fd so protect() actually takes effect.
+                try { s.bind(InetSocketAddress(0)) } catch (_: Exception) {}
+                if (!tunnel.protectTcp(s)) {
+                    tunnel.reportError("protect failed (upstream not excluded from VPN)")
+                    reset(); return@thread
+                }
                 s.tcpNoDelay = true
-                s.connect(InetSocketAddress(PacketUtils.ipToString(serverIp), serverPort), 10_000)
+                try {
+                    s.connect(InetSocketAddress(PacketUtils.ipToString(serverIp), serverPort), 10_000)
+                } catch (e: Exception) {
+                    tunnel.reportError("connect ${PacketUtils.ipToString(serverIp)}:$serverPort → ${e.javaClass.simpleName}: ${e.message}")
+                    reset(); return@thread
+                }
                 synchronized(lock) {
                     upstream = s
                     upOut = s.getOutputStream()
@@ -76,8 +90,10 @@ class TcpConnection(
                     // flush anything the client already sent before connect completed
                     flushPendingLocked()
                 }
+                tunnel.reportError("") // a flow reached the real server → clear stale diagnostics
                 pumpDownstream(s.getInputStream())
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                tunnel.reportError("upstream ${e.javaClass.simpleName}: ${e.message}")
                 reset()
             }
         }

@@ -289,6 +289,11 @@ class DesyncVpnService : VpnService(), Tunnel {
         if (udp) udpMap.remove(key) else tcpMap.remove(key)
     }
 
+    override fun reportError(msg: String) {
+        // Keep only the most recent reason; the stats loop preserves it via copy().
+        _state.value = _state.value.copy(error = msg)
+    }
+
     // ---- stats / lifecycle ----
 
     private fun startStats() {
