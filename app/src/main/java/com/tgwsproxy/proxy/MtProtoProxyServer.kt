@@ -233,9 +233,9 @@ class MtProtoProxyServer(
             )
 
             // Connect WebSocket by racing every transport candidate; first to open wins.
-            val wsBridge = connectAnyWs(result.dcId, result.isMedia, label)
+            val wsConn = connectAnyWs(result.dcId, result.isMedia, label)
 
-            if (wsBridge == null) {
+            if (wsConn == null) {
                 onLog("[$label] WS connection failed, trying TCP fallback")
                 val fallbackIp = dcDefaultIps[result.dcId] ?: dcDefaultIps[2]!!
                 val fallbackOk = tcpFallback(clientSocket, clientInput, clientOutput, cryptoCtx, relayInit, fallbackIp)
@@ -245,12 +245,12 @@ class MtProtoProxyServer(
                 return
             }
 
-            val bridge = wsBridge
+            val (bridge, candidate) = wsConn
 
             // Hand Telegram the relay obfuscation init as the very first WS frame.
             bridge.send(relayInit)
 
-            bridgeData(clientSocket, clientInput, clientOutput, bridge, cryptoCtx, relayInit, protoInt, label, result.dcId, result.isMedia)
+            bridgeData(clientSocket, clientInput, clientOutput, bridge, cryptoCtx, relayInit, protoInt, label, result.dcId, result.isMedia, candidate)
 
         } catch (e: Exception) {
             onLog("[$label] error: ${e.message}")
@@ -304,13 +304,19 @@ class MtProtoProxyServer(
 
     private data class WsCandidate(val pinnedIp: String?, val host: String, val kind: String)
 
-    // Remembers the last endpoint that worked, keyed by "dcId/isMedia". On a reconnect we try
-    // it alone first instead of racing ~18 TLS handshakes again — big battery/radio saver,
-    // especially when a network switch forces every session to redial at once. Falls back to
-    // the full race if the cached endpoint no longer answers.
+    // Remembers the last endpoint that PROVED it carries Telegram data (set in bridgeData once
+    // bytes actually flow back), keyed by "dcId/isMedia". On a reconnect we try it alone first
+    // instead of racing ~18 TLS handshakes again — big battery/radio saver, especially when a
+    // network switch forces every session to redial at once.
+    //
+    // NB: we deliberately cache only AFTER data flows, not when the WebSocket merely opens. A
+    // Cloudflare-fronted endpoint can complete the WS upgrade (onOpen) while its upstream to
+    // Telegram is dead; because pingInterval keeps the CF edge alive with pongs, such a
+    // "connected but dead" route never closes and Telegram hangs on "connecting". Caching only
+    // proven routes + the stall watchdog in bridgeData prevents that.
     private val routeCache = ConcurrentHashMap<String, WsCandidate>()
 
-    private suspend fun connectAnyWs(dcId: Int, isMedia: Boolean, label: String): WebSocketBridge? {
+    private suspend fun connectAnyWs(dcId: Int, isMedia: Boolean, label: String): Pair<WebSocketBridge, WsCandidate>? {
         val cacheKey = "$dcId/$isMedia"
 
         routeCache[cacheKey]?.let { cached ->
@@ -319,7 +325,7 @@ class MtProtoProxyServer(
             if (ok) {
                 lastRoute = cached.kind
                 onLog("[$label] WS reconnected via ${cached.host} (${cached.kind}, cached)")
-                return b
+                return Pair(b, cached)
             }
             try { b.close() } catch (_: Exception) {}
             routeCache.remove(cacheKey) // cached endpoint went stale — fall back to full race
@@ -339,17 +345,17 @@ class MtProtoProxyServer(
 
         onLog("[$label] connecting WS: racing ${candidates.size} endpoints (direct + Cloudflare)")
 
-        val winner = kotlinx.coroutines.CompletableDeferred<WebSocketBridge?>()
+        // Carry bridge + winning candidate together so there's no race between "who won" and
+        // "which endpoint won" (the candidate is needed later to cache a proven route).
+        val winner = kotlinx.coroutines.CompletableDeferred<Pair<WebSocketBridge, WsCandidate>?>()
         val bridges = java.util.Collections.synchronizedList(ArrayList<WebSocketBridge>())
-        val winningCandidate = java.util.concurrent.atomic.AtomicReference<WsCandidate?>(null)
 
         val jobs = candidates.map { c ->
             serverScope.launch {
                 val b = WebSocketBridge()
                 bridges.add(b)
                 val ok = try { b.connect(c.pinnedIp, c.host) } catch (_: Exception) { false }
-                if (ok && !winner.isCompleted && winner.complete(b)) {
-                    winningCandidate.set(c)
+                if (ok && !winner.isCompleted && winner.complete(Pair(b, c))) {
                     lastRoute = c.kind
                     onLog("[$label] WS connected via ${c.host} (${c.kind})")
                 } else {
@@ -363,17 +369,14 @@ class MtProtoProxyServer(
             winner.complete(null)
         }
 
-        val bridge = winner.await()
+        val result = winner.await()
         jobs.forEach { it.cancel() }
         synchronized(bridges) {
-            for (b in bridges) if (b !== bridge) try { b.close() } catch (_: Exception) {}
+            for (b in bridges) if (b !== result?.first) try { b.close() } catch (_: Exception) {}
         }
-        if (bridge != null) {
-            winningCandidate.get()?.let { routeCache[cacheKey] = it }
-        } else {
-            onLog("[$label] all WS endpoints failed")
-        }
-        return bridge
+        if (result == null) onLog("[$label] all WS endpoints failed")
+        // Note: caching happens in bridgeData once the route actually carries data, not here.
+        return result
     }
 
     private suspend fun bridgeData(
@@ -386,9 +389,31 @@ class MtProtoProxyServer(
         protoInt: Long,
         label: String,
         dc: Int,
-        isMedia: Boolean
+        isMedia: Boolean,
+        candidate: WsCandidate
     ) {
         val splitter = try { MsgSplitter(relayInit, protoInt) } catch (_: Exception) { null }
+        val cacheKey = "$dc/$isMedia"
+
+        // Per-connection traffic, used to decide whether this route actually works.
+        val localUp = AtomicLong(0)
+        val localDown = AtomicLong(0)
+
+        // Stall watchdog: a route that opened but never delivers a byte back while the client
+        // is actively sending = dead upstream (e.g. a Cloudflare edge that can't reach
+        // Telegram). pingInterval keeps such a socket alive forever, so detect it ourselves,
+        // evict the route from cache and drop the client so it reconnects and re-races.
+        val watchdog = serverScope.async {
+            try {
+                kotlinx.coroutines.delay(9000)
+                if (localDown.get() == 0L && localUp.get() > 0L) {
+                    routeCache.remove(cacheKey)
+                    onLog("[$label] route stalled (no data back) — dropping & reconnecting")
+                    try { wsBridge.close() } catch (_: Exception) {}
+                    try { clientSocket.close() } catch (_: Exception) {}
+                }
+            } catch (_: Exception) {}
+        }
 
         val clientToWs = serverScope.async {
             try {
@@ -399,6 +424,7 @@ class MtProtoProxyServer(
                         splitter?.flush()?.forEach { wsBridge.send(it) }
                         break
                     }
+                    localUp.addAndGet(read.toLong())
                     bytesUp.addAndGet(read.toLong())
                     val chunk = buffer.copyOfRange(0, read)
                     val plain = ctx.cltDecryptor.update(chunk)
@@ -422,6 +448,10 @@ class MtProtoProxyServer(
             try {
                 while (running && clientSocket.isConnected && !clientSocket.isClosed) {
                     val data = wsBridge.receive() ?: break
+                    // First bytes back prove the route carries Telegram traffic → cache it.
+                    if (localDown.getAndAdd(data.size.toLong()) == 0L) {
+                        routeCache[cacheKey] = candidate
+                    }
                     bytesDown.addAndGet(data.size.toLong())
                     val plain = ctx.tgDecryptor.update(data)
                     val encrypted = ctx.cltEncryptor.update(plain)
@@ -436,6 +466,7 @@ class MtProtoProxyServer(
             awaitAll(clientToWs, wsToClient)
         } catch (_: Exception) {
         } finally {
+            watchdog.cancel()
             wsBridge.close()
             onLog("[$label] DC${dc}${if (isMedia) "m" else ""} session closed")
         }
