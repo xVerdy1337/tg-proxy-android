@@ -12,6 +12,8 @@
     <!-- Ask the OS to exempt Jevio from battery optimization so OEM killers
          (MIUI/EMUI/Samsung) don't kill the proxy service in the background. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Re-enable the desync VPN after reboot if it was on. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- See installed launchable apps so the user can pick which to keep off the bypass. -->
     <queries>
@@ -77,6 +79,27 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
+
+        <service
+            android:name=".service.DesyncTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_shield"
+            android:label="Разблокировка"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name=".vpn.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
 
     </application>
 </manifest>
