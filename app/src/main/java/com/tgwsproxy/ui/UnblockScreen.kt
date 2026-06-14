@@ -1,5 +1,10 @@
 package com.tgwsproxy.ui
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,8 +16,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -29,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -49,6 +58,7 @@ fun UnblockScreen(
     val settings by vm.settings.collectAsState()
     val probe by vm.probe.collectAsState()
     val running = state.isRunning
+    var advancedOpen by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = Modifier
@@ -68,17 +78,9 @@ fun UnblockScreen(
             item { LiveStatsCard(state) }
         }
 
-        item { Text("Настройки", style = MaterialTheme.typography.labelLarge, color = TextSecondary) }
+        item { Text("Метод обхода", style = MaterialTheme.typography.labelLarge, color = TextSecondary) }
 
         item { PresetCard(settings.preset, running) { vm.setPreset(it) } }
-
-        item {
-            ByedpiCommandCard(
-                command = settings.byedpiCmd,
-                presetDefault = vm.defaultCmdForPreset(settings.preset),
-                onApply = { vm.setByedpiCmd(it) },
-            )
-        }
 
         item {
             ToggleCard(
@@ -91,15 +93,14 @@ fun UnblockScreen(
         }
 
         item {
-            ToggleCard(
-                icon = Icons.Default.Lock,
-                title = "Все приложения",
-                subtitle = if (settings.allApps)
-                    "Обход применяется ко всем приложениям"
-                else
-                    "Сейчас обход работает только для YouTube и Instagram",
-                checked = settings.allApps,
-                onChange = { vm.setAllApps(it) }
+            AdvancedSection(
+                expanded = advancedOpen,
+                onToggle = { advancedOpen = !advancedOpen },
+                command = settings.byedpiCmd,
+                presetDefault = vm.defaultCmdForPreset(settings.preset),
+                onApplyCmd = { vm.setByedpiCmd(it) },
+                allApps = settings.allApps,
+                onAllApps = { vm.setAllApps(it) },
             )
         }
 
@@ -121,6 +122,17 @@ private fun HeroUnblockCard(
     onDisable: () -> Unit,
 ) {
     val accent = if (running) Accent else TextMuted
+
+    // Gentle breathing pulse on the status badge while the VPN is active.
+    val pulse = rememberInfiniteTransition(label = "hero-pulse")
+    val pulseAlpha by pulse.animateFloat(
+        initialValue = 0.10f,
+        targetValue = 0.28f,
+        animationSpec = infiniteRepeatable(tween(1300), RepeatMode.Reverse),
+        label = "hero-pulse-alpha"
+    )
+    val badgeAlpha = if (running) pulseAlpha else 0.15f
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -138,7 +150,7 @@ private fun HeroUnblockCard(
             modifier = Modifier
                 .size(72.dp)
                 .clip(CircleShape)
-                .background(accent.copy(alpha = 0.15f)),
+                .background(accent.copy(alpha = badgeAlpha)),
             contentAlignment = Alignment.Center
         ) {
             Icon(
@@ -156,12 +168,22 @@ private fun HeroUnblockCard(
             fontWeight = FontWeight.SemiBold
         )
         Spacer(Modifier.height(6.dp))
-        Text(
-            if (running) "Включено — обходим блокировку провайдера"
-            else "Выключено. Нажмите, чтобы включить обход",
-            style = MaterialTheme.typography.bodyMedium,
-            color = TextSecondary
-        )
+        if (running) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box(Modifier.size(8.dp).clip(CircleShape).background(OkGreen).alpha(pulseAlpha * 3.4f))
+                Text(
+                    "Включено — обходим блокировку провайдера",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary
+                )
+            }
+        } else {
+            Text(
+                "Выключено. Нажмите, чтобы включить обход",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary
+            )
+        }
         state.error?.let {
             Spacer(Modifier.height(6.dp))
             Text(it, style = MaterialTheme.typography.bodySmall, color = Destructive)
@@ -385,6 +407,19 @@ private fun StatItem(label: String, value: String) {
     }
 }
 
+/** Human description of what each preset actually does — shown under the chips. */
+private fun presetDescription(preset: String): String = when (preset) {
+    DesyncVpnService.PRESET_AUTO ->
+        "Сильный каскадный сплит. Рекомендуется — пробивает большинство операторов."
+    DesyncVpnService.PRESET_TLSREC ->
+        "Метод A: сплит + tlsrec + FAKE-пакет с низким TTL. Бери, если «Авто» не справился."
+    DesyncVpnService.PRESET_SPLIT ->
+        "Метод B: лёгкий многоточечный сплит. Ниже задержка, запасной вариант."
+    DesyncVpnService.PRESET_OFF ->
+        "Без десинка: трафик идёт через VPN как есть. Только для диагностики «трубы»."
+    else -> ""
+}
+
 @Composable
 private fun PresetCard(current: String, running: Boolean, onSelect: (String) -> Unit) {
     Card {
@@ -402,9 +437,27 @@ private fun PresetCard(current: String, running: Boolean, onSelect: (String) -> 
         }
         Spacer(Modifier.height(8.dp))
         PresetChip("Без обхода (тест трубы)", DesyncVpnService.PRESET_OFF, current, Modifier.fillMaxWidth(), onSelect)
-        Spacer(Modifier.height(6.dp))
+
+        // Inline explanation of the currently selected method.
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(Accent.copy(alpha = 0.10f))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(Icons.Default.Info, null, tint = Accent, modifier = Modifier.size(16.dp))
+            Text(
+                presetDescription(current),
+                color = TextSecondary, style = MaterialTheme.typography.labelSmall
+            )
+        }
+        Spacer(Modifier.height(8.dp))
         Text(
-            "«Без обхода» гоняет трафик через VPN без десинка — для диагностики: если так грузит, а с обходом нет — дело в методе; если и так не грузит — в трубе. После смены метода выключи и включи VPN.",
+            "После смены метода выключи и включи VPN.",
             color = TextMuted, style = MaterialTheme.typography.labelSmall
         )
     }
@@ -433,6 +486,64 @@ private fun PresetChip(
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
             style = MaterialTheme.typography.labelLarge
         )
+    }
+}
+
+@Composable
+private fun AdvancedSection(
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    command: String,
+    presetDefault: String,
+    onApplyCmd: (String) -> Unit,
+    allApps: Boolean,
+    onAllApps: (Boolean) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        // Clickable header that expands the advanced controls.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(Surface)
+                .border(1.dp, Border, RoundedCornerShape(14.dp))
+                .clickable { onToggle() }
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Tune, null, tint = Mauve, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Продвинутые настройки", color = TextPrimary, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "Команда byedpi и охват приложений",
+                    color = TextSecondary, style = MaterialTheme.typography.labelSmall
+                )
+            }
+            Icon(
+                if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                null, tint = TextSecondary, modifier = Modifier.size(22.dp)
+            )
+        }
+
+        if (expanded) {
+            ByedpiCommandCard(
+                command = command,
+                presetDefault = presetDefault,
+                onApply = onApplyCmd,
+            )
+            ToggleCard(
+                icon = Icons.Default.Lock,
+                title = "Все приложения",
+                subtitle = if (allApps)
+                    "Обход применяется ко всем приложениям"
+                else
+                    "Сейчас обход работает только для YouTube и Instagram",
+                checked = allApps,
+                onChange = onAllApps
+            )
+        }
     }
 }
 
