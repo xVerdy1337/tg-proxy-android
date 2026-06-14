@@ -56,6 +56,8 @@ data class AutoTuneUiState(
     val foundLabel: String? = null,
     val foundCommand: String? = null,
     val error: String? = null,
+    /** Per-host TLS-handshake result from the last/winning strategy (host → reachable). */
+    val hostOk: Map<String, Boolean> = emptyMap(),
 )
 
 /** An installed app the user can choose to keep off the bypass. */
@@ -142,11 +144,15 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
         val strategies = StrategyTester.STRATEGIES
         _autoTune.value = AutoTuneUiState(running = true, total = strategies.size)
         viewModelScope.launch {
+            var lastHosts: Map<String, Boolean> = emptyMap()
             val found = withContext(Dispatchers.IO) {
                 var hit: StrategyTester.Strategy? = null
                 for ((i, s) in strategies.withIndex()) {
                     _autoTune.value = _autoTune.value.copy(index = i + 1, currentLabel = s.label)
                     val res = StrategyTester.testStrategy(s, hosts, port = 1081 + (i % 4))
+                    lastHosts = res.hosts.associate { hr ->
+                        (targets.firstOrNull { it.first == hr.host }?.second ?: hr.host) to hr.ok
+                    }
                     if (res.allOk) { hit = s; break }
                 }
                 hit
@@ -157,11 +163,13 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                     finished = true,
                     foundLabel = found.label,
                     foundCommand = found.command,
+                    hostOk = lastHosts,
                 )
             } else {
                 _autoTune.value = AutoTuneUiState(
                     finished = true,
-                    error = "Ни один метод не пробил блокировку. Попробуй вручную в продвинутых настройках."
+                    error = "Ни один метод не пробил блокировку. Попробуй вручную в продвинутых настройках.",
+                    hostOk = lastHosts,
                 )
             }
         }
