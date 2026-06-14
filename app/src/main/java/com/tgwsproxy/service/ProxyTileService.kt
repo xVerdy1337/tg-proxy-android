@@ -51,7 +51,7 @@ class ProxyTileService : TileService() {
         val tile = qsTile ?: return
         tile.state = if (running) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.label = getString(R.string.tile_label)
-        tile.icon = Icon.createWithResource(this, R.drawable.ic_tile_shield)
+        tile.icon = Icon.createWithResource(this, R.drawable.ic_tile_jevio)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             tile.subtitle = getString(
                 if (running) R.string.proxy_running else R.string.proxy_stopped
