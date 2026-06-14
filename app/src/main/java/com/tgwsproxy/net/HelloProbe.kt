@@ -16,10 +16,9 @@ import kotlin.random.Random
  * TLS ClientHello carrying the host as SNI — optionally re-framed by [DesyncEngine] — and watches
  * what happens:
  *
- *  - the provider DPI (TSPU) that blocks YouTube/Instagram resets the connection right after it
- *    reads the SNI  -> we observe "Connection reset"  -> [Outcome.BLOCKED]
- *  - if the SNI is hidden by the desync, the connection survives and the server answers (or just
- *    keeps the socket open) -> [Outcome.PASS]
+ *  - the server replies with a real TLS handshake record (ServerHello) -> [Outcome.PASS]
+ *  - the provider DPI (TSPU) resets the flow, the server sends a TLS alert, the connection is
+ *    silently dropped/throttled, or a non-TLS interceptor answers -> [Outcome.BLOCKED]
  *  - DNS / routing failures -> [Outcome.ERROR]
  *
  * Comparing the PLAIN result (no desync, usually BLOCKED) against TLSREC / SPLIT (hopefully PASS)
@@ -41,9 +40,25 @@ object HelloProbe {
     private const val CONNECT_TIMEOUT_MS = 5000
     private const val READ_TIMEOUT_MS = 3500
 
-    /** Run one probe: connect, send the (maybe re-framed) ClientHello, classify the reaction. */
+    /**
+     * Run one probe: connect, send the (maybe re-framed) ClientHello, classify the reaction.
+     *
+     * PASS is granted ONLY when the server replies with a real TLS handshake record (first byte
+     * 0x16 = ServerHello). Everything else is treated conservatively so we never report "работает"
+     * when it doesn't:
+     *   - RST / broken pipe                      -> BLOCKED (DPI сбросил поток)
+     *   - TLS alert (0x15)                       -> BLOCKED (TLS-уровневый отказ, часто по SNI)
+     *   - silence until timeout (drop/throttle)  -> BLOCKED (нет ответа)
+     *   - clean FIN/EOF with no data             -> BLOCKED (закрыто без handshake)
+     *   - any non-TLS byte (interceptor/stub)    -> BLOCKED (подозрительный ответ)
+     *   - DNS / route / connect failure          -> ERROR
+     *
+     * latencyMs is the true response time (last byte sent -> first reaction), measured with
+     * nanoTime; for the timeout case it is just the read window and must not be read as RTT.
+     */
     fun probe(host: String, port: Int = 443, method: Method): Result {
-        val start = System.currentTimeMillis()
+        val startNs = System.nanoTime()
+        var sentNs = startNs
         var sock: Socket? = null
         try {
             val addr = InetAddress.getByName(host)            // direct DNS
@@ -60,43 +75,53 @@ object HelloProbe {
                 Method.TLSREC, Method.SPLIT -> {
                     val m = if (method == Method.TLSREC) DesyncEngine.Method.TLSREC else DesyncEngine.Method.SPLIT
                     val plan = DesyncEngine.plan(hello, m)
-                    for (chunk in plan.chunks) {
+                    for ((i, chunk) in plan.chunks.withIndex()) {
                         out.write(chunk); out.flush()
-                        try { Thread.sleep(8) } catch (_: InterruptedException) {}
+                        // Keep the segments apart so the SNI is genuinely split on the wire, but
+                        // do it BEFORE we start the RTT clock so it never pollutes latencyMs.
+                        if (i < plan.chunks.size - 1) try { Thread.sleep(8) } catch (_: InterruptedException) {}
                     }
                 }
             }
 
+            // Start the RTT clock now: everything after this is the server's reaction time.
+            sentNs = System.nanoTime()
             sock.soTimeout = READ_TIMEOUT_MS
             val ins = sock.getInputStream()
             val first = try {
                 ins.read()
             } catch (e: SocketTimeoutException) {
-                // No reset within the window -> connection is alive -> DPI didn't kill it.
-                return Result(method, Outcome.PASS, elapsed(start), "соединение живо (нет сброса)")
+                // A live HTTPS server replies within ~RTT on a direct connection. Silence here means
+                // the flow was silently dropped/throttled — that is NOT a working bypass.
+                return Result(method, Outcome.BLOCKED, elapsedMs(sentNs), "нет ответа (тихий дроп/троттл)")
             }
-            return if (first >= 0) {
-                Result(method, Outcome.PASS, elapsed(start), "сервер ответил (0x${(first and 0xFF).toString(16)})")
-            } else {
-                // Clean FIN, no RST: SNI made it through without a provider reset.
-                Result(method, Outcome.PASS, elapsed(start), "сервер закрыл без сброса")
+            val rttMs = elapsedMs(sentNs)
+            return when {
+                first < 0 ->
+                    Result(method, Outcome.BLOCKED, rttMs, "закрыто без ответа (FIN)")
+                first == 0x16 ->
+                    Result(method, Outcome.PASS, rttMs, "TLS ServerHello получен")
+                first == 0x15 ->
+                    Result(method, Outcome.BLOCKED, rttMs, "TLS alert (отказ handshake)")
+                else ->
+                    Result(method, Outcome.BLOCKED, rttMs, "не-TLS ответ 0x${(first and 0xFF).toString(16)} (перехват)")
             }
         } catch (e: IOException) {
             val msg = (e.message ?: "").lowercase()
             val blocked = "reset" in msg || "econnreset" in msg || "broken pipe" in msg || "epipe" in msg
             return if (blocked) {
-                Result(method, Outcome.BLOCKED, elapsed(start), "сброс соединения (DPI)")
+                Result(method, Outcome.BLOCKED, elapsedMs(startNs), "сброс соединения (DPI)")
             } else {
-                Result(method, Outcome.ERROR, elapsed(start), e.message ?: "ошибка сети")
+                Result(method, Outcome.ERROR, elapsedMs(startNs), e.message ?: "ошибка сети")
             }
         } catch (e: Exception) {
-            return Result(method, Outcome.ERROR, elapsed(start), e.message ?: "ошибка")
+            return Result(method, Outcome.ERROR, elapsedMs(startNs), e.message ?: "ошибка")
         } finally {
             try { sock?.close() } catch (_: Exception) {}
         }
     }
 
-    private fun elapsed(start: Long) = System.currentTimeMillis() - start
+    private fun elapsedMs(fromNs: Long) = (System.nanoTime() - fromNs) / 1_000_000
 
     /**
      * Build a reasonably complete TLS 1.3 ClientHello with [sni] as the server_name. It doesn't
