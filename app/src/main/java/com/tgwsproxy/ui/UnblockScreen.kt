@@ -304,7 +304,7 @@ private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
                 if (anyWorks)
                     "Найден рабочий метод — он выставлен автоматически. Включи VPN и проверь приложения."
                 else
-                    "Простой desync (A/B) не пробивает DPI у твоего оператора. Нужен метод посильнее (FAKE+TTL) — следующая итерация.",
+                    "Проба (одна точка реза) блокировку не пробила — это не значит, что не работают каскадные методы. Включи VPN с «Авто» и проверь приложения; не помогло — перебери Метод A/B или впиши свою команду.",
                 color = if (anyWorks) OkGreen else Warning,
                 style = MaterialTheme.typography.labelSmall
             )
@@ -456,7 +456,7 @@ private fun ByedpiCommandCard(
             value = text,
             onValueChange = { text = it },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text(presetDefault.ifBlank { "-Kt -An -f1+s -t8" }, color = TextMuted) },
+            placeholder = { Text(presetDefault.ifBlank { "-d1 -s1+s -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1" }, color = TextMuted) },
             singleLine = false,
             colors = TextFieldDefaults.colors(
                 focusedContainerColor = SurfaceVariant,
