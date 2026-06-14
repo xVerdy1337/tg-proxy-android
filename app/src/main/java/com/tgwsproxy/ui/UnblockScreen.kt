@@ -663,9 +663,9 @@ private fun AdvancedSection(
                 icon = Icons.Default.Lock,
                 title = "Все приложения",
                 subtitle = if (allApps)
-                    "Обход применяется ко всем приложениям"
+                    "Обход применяется ко всем приложениям (рекомендуется — надёжнее всего)"
                 else
-                    "Сейчас обход работает только для YouTube и Instagram",
+                    "Только YouTube и Instagram. Часть их трафика идёт через Play Services / браузер и может не обходиться — включи «все приложения», если не работает",
                 checked = allApps,
                 onChange = onAllApps
             )
