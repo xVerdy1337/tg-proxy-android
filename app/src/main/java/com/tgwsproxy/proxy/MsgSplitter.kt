@@ -20,6 +20,19 @@ import javax.crypto.spec.SecretKeySpec
  */
 class MsgSplitter(relayInit: ByteArray, private val protoInt: Long) {
 
+    private companion object {
+        // Guard against unbounded growth (OOM) on hostile / garbage streams that never frame.
+        const val MAX_PACKET_LEN = 16 * 1024 * 1024   // 16 MiB — well above any real MTProto frame
+        const val MAX_BUFFERED = 32 * 1024 * 1024     // 32 MiB of unframed backlog → bail out
+    }
+
+    init {
+        require(
+            relayInit.size >= MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN + MtProtoConstants.IV_LEN
+        ) { "relayInit too short: ${relayInit.size} bytes" }
+    }
+
+
     private val dec: Cipher = Cipher.getInstance("AES/CTR/NoPadding").apply {
         val key = relayInit.copyOfRange(MtProtoConstants.SKIP_LEN, MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN)
         val iv = relayInit.copyOfRange(
@@ -68,6 +81,15 @@ class MsgSplitter(relayInit: ByteArray, private val protoInt: Long) {
             cipherBuf = cipherBuf.copyOfRange(offset, cipherBuf.size)
             plainBuf = plainBuf.copyOfRange(offset, plainBuf.size)
         }
+        if (cipherBuf.size > MAX_BUFFERED) {
+            // Never-framing / hostile stream: stop splitting and flush the backlog as one frame
+            // instead of buffering toward OOM.
+            val rest = cipherBuf
+            cipherBuf = ByteArray(0)
+            plainBuf = ByteArray(0)
+            disabled = true
+            parts.add(rest)
+        }
         return parts
     }
 
@@ -107,6 +129,7 @@ class MsgSplitter(relayInit: ByteArray, private val protoInt: Long) {
         }
         if (payloadLen <= 0) return 0
         val packetLen = headerLen + payloadLen
+        if (packetLen > MAX_PACKET_LEN) return 0   // absurd declared length → treat as bad framing
         if (avail < packetLen) return null
         return packetLen
     }
@@ -119,6 +142,7 @@ class MsgSplitter(relayInit: ByteArray, private val protoInt: Long) {
                 (u(plainBuf[offset + 3]) shl 24)) and 0x7FFFFFFF)
         if (payloadLen <= 0) return 0
         val packetLen = 4 + payloadLen
+        if (packetLen > MAX_PACKET_LEN) return 0   // absurd declared length → treat as bad framing
         if (avail < packetLen) return null
         return packetLen
     }
