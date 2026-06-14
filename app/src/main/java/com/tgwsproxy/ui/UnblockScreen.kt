@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
@@ -57,6 +58,7 @@ fun UnblockScreen(
     val state by vm.vpnState.collectAsState()
     val settings by vm.settings.collectAsState()
     val probe by vm.probe.collectAsState()
+    val autoTune by vm.autoTune.collectAsState()
     val running = state.isRunning
     var advancedOpen by remember { mutableStateOf(false) }
 
@@ -70,9 +72,16 @@ fun UnblockScreen(
 
         item { HeroUnblockCard(running, state, onEnable, onDisable) }
 
-        item { ServicesRow(probe) }
+        item {
+            AutoTuneCard(
+                autoTune = autoTune,
+                vpnRunning = running,
+                onRun = { vm.runAutoTune() },
+                onReset = { vm.dismissAutoTune() },
+            )
+        }
 
-        item { ProbeCard(probe) { vm.runProbe() } }
+        item { ServicesRow(probe) }
 
         if (running) {
             item { LiveStatsCard(state) }
@@ -96,6 +105,8 @@ fun UnblockScreen(
             AdvancedSection(
                 expanded = advancedOpen,
                 onToggle = { advancedOpen = !advancedOpen },
+                probe = probe,
+                onCheck = { vm.runProbe() },
                 command = settings.byedpiCmd,
                 presetDefault = vm.defaultCmdForPreset(settings.preset),
                 onApplyCmd = { vm.setByedpiCmd(it) },
@@ -217,6 +228,114 @@ private fun BigToggleButton(running: Boolean, onClick: () -> Unit) {
 private val OkGreen = Color(0xFF5BBF7B)
 
 @Composable
+private fun AutoTuneCard(
+    autoTune: AutoTuneUiState,
+    vpnRunning: Boolean,
+    onRun: () -> Unit,
+    onReset: () -> Unit,
+) {
+    Card {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.AutoFixHigh, null, tint = Accent, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(10.dp))
+            Column {
+                Text("Автоподбор метода", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Сами переберём методы и оставим рабочий",
+                    color = TextSecondary, style = MaterialTheme.typography.labelSmall
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        when {
+            autoTune.running -> {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
+                    Text(
+                        "Проверяю ${autoTune.index}/${autoTune.total}: ${autoTune.currentLabel}",
+                        color = TextPrimary, style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Не закрывай вкладку — подбор идёт через реальные подключения к YouTube и Instagram.",
+                    color = TextMuted, style = MaterialTheme.typography.labelSmall
+                )
+            }
+
+            autoTune.finished && autoTune.foundLabel != null -> {
+                Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.Check, null, tint = OkGreen, modifier = Modifier.size(18.dp))
+                    Text(
+                        "Готово: «${autoTune.foundLabel}» подобран и сохранён. Включи VPN и проверь приложения.",
+                        color = OkGreen, style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                SecondaryButton("Подобрать заново", onReset)
+            }
+
+            autoTune.finished && autoTune.error != null -> {
+                Text(autoTune.error, color = Warning, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(10.dp))
+                PrimaryButton(if (vpnRunning) "Сначала выключи VPN" else "Попробовать снова", enabled = !vpnRunning, onClick = onRun)
+            }
+
+            else -> {
+                if (vpnRunning) {
+                    Text(
+                        "Подбор работает только при выключенном VPN — он монопольно использует движок обхода.",
+                        color = TextMuted, style = MaterialTheme.typography.labelSmall
+                    )
+                    Spacer(Modifier.height(10.dp))
+                }
+                PrimaryButton(
+                    if (vpnRunning) "Сначала выключи VPN" else "Подобрать автоматически",
+                    enabled = !vpnRunning,
+                    onClick = onRun
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PrimaryButton(label: String, enabled: Boolean = true, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (enabled) Accent else SurfaceVariant)
+            .clickable(enabled = enabled) { onClick() }
+            .padding(vertical = 13.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            label,
+            color = if (enabled) Background else TextMuted,
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp
+        )
+    }
+}
+
+@Composable
+private fun SecondaryButton(label: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(SurfaceVariant)
+            .clickable { onClick() }
+            .padding(vertical = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(label, color = TextPrimary, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
 private fun ServicesRow(probe: ProbeUiState) {
     val yt = probe.results.firstOrNull { it.display == "YouTube" }
     val ig = probe.results.firstOrNull { it.display == "Instagram" }
@@ -288,10 +407,10 @@ private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("Проверить методы", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                Text("Ручная проверка методов", color = TextPrimary, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "Напрямую проверяет, какой метод обходит блокировку у твоего оператора. Лучше при выключенном VPN.",
+                    "Быстрая прямая проба split/tlsrec (без FAKE). Для полного подбора используй «Автоподбор» выше.",
                     color = TextSecondary,
                     style = MaterialTheme.typography.labelSmall
                 )
@@ -324,9 +443,9 @@ private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
             Spacer(Modifier.height(2.dp))
             Text(
                 if (anyWorks)
-                    "Найден рабочий метод — он выставлен автоматически. Включи VPN и проверь приложения."
+                    "Нашёлся рабочий простой метод. Но «Автоподбор» надёжнее — он проверяет и FAKE/TTL."
                 else
-                    "Проба (одна точка реза) блокировку не пробила — это не значит, что не работают каскадные методы. Включи VPN с «Авто» и проверь приложения; не помогло — перебери Метод A/B или впиши свою команду.",
+                    "Простая проба не пробила — это не значит, что не работают каскадные методы. Запусти «Автоподбор» выше.",
                 color = if (anyWorks) OkGreen else Warning,
                 style = MaterialTheme.typography.labelSmall
             )
@@ -426,7 +545,7 @@ private fun PresetCard(current: String, running: Boolean, onSelect: (String) -> 
         Text("Метод обхода", color = TextPrimary, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         Text(
-            "Если что-то не открывается — переключите метод.",
+            "Если что-то не открывается — переключите метод или нажмите «Автоподбор».",
             color = TextSecondary, style = MaterialTheme.typography.bodySmall
         )
         Spacer(Modifier.height(12.dp))
@@ -493,6 +612,8 @@ private fun PresetChip(
 private fun AdvancedSection(
     expanded: Boolean,
     onToggle: () -> Unit,
+    probe: ProbeUiState,
+    onCheck: () -> Unit,
     command: String,
     presetDefault: String,
     onApplyCmd: (String) -> Unit,
@@ -517,7 +638,7 @@ private fun AdvancedSection(
                 Text("Продвинутые настройки", color = TextPrimary, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "Команда byedpi и охват приложений",
+                    "Ручная проверка, команда byedpi, охват приложений",
                     color = TextSecondary, style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -528,6 +649,7 @@ private fun AdvancedSection(
         }
 
         if (expanded) {
+            ProbeCard(probe, onCheck)
             ByedpiCommandCard(
                 command = command,
                 presetDefault = presetDefault,
