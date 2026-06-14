@@ -2,6 +2,8 @@ package com.tgwsproxy.ui
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tgwsproxy.net.HelloProbe
@@ -56,6 +58,14 @@ data class AutoTuneUiState(
     val error: String? = null,
 )
 
+/** An installed app the user can choose to keep off the bypass. */
+data class AppInfo(
+    val pkg: String,
+    val label: String,
+    /** Built-in exclusions (banks/gov/retail) are always off the bypass and can't be unchecked. */
+    val builtIn: Boolean,
+)
+
 /**
  * UI state holder for the "Разблокировка" tab. Live runtime state (running / flows / bytes) comes
  * straight from [DesyncVpnService.state]; user settings are persisted to prefs and re-read so they
@@ -73,6 +83,14 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _autoTune = MutableStateFlow(AutoTuneUiState())
     val autoTune: StateFlow<AutoTuneUiState> = _autoTune.asStateFlow()
+
+    private val _installedApps = MutableStateFlow<List<AppInfo>>(emptyList())
+    val installedApps: StateFlow<List<AppInfo>> = _installedApps.asStateFlow()
+
+    private val _excluded = MutableStateFlow(loadExcluded())
+    val excluded: StateFlow<Set<String>> = _excluded.asStateFlow()
+
+    val builtInExcluded: Set<String> = DesyncVpnService.EXCLUDED_APPS.toSet()
 
     private val targets = listOf(
         "www.youtube.com" to "YouTube",
@@ -153,8 +171,46 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
         if (!_autoTune.value.running) _autoTune.value = AutoTuneUiState()
     }
 
+    /** Load installed launchable apps (label + package), built-in exclusions flagged + on top. */
+    fun loadInstalledApps() {
+        if (_installedApps.value.isNotEmpty()) return
+        viewModelScope.launch {
+            val apps = withContext(Dispatchers.IO) {
+                val pm = getApplication<Application>().packageManager
+                val self = getApplication<Application>().packageName
+                val launchable = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                val resolved = pm.queryIntentActivities(launchable, 0)
+                resolved.asSequence()
+                    .map { it.activityInfo.packageName }
+                    .filter { it != self }
+                    .distinct()
+                    .map { pkg ->
+                        val label = try {
+                            pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+                        } catch (_: Exception) { pkg }
+                        AppInfo(pkg = pkg, label = label, builtIn = builtInExcluded.contains(pkg))
+                    }
+                    .sortedWith(compareByDescending<AppInfo> { it.builtIn }.thenBy { it.label.lowercase() })
+                    .toList()
+            }
+            _installedApps.value = apps
+        }
+    }
+
+    /** Add/remove an app from the user exclusion set (built-in ones are forced on and ignored). */
+    fun setExcluded(pkg: String, excluded: Boolean) {
+        if (builtInExcluded.contains(pkg)) return
+        val next = _excluded.value.toMutableSet()
+        if (excluded) next.add(pkg) else next.remove(pkg)
+        prefs().edit().putStringSet(DesyncVpnService.KEY_EXCLUDED_USER, next).apply()
+        _excluded.value = next
+    }
+
     private fun prefs() =
         getApplication<Application>().getSharedPreferences(DesyncVpnService.PREFS, Context.MODE_PRIVATE)
+
+    private fun loadExcluded(): Set<String> =
+        prefs().getStringSet(DesyncVpnService.KEY_EXCLUDED_USER, emptySet())?.toSet() ?: emptySet()
 
     private fun load(): DesyncSettings {
         val p = prefs()
