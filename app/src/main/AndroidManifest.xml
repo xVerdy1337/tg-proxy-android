@@ -13,6 +13,15 @@
          (MIUI/EMUI/Samsung) don't kill the proxy service in the background. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- See installed launchable apps so the user can pick which to keep off the bypass. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+
     <application
         android:name=".TgWsProxyApp"
         android:allowBackup="true"
