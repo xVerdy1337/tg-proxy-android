@@ -70,6 +70,8 @@ class DesyncVpnService : VpnService(), Tunnel {
         const val KEY_VPN_RUNNING = "desync_vpn_running"
         // Custom byedpi command line (empty → derived from the selected preset).
         const val KEY_BYEDPI_CMD = "byedpi_cmd"
+        // User-chosen packages to keep OFF the bypass (StringSet), on top of EXCLUDED_APPS.
+        const val KEY_EXCLUDED_USER = "desync_excluded_user"
 
         const val PRESET_TLSREC = "tlsrec"
         const val PRESET_SPLIT = "split"
@@ -180,6 +182,7 @@ class DesyncVpnService : VpnService(), Tunnel {
     private var method: DesyncEngine.Method? = DesyncEngine.Method.TLSREC
     private var blockQuic = true
     private var allApps = true
+    private var excludedUser: Set<String> = emptySet()
     private var byedpiArgs: Array<String> = arrayOf("ciadpi")
 
     private var byedpiProxy: ByeDpiProxy? = null
@@ -203,6 +206,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         val p = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         blockQuic = p.getBoolean(KEY_BLOCK_QUIC, true)
         allApps = p.getBoolean(KEY_ALL_APPS, true)
+        excludedUser = p.getStringSet(KEY_EXCLUDED_USER, emptySet())?.toSet() ?: emptySet()
         val preset = p.getString(KEY_PRESET, PRESET_AUTO) ?: PRESET_AUTO
         method = when (preset) {
             PRESET_SPLIT -> DesyncEngine.Method.SPLIT
@@ -285,8 +289,8 @@ class DesyncVpnService : VpnService(), Tunnel {
             // Our own app must bypass the TUN (byedpi's upstream socket reaches the net directly).
             try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
             // Banking / gov / marketplace apps detect the desync and block login — keep them OFF
-            // the bypass so they keep working normally.
-            for (pkg in EXCLUDED_APPS) {
+            // the bypass (built-in list + whatever the user picked) so they keep working normally.
+            for (pkg in (EXCLUDED_APPS + excludedUser).toHashSet()) {
                 try { builder.addDisallowedApplication(pkg) } catch (_: Exception) { /* not installed */ }
             }
         } else {
