@@ -182,11 +182,11 @@ class TcpConnection(
         }
     }
 
-    private fun sendSegment(flags: Int, payload: ByteArray) {
+    private fun sendSegment(flags: Int, payload: ByteArray, mss: Int = 0) {
         val pkt = PacketUtils.buildTcp(
             src = serverIp, srcPort = serverPort,
             dst = clientIp, dstPort = clientPort,
-            seq = sndNxt, ack = rcvNxt, flags = flags, window = WIN, payload = payload
+            seq = sndNxt, ack = rcvNxt, flags = flags, window = WIN, payload = payload, mss = mss
         )
         tunnel.writeToTun(pkt)
     }
