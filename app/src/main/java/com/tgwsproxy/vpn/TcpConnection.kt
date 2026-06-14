@@ -1,6 +1,6 @@
 package com.tgwsproxy.vpn
 
-import com.tgwsproxy.desync.DesyncEngine
+import java.io.DataInputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
@@ -9,14 +9,19 @@ import kotlin.concurrent.thread
 import kotlin.random.Random
 
 /**
- * One TCP flow from a captured app, terminated locally and relayed to the real destination over a
- * VPN-protected socket. On the very first client→server payload (the TLS ClientHello) we run
- * [DesyncEngine] so the provider's DPI can't read the SNI — that's what unblocks YouTube/Instagram.
+ * One TCP flow from a captured app, terminated locally and relayed to the real destination
+ * **through the bundled native byedpi engine** running as a local SOCKS5 proxy on
+ * 127.0.0.1:[socksPort]. byedpi performs the real packet-level DPI desync (fake/split/disorder/
+ * tlsrec with low-TTL + splice fooling) that a pure-Kotlin kernel socket cannot do — that's what
+ * defeats the provider's DPI on YouTube/Instagram (same engine alt12/zapret uses on desktop).
+ *
+ * The hop to 127.0.0.1 is loopback, so it never re-enters our TUN. byedpi's own upstream socket
+ * belongs to our app, which is excluded from the VPN (see DesyncVpnService), so it reaches the
+ * network directly — no routing loop.
  *
  * This is a deliberately compact, "good-enough" TCP: it ACKs in-order data, ignores out-of-order
- * segments (the client retransmits), and relies on the local TUN write being reliable to the
- * kernel (so we don't implement our own retransmission for the downstream direction). It is NOT a
- * full RFC 793 stack — it's the standard lightweight tun2socks-style approach, tuned on-device.
+ * segments (the client retransmits), and relies on the local TUN write being reliable. It is NOT a
+ * full RFC 793 stack — it's the standard lightweight tun2socks-style approach.
  */
 class TcpConnection(
     private val clientIp: ByteArray,
@@ -25,7 +30,7 @@ class TcpConnection(
     private val serverPort: Int,
     private val tunnel: Tunnel,
     private val key: Long,
-    private val method: DesyncEngine.Method?,   // null = no desync (plain relay)
+    private val socksPort: Int,   // local byedpi SOCKS5 port (127.0.0.1)
 ) {
     private enum class State { SYN_RECEIVED, ESTABLISHED, CLOSING, CLOSED }
 
@@ -39,7 +44,6 @@ class TcpConnection(
     private var upstream: Socket? = null
     private var upOut: OutputStream? = null
     @Volatile private var connected = false
-    @Volatile private var firstPayloadSent = false
     private val pendingToUpstream = ArrayList<ByteArray>()
 
     companion object {
@@ -53,9 +57,6 @@ class TcpConnection(
             rcvNxt = (clientSeq + 1) and 0xFFFFFFFFL
             sndNxt = (Random.nextLong() and 0xFFFFFFFFL)
             clientWindow = window
-            // SYN+ACK — advertise our MSS so the app caps its segments at a size we (and the
-            // downstream path) handle cleanly. Without this the app assumes 1460 and can emit
-            // segments that don't round-trip well through the userspace stack.
             sendSegment(PacketUtils.TcpFlag.SYN or PacketUtils.TcpFlag.ACK, ByteArray(0), mss = MSS)
             sndNxt = (sndNxt + 1) and 0xFFFFFFFFL
         }
@@ -65,32 +66,36 @@ class TcpConnection(
     private fun connectUpstream() {
         thread(name = "up-tcp-$serverPort", isDaemon = true) {
             try {
+                // Connect to the local byedpi SOCKS5 proxy. Loopback is never routed through the
+                // TUN, so no protect() is needed (and protecting loopback would be a no-op anyway).
                 val s = Socket()
-                // Force the OS-level fd to exist BEFORE protect(): a freshly-constructed,
-                // unconnected Socket may not have a file descriptor yet on some Android versions,
-                // and VpnService.protect() then silently fails → the upstream socket gets routed
-                // back into our own TUN (loop) and never connects → we RST every flow. Binding to
-                // an ephemeral local port materialises the fd so protect() actually takes effect.
-                try { s.bind(InetSocketAddress(0)) } catch (_: Exception) {}
-                if (!tunnel.protectTcp(s)) {
-                    tunnel.reportError("protect failed (upstream not excluded from VPN)")
-                    tunnel.onConnectResult(false)
-                    reset(); return@thread
-                }
                 s.tcpNoDelay = true
                 try {
-                    s.connect(InetSocketAddress(PacketUtils.ipToString(serverIp), serverPort), 10_000)
+                    s.connect(InetSocketAddress("127.0.0.1", socksPort), 10_000)
                 } catch (e: Exception) {
-                    tunnel.reportError("connect ${PacketUtils.ipToString(serverIp)}:$serverPort → ${e.javaClass.simpleName}: ${e.message}")
+                    tunnel.reportError("byedpi SOCKS connect → ${e.javaClass.simpleName}: ${e.message}")
                     tunnel.onConnectResult(false)
                     reset(); return@thread
                 }
+
+                // SOCKS5 CONNECT to the real destination; byedpi then desyncs + dials out.
+                val ok = try {
+                    socks5Connect(s.getInputStream(), s.getOutputStream(), serverIp, serverPort)
+                } catch (e: Exception) {
+                    tunnel.reportError("SOCKS5 ${PacketUtils.ipToString(serverIp)}:$serverPort → ${e.javaClass.simpleName}: ${e.message}")
+                    false
+                }
+                if (!ok) {
+                    tunnel.onConnectResult(false)
+                    try { s.close() } catch (_: Exception) {}
+                    reset(); return@thread
+                }
+
                 tunnel.onConnectResult(true)
                 synchronized(lock) {
                     upstream = s
                     upOut = s.getOutputStream()
                     connected = true
-                    // flush anything the client already sent before connect completed
                     flushPendingLocked()
                 }
                 tunnel.reportError("") // a flow reached the real server → clear stale diagnostics
@@ -102,6 +107,39 @@ class TcpConnection(
         }
     }
 
+    /**
+     * Minimal SOCKS5 client: no-auth greeting + CONNECT to an IPv4 destination. Returns true on a
+     * success reply (REP == 0x00).
+     */
+    private fun socks5Connect(rawIn: InputStream, out: OutputStream, ip: ByteArray, port: Int): Boolean {
+        val din = DataInputStream(rawIn)
+        // Greeting: VER=5, NMETHODS=1, METHOD=0 (no auth)
+        out.write(byteArrayOf(0x05, 0x01, 0x00)); out.flush()
+        val ver = din.readUnsignedByte()
+        val method = din.readUnsignedByte()
+        if (ver != 0x05 || method != 0x00) return false
+        // CONNECT: VER=5, CMD=1, RSV=0, ATYP=1 (IPv4), DST.ADDR(4), DST.PORT(2)
+        val req = ByteArray(10)
+        req[0] = 0x05; req[1] = 0x01; req[2] = 0x00; req[3] = 0x01
+        System.arraycopy(ip, 0, req, 4, 4)
+        req[8] = ((port ushr 8) and 0xFF).toByte()
+        req[9] = (port and 0xFF).toByte()
+        out.write(req); out.flush()
+        // Reply: VER, REP, RSV, ATYP, BND.ADDR, BND.PORT
+        if (din.readUnsignedByte() != 0x05) return false
+        val rep = din.readUnsignedByte()
+        din.readUnsignedByte() // RSV
+        val atyp = din.readUnsignedByte()
+        val addrLen = when (atyp) {
+            0x01 -> 4
+            0x04 -> 16
+            0x03 -> din.readUnsignedByte()
+            else -> return false
+        }
+        din.skipBytes(addrLen + 2) // BND.ADDR + BND.PORT
+        return rep == 0x00
+    }
+
     /** Called by the service for every non-SYN TCP packet belonging to this flow. */
     fun onPacket(seq: Long, ack: Long, flags: Int, window: Int, payload: ByteArray) {
         synchronized(lock) {
@@ -110,7 +148,6 @@ class TcpConnection(
 
             if (flags and PacketUtils.TcpFlag.RST != 0) { closeLocked(sendRst = false); return }
             if (flags and PacketUtils.TcpFlag.SYN != 0) {
-                // SYN retransmit before our SYN+ACK was seen — resend it.
                 val saved = sndNxt
                 sndNxt = (sndNxt - 1) and 0xFFFFFFFFL
                 sendSegment(PacketUtils.TcpFlag.SYN or PacketUtils.TcpFlag.ACK, ByteArray(0))
@@ -127,14 +164,12 @@ class TcpConnection(
                         sendSegment(PacketUtils.TcpFlag.ACK, ByteArray(0))
                     }
                     else -> {
-                        // out-of-order or already-seen → dup-ACK so the client retransmits.
                         sendSegment(PacketUtils.TcpFlag.ACK, ByteArray(0))
                     }
                 }
             }
 
             if (flags and PacketUtils.TcpFlag.FIN != 0) {
-                // Only honor FIN that lines up with our expected seq.
                 if (seq + payload.size == rcvNxt || payload.isEmpty()) {
                     rcvNxt = (rcvNxt + 1) and 0xFFFFFFFFL
                     sendSegment(PacketUtils.TcpFlag.ACK, ByteArray(0))
@@ -157,23 +192,11 @@ class TcpConnection(
 
     private fun writeUpstreamLocked(data: ByteArray) {
         val out = upOut ?: return
-        try {
-            if (!firstPayloadSent && method != null && DesyncEngine.isClientHello(data)) {
-                firstPayloadSent = true
-                val safeMethod = when (method) {
-                    DesyncEngine.Method.DISORDER -> DesyncEngine.Method.SPLIT // raw reorder needs IP-level control
-                    else -> method
-                }
-                val plan = DesyncEngine.plan(data, safeMethod)
-                for (chunk in plan.chunks) { out.write(chunk); out.flush() }
-            } else {
-                firstPayloadSent = true
-                out.write(data); out.flush()
-            }
-        } catch (_: Exception) { reset() }
+        // No Kotlin-side desync: byedpi reframes/fakes the ClientHello on its outbound socket.
+        try { out.write(data); out.flush() } catch (_: Exception) { reset() }
     }
 
-    /** Reads from the real server and streams it back to the client as TCP segments. */
+    /** Reads from byedpi (real server data) and streams it back to the client as TCP segments. */
     private fun pumpDownstream(inp: InputStream) {
         val buf = ByteArray(MSS)
         try {
@@ -188,7 +211,6 @@ class TcpConnection(
                     sndNxt = (sndNxt + chunk.size) and 0xFFFFFFFFL
                 }
             }
-            // server closed → FIN to client
             synchronized(lock) {
                 if (state != State.CLOSED) {
                     sendSegment(PacketUtils.TcpFlag.ACK or PacketUtils.TcpFlag.FIN, ByteArray(0))

@@ -14,9 +14,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 data class DesyncSettings(
-    val preset: String = DesyncVpnService.PRESET_TLSREC,
+    val preset: String = DesyncVpnService.PRESET_AUTO,
     val blockQuic: Boolean = true,
     val allApps: Boolean = false,
+    /** Custom byedpi command line; empty = use the preset's built-in strategy. */
+    val byedpiCmd: String = "",
 )
 
 /** One service's probe results across the methods we test directly. */
@@ -97,11 +99,21 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
     private fun load(): DesyncSettings {
         val p = prefs()
         return DesyncSettings(
-            preset = p.getString(DesyncVpnService.KEY_PRESET, DesyncVpnService.PRESET_TLSREC)
-                ?: DesyncVpnService.PRESET_TLSREC,
+            preset = p.getString(DesyncVpnService.KEY_PRESET, DesyncVpnService.PRESET_AUTO)
+                ?: DesyncVpnService.PRESET_AUTO,
             blockQuic = p.getBoolean(DesyncVpnService.KEY_BLOCK_QUIC, true),
             allApps = p.getBoolean(DesyncVpnService.KEY_ALL_APPS, false),
+            byedpiCmd = p.getString(DesyncVpnService.KEY_BYEDPI_CMD, "") ?: "",
         )
+    }
+
+    /** Default byedpi command for the current preset (shown as a hint / starting point). */
+    fun defaultCmdForPreset(preset: String): String =
+        DesyncVpnService.presetToByedpiArgs(preset)
+
+    fun setByedpiCmd(cmd: String) {
+        prefs().edit().putString(DesyncVpnService.KEY_BYEDPI_CMD, cmd).apply()
+        _settings.value = _settings.value.copy(byedpiCmd = cmd)
     }
 
     fun setPreset(preset: String) {

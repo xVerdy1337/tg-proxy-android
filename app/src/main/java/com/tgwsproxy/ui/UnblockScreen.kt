@@ -16,12 +16,17 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -66,6 +71,14 @@ fun UnblockScreen(
         item { Text("Настройки", style = MaterialTheme.typography.labelLarge, color = TextSecondary) }
 
         item { PresetCard(settings.preset, running) { vm.setPreset(it) } }
+
+        item {
+            ByedpiCommandCard(
+                command = settings.byedpiCmd,
+                presetDefault = vm.defaultCmdForPreset(settings.preset),
+                onApply = { vm.setByedpiCmd(it) },
+            )
+        }
 
         item {
             ToggleCard(
@@ -419,6 +432,72 @@ private fun PresetChip(
             color = if (selected) Background else TextPrimary,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
             style = MaterialTheme.typography.labelLarge
+        )
+    }
+}
+
+@Composable
+private fun ByedpiCommandCard(
+    command: String,
+    presetDefault: String,
+    onApply: (String) -> Unit,
+) {
+    var text by remember(command) { mutableStateOf(command) }
+    Card {
+        Text("Команда byedpi (для продвинутых)", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Тонкая настройка движка обхода. Пусто = стратегия выбранного метода. " +
+                "Сейчас активно: ${command.ifBlank { presetDefault.ifBlank { "(без десинка)" } }}",
+            color = TextSecondary, style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(Modifier.height(10.dp))
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text(presetDefault.ifBlank { "-Kt -An -f1+s -t8" }, color = TextMuted) },
+            singleLine = false,
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = SurfaceVariant,
+                unfocusedContainerColor = SurfaceVariant,
+                focusedTextColor = TextPrimary,
+                unfocusedTextColor = TextPrimary,
+                cursorColor = Accent,
+                focusedIndicatorColor = Accent,
+                unfocusedIndicatorColor = Border,
+            )
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Accent)
+                    .clickable { onApply(text.trim()) }
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("Применить", color = Background, fontWeight = FontWeight.SemiBold)
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(SurfaceVariant)
+                    .clickable { text = ""; onApply("") }
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("Сброс", color = TextPrimary)
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Флаги byedpi: -Kt(TLS) -An(авто) -f1+s(fake у SNI) -t8(TTL фейка) -s1+s(сплит) -d1+s(disorder) -r1+s(TLS-record). " +
+                "После «Применить» выключи и включи VPN.",
+            color = TextMuted, style = MaterialTheme.typography.labelSmall
         )
     }
 }

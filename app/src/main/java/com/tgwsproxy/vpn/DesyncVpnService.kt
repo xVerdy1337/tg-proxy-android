@@ -13,6 +13,7 @@ import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
 import com.tgwsproxy.MainActivity
 import com.tgwsproxy.R
+import com.tgwsproxy.core.ByeDpiProxy
 import com.tgwsproxy.desync.DesyncEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -67,11 +68,63 @@ class DesyncVpnService : VpnService(), Tunnel {
         const val KEY_BLOCK_QUIC = "desync_block_quic"
         const val KEY_ALL_APPS = "desync_all_apps"
         const val KEY_VPN_RUNNING = "desync_vpn_running"
+        // Custom byedpi command line (empty → derived from the selected preset).
+        const val KEY_BYEDPI_CMD = "byedpi_cmd"
 
         const val PRESET_TLSREC = "tlsrec"
         const val PRESET_SPLIT = "split"
         const val PRESET_AUTO = "auto"
         const val PRESET_OFF = "off"
+
+        // Local byedpi SOCKS5 endpoint that the userspace TCP relay dials.
+        private const val SOCKS_PORT = 1080
+
+        /**
+         * byedpi desync arguments per preset (the real DPI bypass). Built/tuned for YouTube +
+         * Instagram on RU providers; "Авто" mirrors the spirit of zapret/alt12 (fake + auto).
+         * A non-empty custom command in prefs overrides these.
+         *   -Kt   : desync TLS (HTTPS) flows
+         *   -An   : byedpi auto-strategy (probes + sticks to what defeats the DPI)
+         *   -f1+s : fake desync, split 1 byte into the SNI (decoy ClientHello via low TTL/splice)
+         *   -t8   : TTL of the fake packets
+         *   -r1+s : split the TLS record at the SNI
+         *   -s1+s : plain segment split at the SNI
+         */
+        fun presetToByedpiArgs(preset: String): String = when (preset) {
+            PRESET_AUTO -> "-Kt -An -f1+s -t8"
+            PRESET_TLSREC -> "-Kt -r1+s -An"
+            PRESET_SPLIT -> "-Kt -s1+s -An"
+            PRESET_OFF -> "" // plain SOCKS relay, no desync
+            else -> "-Kt -An -f1+s -t8"
+        }
+
+        /** Tokenise a byedpi command line into an argv array (argv[0] = "ciadpi"). */
+        fun buildByedpiArgs(command: String, ip: String, port: Int): Array<String> {
+            val base = mutableListOf("ciadpi", "-i", ip, "-p", port.toString(), "-X")
+            base.addAll(shellSplit(command))
+            return base.toTypedArray()
+        }
+
+        private fun shellSplit(s: String): List<String> {
+            val out = ArrayList<String>()
+            val sb = StringBuilder()
+            var quote = 0.toChar()
+            var i = 0
+            while (i < s.length) {
+                val c = s[i]
+                when {
+                    quote != 0.toChar() -> {
+                        if (c == quote) quote = 0.toChar() else sb.append(c)
+                    }
+                    c == '\'' || c == '"' -> quote = c
+                    c.isWhitespace() -> { if (sb.isNotEmpty()) { out.add(sb.toString()); sb.setLength(0) } }
+                    else -> sb.append(c)
+                }
+                i++
+            }
+            if (sb.isNotEmpty()) out.add(sb.toString())
+            return out
+        }
 
         private const val NOTIFICATION_ID = 2
         private const val CHANNEL_ID = "desync_vpn_channel"
@@ -107,6 +160,10 @@ class DesyncVpnService : VpnService(), Tunnel {
     private var method: DesyncEngine.Method? = DesyncEngine.Method.TLSREC
     private var blockQuic = true
     private var allApps = false
+    private var byedpiArgs: Array<String> = arrayOf("ciadpi")
+
+    private var byedpiProxy: ByeDpiProxy? = null
+    private var byedpiThread: Thread? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var readThread: Thread? = null
@@ -125,12 +182,43 @@ class DesyncVpnService : VpnService(), Tunnel {
         val p = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         blockQuic = p.getBoolean(KEY_BLOCK_QUIC, true)
         allApps = p.getBoolean(KEY_ALL_APPS, false)
-        method = when (p.getString(KEY_PRESET, PRESET_TLSREC)) {
+        val preset = p.getString(KEY_PRESET, PRESET_AUTO) ?: PRESET_AUTO
+        method = when (preset) {
             PRESET_SPLIT -> DesyncEngine.Method.SPLIT
             PRESET_AUTO, PRESET_TLSREC -> DesyncEngine.Method.TLSREC
             PRESET_OFF -> null
             else -> DesyncEngine.Method.TLSREC
         }
+        // Custom command wins; otherwise derive byedpi args from the preset.
+        val custom = (p.getString(KEY_BYEDPI_CMD, "") ?: "").trim()
+        val command = if (custom.isNotEmpty()) custom else presetToByedpiArgs(preset)
+        byedpiArgs = buildByedpiArgs(command, "127.0.0.1", SOCKS_PORT)
+    }
+
+    /** Start the native byedpi engine as a local SOCKS5 proxy. Returns true on success. */
+    private fun startByedpi(): Boolean {
+        return try {
+            val proxy = ByeDpiProxy()
+            val fd = proxy.createSocket(byedpiArgs)
+            if (fd < 0) {
+                _state.value = VpnState(isRunning = false, error = "byedpi: неверная команда (parse_args)")
+                return false
+            }
+            byedpiProxy = proxy
+            byedpiThread = thread(name = "byedpi-loop", isDaemon = true) {
+                try { proxy.runLoop() } catch (_: Throwable) {}
+            }
+            true
+        } catch (e: Throwable) {
+            _state.value = VpnState(isRunning = false, error = "byedpi не запустился: ${e.message}")
+            false
+        }
+    }
+
+    private fun stopByedpi() {
+        try { byedpiProxy?.stop() } catch (_: Throwable) {}
+        byedpiProxy = null
+        byedpiThread = null
     }
 
     private fun startVpn() {
@@ -138,6 +226,9 @@ class DesyncVpnService : VpnService(), Tunnel {
         loadPrefs()
         createChannel()
         startForegroundCompat()
+
+        // Bring up the native byedpi SOCKS5 proxy first — the relay dials it for every TCP flow.
+        if (!startByedpi()) { stopForegroundCompat(); stopSelf(); return }
 
         // IPv4 only on purpose: we do NOT add an IPv6 address/route. If we advertised IPv6 on the
         // TUN, apps (YouTube/Instagram use Happy Eyeballs) would prefer AAAA/IPv6 and we'd have to
@@ -172,6 +263,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             tunOut = FileOutputStream(fd.fileDescriptor)
         } catch (e: Exception) {
             _state.value = VpnState(isRunning = false, error = "Не удалось поднять VPN: ${e.message}")
+            stopByedpi()
             stopSelf()
             return
         }
@@ -235,7 +327,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             val conn = TcpConnection(
                 clientIp = PacketUtils.srcIp(packet), clientPort = srcPort,
                 serverIp = PacketUtils.dstIp(packet), serverPort = dstPort,
-                tunnel = this, key = key, method = method
+                tunnel = this, key = key, socksPort = SOCKS_PORT
             )
             tcpMap[key] = conn
             conn.onSyn(seq, win)
@@ -335,6 +427,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         for (c in tcpMap.values) c.close()
         for (u in udpMap.values) u.close()
         tcpMap.clear(); udpMap.clear()
+        stopByedpi()
         try { tunIn?.close() } catch (_: Exception) {}
         try { tunOut?.close() } catch (_: Exception) {}
         try { pfd?.close() } catch (_: Exception) {}
