@@ -19,12 +19,6 @@ android {
             abiFilters.add("armeabi-v7a")
         }
 
-        externalNativeBuild {
-            cmake {
-                // byedpi is C99; keep flags minimal here (CMakeLists carries the rest).
-                arguments.add("-DANDROID_STL=none")
-            }
-        }
     }
 
     externalNativeBuild {

@@ -1,7 +1,8 @@
 package com.tgwsproxy.core
 
 /**
- * Kotlin wrapper around the bundled native `byedpi` (ciadpi) DPI-desync engine.
+ * Kotlin wrapper around the bundled native `byedpi` (ciadpi) DPI-desync engine — v0.17.3,
+ * the exact version ByeByeDPI (BBD) ships, so community command strings work verbatim.
  *
  * byedpi runs as a local SOCKS5 proxy on 127.0.0.1:<port>. Our [com.tgwsproxy.vpn] layer
  * captures app traffic via the TUN and relays each flow through this SOCKS5 proxy; byedpi then
@@ -9,9 +10,10 @@ package com.tgwsproxy.core
  * a pure-Kotlin socket relay cannot do. This is the same engine "ByeDPI for Android" uses and what
  * lets us match zapret/alt12 strategies without root.
  *
- * Lifecycle: [createSocket] parses a byedpi command line and opens the listening socket, returning
- * its fd; [startProxy] runs the blocking event loop on that fd (call on a background thread);
- * [stopProxy] shuts the listening fd down so the loop exits.
+ * Lifecycle: [startProxy] takes a full byedpi argv (argv[0] = "ciadpi") and runs the blocking
+ * proxy event loop — call it on a background thread; it returns only when the proxy stops.
+ * [stopProxy] shuts the listening socket down so the loop exits cleanly; [forceClose] hard-closes
+ * it if the graceful shutdown doesn't return in time.
  */
 class ByeDpiProxy {
     companion object {
@@ -20,34 +22,16 @@ class ByeDpiProxy {
         }
     }
 
-    @Volatile
-    private var fd = -1
+    /** Run the blocking byedpi proxy loop with [args] (argv[0] must be a dummy, e.g. "ciadpi"). */
+    fun startProxy(args: Array<String>): Int = jniStartProxy(args)
 
-    /** Parse [args] (a full byedpi command line, argv[0] included) and open the listen socket. */
-    fun createSocket(args: Array<String>): Int {
-        check(fd < 0) { "proxy already running" }
-        val f = jniCreateSocketWithCommandLine(args)
-        if (f >= 0) fd = f
-        return f
-    }
+    /** Gracefully shut the listen socket so [startProxy] returns. Safe from another thread. */
+    fun stopProxy(): Int = jniStopProxy()
 
-    /** Run the blocking event loop. Returns when the socket is shut down. */
-    fun runLoop(): Int {
-        val f = fd
-        check(f >= 0) { "proxy socket not created" }
-        return jniStartProxy(f)
-    }
+    /** Hard-close the listen socket if graceful shutdown stalls. */
+    fun forceClose(): Int = jniForceClose()
 
-    /** Shut the listen socket so [runLoop] returns. Safe to call from another thread. */
-    fun stop(): Int {
-        val f = fd
-        if (f < 0) return 0
-        val res = jniStopProxy(f)
-        if (res == 0) fd = -1
-        return res
-    }
-
-    private external fun jniCreateSocketWithCommandLine(args: Array<String>): Int
-    private external fun jniStartProxy(fd: Int): Int
-    private external fun jniStopProxy(fd: Int): Int
+    private external fun jniStartProxy(args: Array<String>): Int
+    private external fun jniStopProxy(): Int
+    private external fun jniForceClose(): Int
 }

@@ -4,23 +4,30 @@
 #include <stddef.h>
 
 #include "proxy.h"
+#include "params.h"
 
-int socket_mod(int fd, struct sockaddr *dst);
+int socket_mod(int fd);
 
 int connect_hook(struct poolhd *pool, struct eval *val, 
-        struct sockaddr_ina *dst, int next);
+        const union sockaddr_u *dst, evcb_t next);
         
-int on_tunnel_check(struct poolhd *pool, struct eval *val,
-        char *buffer, size_t bfsize, int out);
-
-int on_desync(struct poolhd *pool, struct eval *val,
-        char *buffer, size_t bfsize, int out);
-
+ssize_t tcp_send_hook(struct poolhd *pool, 
+        struct eval *remote, struct buffer *buff, ssize_t *n, bool *wait);
+        
+ssize_t tcp_recv_hook(struct poolhd *pool, 
+        struct eval *val, struct buffer *buff);
+        
 ssize_t udp_hook(struct eval *val, 
-        char *buffer, size_t bfsize, ssize_t n, struct sockaddr_ina *dst);
+        char *buffer, ssize_t n, const union sockaddr_u *dst);
+    
+static bool check_l34(struct desync_params *dp, int st, const union sockaddr_u *dst);
+
+int on_connerr(struct poolhd *pool, struct eval *val);
+
+int on_timeout(struct poolhd *pool, struct eval *val);
 
 #ifdef __linux__
-int protect(int conn_fd, const char *path);
+static int protect(int conn_fd, const char *path);
 #else
 #define protect(fd, path) 0
 #endif

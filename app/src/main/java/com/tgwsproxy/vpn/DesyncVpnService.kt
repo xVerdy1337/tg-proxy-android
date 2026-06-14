@@ -98,9 +98,13 @@ class DesyncVpnService : VpnService(), Tunnel {
             else -> "-Kt -An -f1+s -t8"
         }
 
-        /** Tokenise a byedpi command line into an argv array (argv[0] = "ciadpi"). */
+        /**
+         * Tokenise a byedpi command line into an argv array (argv[0] = "ciadpi").
+         * We always pin the listen endpoint to 127.0.0.1:<port>; the rest is the user/preset
+         * strategy — community/BBD command strings paste in verbatim (engine = byedpi v0.17.3).
+         */
         fun buildByedpiArgs(command: String, ip: String, port: Int): Array<String> {
-            val base = mutableListOf("ciadpi", "-i", ip, "-p", port.toString(), "-X")
+            val base = mutableListOf("ciadpi", "-i", ip, "-p", port.toString())
             base.addAll(shellSplit(command))
             return base.toTypedArray()
         }
@@ -164,6 +168,7 @@ class DesyncVpnService : VpnService(), Tunnel {
 
     private var byedpiProxy: ByeDpiProxy? = null
     private var byedpiThread: Thread? = null
+    @Volatile private var byedpiExitCode: Int? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var readThread: Thread? = null
@@ -195,18 +200,28 @@ class DesyncVpnService : VpnService(), Tunnel {
         byedpiArgs = buildByedpiArgs(command, "127.0.0.1", SOCKS_PORT)
     }
 
-    /** Start the native byedpi engine as a local SOCKS5 proxy. Returns true on success. */
+    /**
+     * Start the native byedpi engine as a local SOCKS5 proxy on a background thread.
+     * byedpi's main() blocks while serving, so we launch it and briefly wait: if it returns
+     * (thread dies) with a non-zero code right away, the command was invalid → fail.
+     * Returns true if the proxy is up.
+     */
     private fun startByedpi(): Boolean {
         return try {
             val proxy = ByeDpiProxy()
-            val fd = proxy.createSocket(byedpiArgs)
-            if (fd < 0) {
-                _state.value = VpnState(isRunning = false, error = "byedpi: неверная команда (parse_args)")
-                return false
-            }
             byedpiProxy = proxy
+            byedpiExitCode = null
             byedpiThread = thread(name = "byedpi-loop", isDaemon = true) {
-                try { proxy.runLoop() } catch (_: Throwable) {}
+                try { byedpiExitCode = proxy.startProxy(byedpiArgs) }
+                catch (e: Throwable) { byedpiExitCode = -1 }
+            }
+            // Give byedpi a moment to bind/parse; if it already exited, the command was bad.
+            Thread.sleep(500)
+            val t = byedpiThread
+            if (t == null || !t.isAlive) {
+                val code = byedpiExitCode ?: -1
+                _state.value = VpnState(isRunning = false, error = "byedpi: неверная команда (код $code)")
+                return false
             }
             true
         } catch (e: Throwable) {
@@ -216,9 +231,17 @@ class DesyncVpnService : VpnService(), Tunnel {
     }
 
     private fun stopByedpi() {
-        try { byedpiProxy?.stop() } catch (_: Throwable) {}
+        val proxy = byedpiProxy
+        try { proxy?.stopProxy() } catch (_: Throwable) {}
+        // Give the loop up to 2s to unwind; if it's still alive, hard-close the socket.
+        val t = byedpiThread
+        try {
+            t?.join(2000)
+            if (t != null && t.isAlive) { try { proxy?.forceClose() } catch (_: Throwable) {} }
+        } catch (_: Throwable) {}
         byedpiProxy = null
         byedpiThread = null
+        byedpiExitCode = null
     }
 
     private fun startVpn() {

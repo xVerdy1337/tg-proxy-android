@@ -495,8 +495,10 @@ private fun ByedpiCommandCard(
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            "Флаги byedpi: -Kt(TLS) -An(авто) -f1+s(fake у SNI) -t8(TTL фейка) -s1+s(сплит) -d1+s(disorder) -r1+s(TLS-record). " +
-                "После «Применить» выключи и включи VPN.",
+            "Движок — byedpi v0.17.3 (как в ByeByeDPI), поэтому команды из чатов BBD вставляются " +
+                "как есть: -H:\"домены\"(хостлист) -An/-L(авто-секции) -Kt(TLS) -f1+s(fake у SNI) " +
+                "-t8(TTL) -s1+s(сплит) -d1+s(disorder) -r1+s(TLS-record) -M(mod-http) -Q(fake-tls). " +
+                "ip/порт прокси добавляются автоматически. После «Применить» выключи и включи VPN.",
             color = TextMuted, style = MaterialTheme.typography.labelSmall
         )
     }
