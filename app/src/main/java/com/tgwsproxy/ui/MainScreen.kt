@@ -188,28 +188,24 @@ fun MainScreen(
             )
         }
 
-        if (selectedTab == 1) {
-            UnblockScreen(desyncVm, onEnableVpn, onDisableVpn)
-            return@Column
-        }
-
-        if (uiState.isLoading) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(color = Accent)
-            }
-            return@Column
-        }
-
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+          when (selectedTab) {
+            1 -> UnblockScreen(desyncVm, onEnableVpn, onDisableVpn)
+            else -> if (uiState.isLoading) {
+              Box(
+                  modifier = Modifier.fillMaxSize(),
+                  contentAlignment = Alignment.Center
+              ) {
+                  CircularProgressIndicator(color = Accent)
+              }
+            } else {
+              LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+              ) {
             item { HeroStatusCard(uiState) }
 
             item { BatteryOptimizationCard() }
@@ -283,6 +279,9 @@ fun MainScreen(
             }
 
             item { Spacer(modifier = Modifier.height(24.dp)) }
+              }
+            }
+          }
         }
       }
     }
