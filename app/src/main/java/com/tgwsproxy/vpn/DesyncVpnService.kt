@@ -48,7 +48,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         val isRunning: Boolean = false,
         val preset: String = PRESET_TLSREC,
         val blockQuic: Boolean = true,
-        val scopeAllApps: Boolean = false,
+        val scopeAllApps: Boolean = true,
         val activeTcp: Int = 0,
         val activeUdp: Int = 0,
         val bytesUp: Long = 0,
@@ -165,7 +165,7 @@ class DesyncVpnService : VpnService(), Tunnel {
 
     private var method: DesyncEngine.Method? = DesyncEngine.Method.TLSREC
     private var blockQuic = true
-    private var allApps = false
+    private var allApps = true
     private var byedpiArgs: Array<String> = arrayOf("ciadpi")
 
     private var byedpiProxy: ByeDpiProxy? = null
@@ -188,7 +188,7 @@ class DesyncVpnService : VpnService(), Tunnel {
     private fun loadPrefs() {
         val p = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         blockQuic = p.getBoolean(KEY_BLOCK_QUIC, true)
-        allApps = p.getBoolean(KEY_ALL_APPS, false)
+        allApps = p.getBoolean(KEY_ALL_APPS, true)
         val preset = p.getString(KEY_PRESET, PRESET_AUTO) ?: PRESET_AUTO
         method = when (preset) {
             PRESET_SPLIT -> DesyncEngine.Method.SPLIT
