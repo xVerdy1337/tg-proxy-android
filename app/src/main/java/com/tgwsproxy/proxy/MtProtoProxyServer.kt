@@ -30,7 +30,7 @@ class MtProtoProxyServer(
     private val activeConnections = ConcurrentHashMap.newKeySet<Socket>()
     private val connectionCount = AtomicInteger(0)
     private val serverScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val secretBytes = secret.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    private val secretBytes = parseSecret(secret)
 
     // === Live traffic stats (read by the service for the UI) ===
     val bytesUp = AtomicLong(0)     // client -> telegram (uploaded)
@@ -155,6 +155,8 @@ class MtProtoProxyServer(
             clientSocket.keepAlive = true
             clientSocket.receiveBufferSize = 256 * 1024
             clientSocket.sendBufferSize = 256 * 1024
+            // Bound the handshake phase so a silent/half-open peer can't pin a coroutine forever.
+            clientSocket.soTimeout = HANDSHAKE_TIMEOUT_MS
 
             val rawInput = clientSocket.getInputStream()
             val rawOutput = clientSocket.getOutputStream()
@@ -210,9 +212,12 @@ class MtProtoProxyServer(
             val result = MtProtoHandshake.tryHandshake(handshake, secretBytes)
             if (result == null) {
                 onLog("[$label] bad handshake (wrong secret or proto)")
-                try { clientInput.skip(Long.MAX_VALUE) } catch (_: Exception) {}
+                // Bad handshake: close immediately. Do NOT skip() — reading from a silent peer
+                // could block forever (DoS); the finally block closes the socket.
                 return
             }
+            // Handshake done — go back to blocking reads for the long-lived relay phase.
+            clientSocket.soTimeout = 0
 
             val protoInt = when {
                 result.protoTag.contentEquals(MtProtoConstants.PROTO_TAG_ABRIDGED) -> MtProtoConstants.PROTO_ABRIDGED_INT
@@ -275,6 +280,8 @@ class MtProtoProxyServer(
         try {
             val up = Socket(fakeTlsDomain, 443)
             up.tcpNoDelay = true
+            up.soTimeout = RELAY_IO_TIMEOUT_MS
+            try { clientSocket.soTimeout = RELAY_IO_TIMEOUT_MS } catch (_: Exception) {}
             val upOut = up.getOutputStream()
             val upIn = up.getInputStream()
             upOut.write(initialData); upOut.flush()
@@ -369,7 +376,7 @@ class MtProtoProxyServer(
             winner.complete(null)
         }
 
-        val result = winner.await()
+        val result = withTimeoutOrNull(WS_RACE_TIMEOUT_MS) { winner.await() }
         jobs.forEach { it.cancel() }
         synchronized(bridges) {
             for (b in bridges) if (b !== result?.first) try { b.close() } catch (_: Exception) {}
@@ -482,53 +489,75 @@ class MtProtoProxyServer(
     ): Boolean {
         return try {
             val remoteSocket = Socket(targetIp, 443)
-            remoteSocket.tcpNoDelay = true
-            remoteSocket.keepAlive = true
-            val remoteOutput = remoteSocket.getOutputStream()
-            val remoteInput = remoteSocket.getInputStream()
+            try {
+                remoteSocket.tcpNoDelay = true
+                remoteSocket.keepAlive = true
+                val remoteOutput = remoteSocket.getOutputStream()
+                val remoteInput = remoteSocket.getInputStream()
 
-            lastRoute = "tcp"
-            remoteOutput.write(relayInit)
-            remoteOutput.flush()
+                lastRoute = "tcp"
+                remoteOutput.write(relayInit)
+                remoteOutput.flush()
 
-            val clientToRemote = serverScope.async {
-                try {
-                    val buffer = ByteArray(65536)
-                    while (running && clientSocket.isConnected && !clientSocket.isClosed) {
-                        val read = clientInput.read(buffer)
-                        if (read <= 0) break
-                        bytesUp.addAndGet(read.toLong())
-                        val chunk = buffer.copyOfRange(0, read)
-                        val plain = ctx.cltDecryptor.update(chunk)
-                        val reenc = ctx.tgEncryptor.update(plain)
-                        remoteOutput.write(reenc)
-                        remoteOutput.flush()
-                    }
-                } catch (_: Exception) {}
+                val clientToRemote = serverScope.async {
+                    try {
+                        val buffer = ByteArray(65536)
+                        while (running && !clientSocket.isClosed) {
+                            val read = clientInput.read(buffer)
+                            if (read <= 0) break
+                            bytesUp.addAndGet(read.toLong())
+                            val chunk = buffer.copyOfRange(0, read)
+                            val plain = ctx.cltDecryptor.update(chunk)
+                            val reenc = ctx.tgEncryptor.update(plain)
+                            remoteOutput.write(reenc)
+                            remoteOutput.flush()
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                val remoteToClient = serverScope.async {
+                    try {
+                        val buffer = ByteArray(65536)
+                        while (running && !remoteSocket.isClosed) {
+                            val read = remoteInput.read(buffer)
+                            if (read <= 0) break
+                            bytesDown.addAndGet(read.toLong())
+                            val chunk = buffer.copyOfRange(0, read)
+                            val plain = ctx.tgDecryptor.update(chunk)
+                            val encrypted = ctx.cltEncryptor.update(plain)
+                            clientOutput.write(encrypted)
+                            clientOutput.flush()
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                awaitAll(clientToRemote, remoteToClient)
+                true
+            } finally {
+                try { remoteSocket.close() } catch (_: Exception) {}
             }
-
-            val remoteToClient = serverScope.async {
-                try {
-                    val buffer = ByteArray(65536)
-                    while (running && remoteSocket.isConnected && !remoteSocket.isClosed) {
-                        val read = remoteInput.read(buffer)
-                        if (read <= 0) break
-                        bytesDown.addAndGet(read.toLong())
-                        val chunk = buffer.copyOfRange(0, read)
-                        val plain = ctx.tgDecryptor.update(chunk)
-                        val encrypted = ctx.cltEncryptor.update(plain)
-                        clientOutput.write(encrypted)
-                        clientOutput.flush()
-                    }
-                } catch (_: Exception) {}
-            }
-
-            awaitAll(clientToRemote, remoteToClient)
-            try { remoteSocket.close() } catch (_: Exception) {}
-            true
         } catch (e: Exception) {
             onLog("TCP fallback error: ${e.message}")
             false
         }
     }
+    private companion object {
+        // Handshake must complete within this window; afterwards reads block (soTimeout = 0).
+        const val HANDSHAKE_TIMEOUT_MS = 10_000
+        // Whole WS candidate race can't outlast this (in case a bridge.connect() never returns).
+        const val WS_RACE_TIMEOUT_MS = 15_000L
+        // Idle I/O timeout on the benign masking relay so a silent peer can't hang it forever.
+        const val RELAY_IO_TIMEOUT_MS = 15_000
+
+        /** Decode a hex MTProto secret, failing loudly on odd length / non-hex instead of crashing. */
+        fun parseSecret(s: String): ByteArray {
+            val hex = s.trim()
+            require(hex.isNotEmpty() && hex.length % 2 == 0 &&
+                hex.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }) {
+                "Invalid secret: expected an even-length hex string"
+            }
+            return hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        }
+    }
+
 }
