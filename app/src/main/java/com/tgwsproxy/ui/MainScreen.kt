@@ -66,6 +66,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import java.util.Locale
 
 private fun copyToClipboard(context: Context, label: String, text: String, toast: String) {
@@ -227,7 +229,11 @@ fun MainScreen(
                   modifier = Modifier.fillMaxSize(),
                   contentAlignment = Alignment.Center
               ) {
-                  CircularProgressIndicator(color = Accent)
+                  Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                      CircularProgressIndicator(color = Accent)
+                      Spacer(modifier = Modifier.height(14.dp))
+                      Text("Подключаюсь…", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                  }
               }
             } else {
               LazyColumn(
@@ -850,11 +856,15 @@ private fun ControlButtons(
     onToggle: () -> Unit,
     onOpenTelegram: () -> Unit
 ) {
+    val haptic = LocalHapticFeedback.current
     Column(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Button(
-            onClick = onToggle,
+            onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onToggle()
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(58.dp),
@@ -881,7 +891,10 @@ private fun ControlButtons(
             // after the proxy is up. Copying the raw link lived in a separate button that just
             // added clutter; the secret/server rows already have their own copy icons.
             Button(
-                onClick = onOpenTelegram,
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onOpenTelegram()
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
