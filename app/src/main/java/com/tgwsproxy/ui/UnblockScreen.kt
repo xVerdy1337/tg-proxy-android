@@ -99,7 +99,7 @@ fun UnblockScreen(
             )
         }
 
-        item { ServicesRow(probe) }
+        item { ServicesRow(probe, autoTune) }
 
         if (running) {
             item { LiveStatsCard(state) }
@@ -107,7 +107,15 @@ fun UnblockScreen(
 
         item { Text("Метод обхода", style = MaterialTheme.typography.labelLarge, color = TextSecondary) }
 
-        item { PresetCard(settings.preset, running) { vm.setPreset(it) } }
+        item {
+            PresetCard(
+                current = settings.preset,
+                running = running,
+                activeLabel = if (settings.byedpiCmd.isBlank()) null
+                    else com.tgwsproxy.net.StrategyTester.labelForCommand(settings.byedpiCmd) ?: "своя команда",
+                onSelect = { vm.setPreset(it) },
+            )
+        }
 
         item {
             ToggleCard(
@@ -359,15 +367,16 @@ private fun SecondaryButton(label: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ServicesRow(probe: ProbeUiState) {
+private fun ServicesRow(probe: ProbeUiState, autoTune: AutoTuneUiState) {
     val yt = probe.results.firstOrNull { it.display == "YouTube" }
     val ig = probe.results.firstOrNull { it.display == "Instagram" }
+    val busy = probe.checking || autoTune.running
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        ServiceChip("YouTube", yt, probe.checking, Modifier.weight(1f))
-        ServiceChip("Instagram", ig, probe.checking, Modifier.weight(1f))
+        ServiceChip("YouTube", yt, busy, autoTune.hostOk["YouTube"], Modifier.weight(1f))
+        ServiceChip("Instagram", ig, busy, autoTune.hostOk["Instagram"], Modifier.weight(1f))
     }
 }
 
@@ -376,15 +385,18 @@ private fun ServiceChip(
     name: String,
     result: ServiceProbe?,
     checking: Boolean,
+    forced: Boolean?,
     modifier: Modifier = Modifier,
 ) {
-    // Status: green if a method bypasses DPI, red if all blocked, amber on error, grey unknown.
-    val (dotColor, statusText) = when {
-        checking -> SurfaceVariant to "проверка…"
-        result == null -> SurfaceVariant to "не проверено"
-        result.anyPass -> OkGreen to "работает"
-        result.plain == com.tgwsproxy.net.HelloProbe.Outcome.BLOCKED -> Destructive to "заблокировано"
-        else -> Warning to "не удалось"
+    // Prefer the real auto-tune result (TLS handshake through byedpi) over the weak Kotlin probe.
+    val (dotColor, statusText, working) = when {
+        checking -> Triple(SurfaceVariant, "проверка…", false)
+        forced == true -> Triple(OkGreen, "работает", true)
+        forced == false -> Triple(Destructive, "заблокировано", false)
+        result == null -> Triple(SurfaceVariant, "не проверено", false)
+        result.anyPass -> Triple(OkGreen, "работает", true)
+        result.plain == com.tgwsproxy.net.HelloProbe.Outcome.BLOCKED -> Triple(Destructive, "заблокировано", false)
+        else -> Triple(Warning, "не удалось", false)
     }
     Row(
         modifier = modifier
@@ -408,7 +420,7 @@ private fun ServiceChip(
                     strokeWidth = 2.dp,
                     color = TextSecondary
                 )
-            } else if (result?.anyPass == true) {
+            } else if (working) {
                 Icon(Icons.Default.Check, null, tint = OkGreen, modifier = Modifier.size(14.dp))
             } else {
                 Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(dotColor))
@@ -563,7 +575,7 @@ private fun presetDescription(preset: String): String = when (preset) {
 }
 
 @Composable
-private fun PresetCard(current: String, running: Boolean, onSelect: (String) -> Unit) {
+private fun PresetCard(current: String, running: Boolean, activeLabel: String?, onSelect: (String) -> Unit) {
     Card {
         Text("Метод обхода", color = TextPrimary, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
@@ -595,6 +607,13 @@ private fun PresetCard(current: String, running: Boolean, onSelect: (String) -> 
             Text(
                 presetDescription(current),
                 color = TextSecondary, style = MaterialTheme.typography.labelSmall
+            )
+        }
+        if (activeLabel != null) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Активная стратегия: $activeLabel",
+                color = OkGreen, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium
             )
         }
         Spacer(Modifier.height(8.dp))
