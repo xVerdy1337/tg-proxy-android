@@ -345,6 +345,14 @@ private fun LiveStatsCard(state: DesyncVpnService.VpnState) {
             StatItem("Отправлено", formatBytesShort(state.bytesUp))
             StatItem("Получено", formatBytesShort(state.bytesDown))
         }
+        Spacer(Modifier.height(12.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            StatItem("Подключено", "${state.connOk}")
+            StatItem("Не дошло", "${state.connFail}")
+        }
         val err = state.error
         if (!err.isNullOrBlank()) {
             Spacer(Modifier.height(10.dp))

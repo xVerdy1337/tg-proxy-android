@@ -28,4 +28,11 @@ interface Tunnel {
      * can show *why* connections are dying. Used to debug the userspace data path on-device.
      */
     fun reportError(msg: String)
+
+    /**
+     * Tally each upstream TCP connect attempt's outcome so the UI can show how many flows actually
+     * reach the real server vs. fail — the decisive signal for "does the data path work for this
+     * app" without needing logcat on-device.
+     */
+    fun onConnectResult(success: Boolean)
 }

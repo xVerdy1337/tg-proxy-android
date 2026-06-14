@@ -74,6 +74,7 @@ class TcpConnection(
                 try { s.bind(InetSocketAddress(0)) } catch (_: Exception) {}
                 if (!tunnel.protectTcp(s)) {
                     tunnel.reportError("protect failed (upstream not excluded from VPN)")
+                    tunnel.onConnectResult(false)
                     reset(); return@thread
                 }
                 s.tcpNoDelay = true
@@ -81,8 +82,10 @@ class TcpConnection(
                     s.connect(InetSocketAddress(PacketUtils.ipToString(serverIp), serverPort), 10_000)
                 } catch (e: Exception) {
                     tunnel.reportError("connect ${PacketUtils.ipToString(serverIp)}:$serverPort → ${e.javaClass.simpleName}: ${e.message}")
+                    tunnel.onConnectResult(false)
                     reset(); return@thread
                 }
+                tunnel.onConnectResult(true)
                 synchronized(lock) {
                     upstream = s
                     upOut = s.getOutputStream()

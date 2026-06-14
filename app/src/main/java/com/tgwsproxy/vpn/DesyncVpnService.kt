@@ -52,6 +52,8 @@ class DesyncVpnService : VpnService(), Tunnel {
         val activeUdp: Int = 0,
         val bytesUp: Long = 0,
         val bytesDown: Long = 0,
+        val connOk: Int = 0,
+        val connFail: Int = 0,
         val startedAt: Long = 0,
         val error: String? = null,
     )
@@ -99,6 +101,8 @@ class DesyncVpnService : VpnService(), Tunnel {
 
     private val bytesUp = AtomicLong(0)
     private val bytesDown = AtomicLong(0)
+    private val connOk = AtomicLong(0)
+    private val connFail = AtomicLong(0)
 
     private var method: DesyncEngine.Method? = DesyncEngine.Method.TLSREC
     private var blockQuic = true
@@ -174,7 +178,7 @@ class DesyncVpnService : VpnService(), Tunnel {
 
         running = true
         persistRunning(true)
-        bytesUp.set(0); bytesDown.set(0)
+        bytesUp.set(0); bytesDown.set(0); connOk.set(0); connFail.set(0)
         _state.value = VpnState(
             isRunning = true,
             preset = presetString(),
@@ -294,6 +298,10 @@ class DesyncVpnService : VpnService(), Tunnel {
         _state.value = _state.value.copy(error = msg)
     }
 
+    override fun onConnectResult(success: Boolean) {
+        if (success) connOk.incrementAndGet() else connFail.incrementAndGet()
+    }
+
     // ---- stats / lifecycle ----
 
     private fun startStats() {
@@ -306,6 +314,8 @@ class DesyncVpnService : VpnService(), Tunnel {
                     activeUdp = udpMap.size,
                     bytesUp = bytesUp.get(),
                     bytesDown = bytesDown.get(),
+                    connOk = connOk.get().toInt(),
+                    connFail = connFail.get().toInt(),
                 )
                 delay(1000)
             }
