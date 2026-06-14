@@ -372,6 +372,13 @@ private fun PresetCard(current: String, running: Boolean, onSelect: (String) -> 
             PresetChip("Метод A", DesyncVpnService.PRESET_TLSREC, current, Modifier.weight(1f), onSelect)
             PresetChip("Метод B", DesyncVpnService.PRESET_SPLIT, current, Modifier.weight(1f), onSelect)
         }
+        Spacer(Modifier.height(8.dp))
+        PresetChip("Без обхода (тест трубы)", DesyncVpnService.PRESET_OFF, current, Modifier.fillMaxWidth(), onSelect)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "«Без обхода» гоняет трафик через VPN без десинка — для диагностики: если так грузит, а с обходом нет — дело в методе; если и так не грузит — в трубе. После смены метода выключи и включи VPN.",
+            color = TextMuted, style = MaterialTheme.typography.labelSmall
+        )
     }
 }
 
