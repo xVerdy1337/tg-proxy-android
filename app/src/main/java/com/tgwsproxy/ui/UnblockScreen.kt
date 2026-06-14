@@ -179,7 +179,6 @@ private fun BigToggleButton(running: Boolean, onClick: () -> Unit) {
     }
 }
 
-@Composable
 private val OkGreen = Color(0xFF5BBF7B)
 
 @Composable
