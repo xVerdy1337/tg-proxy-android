@@ -23,9 +23,9 @@ import kotlin.concurrent.thread
  */
 object StrategyTester {
 
-    private const val SOCKS_CONNECT_TIMEOUT_MS = 6000
-    private const val TLS_TIMEOUT_MS = 6000
-    private const val BIND_WAIT_MS = 450L
+    private const val SOCKS_CONNECT_TIMEOUT_MS = 3500
+    private const val TLS_TIMEOUT_MS = 3500
+    private const val BIND_WAIT_MS = 350L
 
     data class Strategy(val command: String, val label: String)
 
@@ -90,7 +90,18 @@ object StrategyTester {
             if (loop?.isAlive != true) {
                 return StrategyResult(strategy, hosts.map { HostResult(it, false, "byedpi не стартовал (плохая команда)") })
             }
-            return StrategyResult(strategy, hosts.map { testHostThroughSocks(it, 443, port) })
+            // Test all hosts in parallel so a strategy's cost is max(host) instead of sum(host).
+            val results = arrayOfNulls<HostResult>(hosts.size)
+            val workers = hosts.mapIndexed { idx, host ->
+                thread(name = "probe-$host", isDaemon = true) {
+                    results[idx] = testHostThroughSocks(host, 443, port)
+                }
+            }
+            val budget = (SOCKS_CONNECT_TIMEOUT_MS + TLS_TIMEOUT_MS + 1000).toLong()
+            workers.forEach { try { it.join(budget) } catch (_: InterruptedException) {} }
+            return StrategyResult(strategy, hosts.mapIndexed { idx, host ->
+                results[idx] ?: HostResult(host, false, "таймаут")
+            })
         } finally {
             try { proxy.stopProxy() } catch (_: Throwable) {}
             try { loop?.join(1500) } catch (_: Throwable) {}
