@@ -179,11 +179,27 @@ fun MainScreen(
             Tab(
                 selected = selectedTab == 0,
                 onClick = { selectedTab = 0 },
+                icon = {
+                    Icon(
+                        Icons.Default.Send,
+                        contentDescription = null,
+                        tint = if (selectedTab == 0) Accent else TextSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                },
                 text = { Text("Telegram", color = if (selectedTab == 0) Accent else TextSecondary) }
             )
             Tab(
                 selected = selectedTab == 1,
                 onClick = { selectedTab = 1 },
+                icon = {
+                    Icon(
+                        Icons.Default.LockOpen,
+                        contentDescription = null,
+                        tint = if (selectedTab == 1) Accent else TextSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                },
                 text = { Text("Разблокировка", color = if (selectedTab == 1) Accent else TextSecondary) }
             )
         }
