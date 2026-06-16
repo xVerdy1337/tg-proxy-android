@@ -34,7 +34,12 @@ class TcpConnection(
     private enum class State { SYN_RECEIVED, ESTABLISHED, CLOSING, CLOSED }
 
     @Volatile private var state = State.SYN_RECEIVED
+    @Volatile var lastUsed = System.currentTimeMillis(); private set
     private val lock = Any()
+
+    /** True if the flow is closed or has seen no traffic for [idleMs] (reaped by the service). */
+    fun isIdle(idleMs: Long): Boolean =
+        state == State.CLOSED || (System.currentTimeMillis() - lastUsed) > idleMs
 
     private var rcvNxt = 0L            // next client seq we expect
     private var sndNxt = 0L            // our next seq to send to client
@@ -48,6 +53,8 @@ class TcpConnection(
     companion object {
         private const val MSS = 1400
         private const val WIN = 65535
+        // Max wait for the local byedpi SOCKS5 reply before giving up (frees the relay thread).
+        private const val SOCKS_HANDSHAKE_TIMEOUT_MS = 10_000
     }
 
     /** Called by the service when the initial SYN for this flow arrives. */
@@ -77,6 +84,11 @@ class TcpConnection(
                     reset(); return@execute
                 }
 
+                // Bound the SOCKS handshake read: a hung byedpi must not pin this relay thread
+                // forever (thread-pool starvation). Cleared below for the long-lived relay so idle
+                // keep-alive flows aren't torn down.
+                try { s.soTimeout = SOCKS_HANDSHAKE_TIMEOUT_MS } catch (_: Exception) {}
+
                 // SOCKS5 CONNECT to the real destination; byedpi then desyncs + dials out.
                 val ok = try {
                     socks5Connect(s.getInputStream(), s.getOutputStream(), serverIp, serverPort)
@@ -89,6 +101,7 @@ class TcpConnection(
                     try { s.close() } catch (_: Exception) {}
                     reset(); return@execute
                 }
+                try { s.soTimeout = 0 } catch (_: Exception) {} // back to blocking for the relay
 
                 tunnel.onConnectResult(true)
                 synchronized(lock) {
@@ -143,6 +156,7 @@ class TcpConnection(
     fun onPacket(seq: Long, ack: Long, flags: Int, window: Int, payload: ByteArray) {
         synchronized(lock) {
             if (state == State.CLOSED) return
+            lastUsed = System.currentTimeMillis()
             clientWindow = window
 
             if (flags and PacketUtils.TcpFlag.RST != 0) { closeLocked(sendRst = false); return }
@@ -206,6 +220,7 @@ class TcpConnection(
                 val chunk = buf.copyOf(n)
                 synchronized(lock) {
                     if (state == State.CLOSED) return
+                    lastUsed = System.currentTimeMillis()
                     sendSegment(PacketUtils.TcpFlag.ACK or PacketUtils.TcpFlag.PSH, chunk)
                     sndNxt = (sndNxt + chunk.size) and 0xFFFFFFFFL
                 }
