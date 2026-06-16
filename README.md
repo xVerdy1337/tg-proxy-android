@@ -1,8 +1,13 @@
 # TG WS Proxy Android
 
-Android-приложение для обхода блокировок Telegram через локальный MTProto-прокси с WebSocket-туннелированием.
+Android-приложение для обхода блокировок. Состоит из двух независимых модулей:
 
-## Как это работает
+1. **Telegram-прокси** — локальный MTProto-прокси с WebSocket-туннелированием к Telegram DC.
+2. **Разблокировка сайтов** — DPI-desync VPN в стиле ByeDPI для обхода блокировок YouTube, Discord, Instagram и др. без внешнего сервера.
+
+## 1. Telegram-прокси
+
+### Как это работает
 
 ```
 Telegram → MTProto Proxy (127.0.0.1:1443) → WebSocket (TLS) → Telegram DC
@@ -12,39 +17,17 @@ Telegram → MTProto Proxy (127.0.0.1:1443) → WebSocket (TLS) → Telegram DC
 2. Telegram подключается к этому прокси
 3. Прокси определяет DC ID из MTProto handshake
 4. Устанавливает WebSocket-соединение (TLS) к соответствующему Telegram DC
-5. Передаёт трафик в зашифрованном виде
+5. Передаёт трафик в зашифрованном виде (AES-CTR)
 
-## Архитектура
+### Использование
 
-- **Frontend**: Jetpack Compose с тёмной темой
-- **Service**: Foreground Service для работы прокси в фоне
-- **Proxy Engine**: Kotlin-реализация MTProto-WS bridge
-
-## Сборка
-
-### Требования
-- Android Studio Hedgehog (2023.1.1) или новее
-- JDK 17
-- Android SDK 34
-
-### Сборка через Android Studio
-1. Откройте проект в Android Studio
-2. Дождитесь синхронизации Gradle
-3. Нажмите `Run` (▶) или соберите APK через `Build → Build Bundle(s) / APK(s)`
-
-### Сборка через командную строку
-```bash
-./gradlew assembleDebug
-```
-
-## Использование
-
-1. Запустите приложение
-2. Нажмите **"Запустить прокси"**
-3. Нажмите **"Подключить Telegram"** — откроется Telegram с автоматической настройкой прокси
+1. Откройте вкладку **Telegram**
+2. Нажмите **«Запустить прокси»**
+3. Нажмите **«Подключить Telegram»** — откроется Telegram с автоматической настройкой прокси
 4. Или скопируйте ссылку и отправьте себе в Telegram, затем нажмите на неё
 
 ### Ручная настройка Telegram
+
 1. Telegram → **Настройки** → **Данные и память** → **Настройки прокси**
 2. Добавьте прокси:
    - **Тип:** MTProto
@@ -52,29 +35,69 @@ Telegram → MTProto Proxy (127.0.0.1:1443) → WebSocket (TLS) → Telegram DC
    - **Порт:** `1443`
    - **Секрет:** из приложения
 
-## Возможности
+## 2. Разблокировка сайтов (DPI-desync VPN)
 
-- [x] Локальный MTProto-прокси
-- [x] WebSocket-туннелирование к Telegram DC
-- [x] TCP fallback если WS недоступен
-- [x] Генерация случайного секрета
-- [x] Foreground service (прокси работает в фоне)
-- [x] Jetpack Compose UI
-- [x] Deeplink в Telegram (`tg://proxy?...`)
-- [x] Логи подключений
+### Как это работает
+
+Локальный `VpnService` перехватывает исходящий TCP-трафик и манипулирует первыми байтами TLS-рукопожатия (ClientHello), чтобы DPI (например, ТСПУ) не мог прочитать SNI и заблокировать/замедлить соединение. Внешний сервер при этом получает корректное TLS-рукопожатие — меняется только то, как байты фрагментируются и упорядочиваются на проводе. Трафик **никуда не туннелируется** — обработка идёт локально на устройстве.
+
+Доступные методы десинхронизации:
+- **SPLIT** — разрезание TCP-полезной нагрузки на два сегмента внутри SNI
+- **TLSREC** — рефрагментация TLS-записи на две валидные записи по границе SNI
+- **DISORDER** — как SPLIT, но второй сегмент отправляется первым
+
+### Возможности
+
+- Автоподбор стратегии обхода (параллельные TLS-пробы по хостам, выбор рабочей)
+- Список исключений — «Не использовать обход для…» выбранных приложений
+- Автозапуск VPN после перезагрузки (если был включён)
+- Плитка в шторке (Quick Settings) для быстрого включения/выключения
+
+### Использование
+
+1. Откройте вкладку **Разблокировка**
+2. Нажмите включить — система запросит разрешение на VPN
+3. Дождитесь автоподбора стратегии; активная стратегия отображается в статусе
+
+## Архитектура
+
+- **Frontend**: Jetpack Compose, тёмная тема, две вкладки (Telegram / Разблокировка)
+- **Services**:
+  - `ProxyService` — foreground service Telegram-прокси
+  - `DesyncVpnService` — foreground VpnService для DPI-desync
+  - `ProxyTileService` / `DesyncTileService` — плитки Quick Settings
+- **Proxy Engine**: Kotlin-реализация MTProto-WS bridge (`proxy/`)
+- **Desync Engine**: dependency-free DPI-desync ядро (`desync/`, `vpn/`, `net/`)
+
+## Сборка
+
+### Требования
+- Android Studio Hedgehog (2023.1.1) или новее
+- JDK 17
+- Android SDK 35 (minSdk 26, targetSdk 35)
+
+### Через Android Studio
+1. Откройте проект, дождитесь синхронизации Gradle
+2. Нажмите `Run` (▶) или соберите APK через `Build → Build Bundle(s) / APK(s)`
+
+### Через командную строку
+```bash
+./gradlew assembleDebug
+```
 
 ## Технологии
 
-- Kotlin
+- Kotlin + Coroutines
 - Jetpack Compose
-- Coroutines
 - OkHttp (WebSocket)
-- AES-CTR шифрование
+- VpnService (TUN-перехват TCP/UDP)
+- AES-CTR шифрование (MTProto)
 
 ## Вдохновение
 
-- [tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) — оригинальная Python-реализация
+- [tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) — оригинальная Python-реализация WS-прокси
 - [MTProxy](https://github.com/TelegramMessenger/MTProxy) — официальный MTProto-прокси
+- [ByeDPI](https://github.com/hufrea/byedpi) — техники DPI-десинхронизации
 
 ## Лицензия
 
