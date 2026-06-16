@@ -141,9 +141,11 @@ class MsgSplitter(relayInit: ByteArray, private val protoInt: Long) {
                 (u(plainBuf[offset + 2]) shl 16) or
                 (u(plainBuf[offset + 3]) shl 24)) and 0x7FFFFFFF)
         if (payloadLen <= 0) return 0
-        val packetLen = 4 + payloadLen
+        // Compute as Long: 4 + payloadLen would overflow Int to a negative for payloadLen near
+        // Int.MAX, slipping past the MAX_PACKET_LEN guard. MAX_PACKET_LEN caps it well below that.
+        val packetLen = 4L + payloadLen
         if (packetLen > MAX_PACKET_LEN) return 0   // absurd declared length → treat as bad framing
         if (avail < packetLen) return null
-        return packetLen
+        return packetLen.toInt()
     }
 }

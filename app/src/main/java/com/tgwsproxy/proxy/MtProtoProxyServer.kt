@@ -92,6 +92,13 @@ class MtProtoProxyServer(
                     clientSocket.close()
                     break
                 }
+                // Cap concurrent clients. Telegram opens at most ~15; anything beyond MAX_CLIENTS on
+                // a loopback proxy is a local flood (each client fans out up to ~18 upstream TLS
+                // dials), so drop it rather than exhaust fds/threads.
+                if (connectionCount.get() >= MAX_CLIENTS) {
+                    try { clientSocket.close() } catch (_: Exception) {}
+                    continue
+                }
                 activeConnections.add(clientSocket)
                 val count = connectionCount.incrementAndGet()
                 onConnectionChange(count)
@@ -178,6 +185,10 @@ class MtProtoProxyServer(
                 val hdrRest = readFully(rawInput, 4)
                 if (hdrRest == null) { onLog("[$label] incomplete TLS header"); return }
                 val recLen = ((hdrRest[2].toInt() and 0xFF) shl 8) or (hdrRest[3].toInt() and 0xFF)
+                // Cap the pre-auth allocation: a real TLS ClientHello is well under 4 KiB, so reject
+                // anything larger before allocating — stops an unauthenticated peer from forcing a
+                // 64 KiB buffer + HMAC per connection (memory/CPU amplification).
+                if (recLen > MAX_CLIENT_HELLO) { onLog("[$label] TLS record too large ($recLen)"); return }
                 val body = readFully(rawInput, recLen)
                 if (body == null) { onLog("[$label] incomplete TLS body"); return }
                 val clientHello = firstByte + hdrRest + body
@@ -572,6 +583,10 @@ class MtProtoProxyServer(
         const val WS_WAVE_TIMEOUT_MS = 4_000L
         // Idle I/O timeout on the benign masking relay so a silent peer can't hang it forever.
         const val RELAY_IO_TIMEOUT_MS = 15_000
+        // Max accepted Fake-TLS ClientHello record length — bounds the pre-auth allocation.
+        const val MAX_CLIENT_HELLO = 4096
+        // Max concurrent client connections (loopback proxy; Telegram needs ~15). Flood guard.
+        const val MAX_CLIENTS = 128
 
         /** Decode a hex MTProto secret, failing loudly on odd length / non-hex instead of crashing. */
         fun parseSecret(s: String): ByteArray {

@@ -72,9 +72,10 @@ object FakeTls {
 
         val expected = hmacSha256(secret, zeroed)
 
-        // First 28 bytes must match exactly.
-        for (i in 0 until 28) {
-            if (expected[i] != clientRandom[i]) return null
+        // First 28 bytes are the secret-derived HMAC tag — compare in constant time so the
+        // network can't use response timing as an oracle to recover the tag byte-by-byte.
+        if (!java.security.MessageDigest.isEqual(expected.copyOf(28), clientRandom.copyOf(28))) {
+            return null
         }
 
         // Last 4 bytes are an XOR-masked little-endian unix timestamp.

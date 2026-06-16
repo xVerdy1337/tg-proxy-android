@@ -180,6 +180,20 @@ class DesyncVpnService : VpnService(), Tunnel {
         private const val TUN_ADDR = "10.111.222.1"
         private const val MTU = 1500
         private const val UDP_IDLE_MS = 30_000L
+        // Idle TCP flows are reaped after this long with no client/server activity, so half-open
+        // or abandoned flows can't accumulate threads/sockets forever (no TCP FIN/RST required).
+        private const val TCP_IDLE_MS = 120_000L
+        // Hard caps on concurrent flows. The relay pool size bounds live relay threads; the map
+        // caps bound memory + reject new flows past the limit (defends against local flood → OOM).
+        private const val MAX_RELAY_THREADS = 256
+        private const val MAX_TCP_FLOWS = 1024
+        private const val MAX_UDP_FLOWS = 512
+
+        // Returned by relayExecutor once the pool is gone (after stopEverything) so a late
+        // execute() is a clean no-op-then-reject instead of resurrecting a pool post-shutdown.
+        private val REJECTING_EXECUTOR = Executor {
+            throw java.util.concurrent.RejectedExecutionException("relay pool stopped")
+        }
 
         // Beta allowlist — the apps we actually want to unblock.
         val TARGET_APPS = listOf(
@@ -234,21 +248,25 @@ class DesyncVpnService : VpnService(), Tunnel {
     private var statsJob: Job? = null
     @Volatile private var running = false
 
-    // Shared pool for per-flow relay loops (see Tunnel.relayExecutor). A cached pool reuses idle
-    // threads — so we don't allocate a fresh thread per TCP/UDP flow — while still scaling up for
-    // many concurrent long-lived flows. Threads idle out after 30s; recreated lazily on next start.
+    // Shared, BOUNDED pool for per-flow relay loops (see Tunnel.relayExecutor). Each TCP/UDP flow
+    // occupies one thread for its lifetime (blocking read), so the pool size hard-caps concurrent
+    // flows. SynchronousQueue + a fixed max means an excess flow is *rejected* (we drop it) rather
+    // than spawning an unbounded number of threads — without the cap, a local app could open tens
+    // of thousands of flows and OOM the process via pthread_create. Created in startVpn and torn
+    // down in stopEverything; the getter never resurrects it after shutdown.
     @Volatile private var relayPool: ThreadPoolExecutor? = null
     override val relayExecutor: Executor
-        get() = relayPool ?: synchronized(this) {
-            relayPool ?: ThreadPoolExecutor(
-                0, Int.MAX_VALUE, 30L, TimeUnit.SECONDS, SynchronousQueue(),
-                object : ThreadFactory {
-                    private val n = AtomicLong(0)
-                    override fun newThread(r: Runnable) =
-                        Thread(r, "vpn-relay-${n.incrementAndGet()}").apply { isDaemon = true }
-                }
-            ).also { relayPool = it }
-        }
+        get() = relayPool ?: REJECTING_EXECUTOR
+
+    private fun newRelayPool(): ThreadPoolExecutor = ThreadPoolExecutor(
+        4, MAX_RELAY_THREADS, 30L, TimeUnit.SECONDS, SynchronousQueue(),
+        object : ThreadFactory {
+            private val n = AtomicLong(0)
+            override fun newThread(r: Runnable) =
+                Thread(r, "vpn-relay-${n.incrementAndGet()}").apply { isDaemon = true }
+        },
+        ThreadPoolExecutor.AbortPolicy() // excess flow → RejectedExecutionException (caller drops it)
+    )
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -374,6 +392,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         }
 
         running = true
+        relayPool = newRelayPool()
         persistRunning(true)
         bytesUp.set(0); bytesDown.set(0); connOk.set(0); connFail.set(0)
         _state.value = VpnState(
@@ -432,13 +451,23 @@ class DesyncVpnService : VpnService(), Tunnel {
         }
         val isSyn = flags and PacketUtils.TcpFlag.SYN != 0 && flags and PacketUtils.TcpFlag.ACK == 0
         if (isSyn) {
+            // Cap concurrent flows: drop the SYN if we're at the limit so a local flood can't
+            // exhaust threads/memory. The client simply retries/times out — no resources spent.
+            if (tcpMap.size >= MAX_TCP_FLOWS) return
             val conn = TcpConnection(
                 clientIp = PacketUtils.srcIp(packet), clientPort = srcPort,
                 serverIp = PacketUtils.dstIp(packet), serverPort = dstPort,
                 tunnel = this, key = key, socksPort = SOCKS_PORT
             )
             tcpMap[key] = conn
-            conn.onSyn(seq, win)
+            // onSyn dispatches the upstream dial onto relayExecutor, which can reject when the pool
+            // is full or stopped — undo the map insert so we don't leak a dead entry.
+            try {
+                conn.onSyn(seq, win)
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
+                tcpMap.remove(key)
+                conn.close()
+            }
         }
         // Non-SYN with no connection → stale; ignore (client will time out / RST).
     }
@@ -458,13 +487,17 @@ class DesyncVpnService : VpnService(), Tunnel {
 
         var assoc = udpMap[key]
         if (assoc == null) {
+            // Cap concurrent UDP associations (same flood defense as TCP).
+            if (udpMap.size >= MAX_UDP_FLOWS) return
             assoc = UdpAssociation(
                 clientIp = PacketUtils.srcIp(packet), clientPort = srcPort,
                 serverIp = PacketUtils.dstIp(packet), serverPort = dstPort,
                 tunnel = this, key = key
             )
             udpMap[key] = assoc
-            if (!assoc.start()) { udpMap.remove(key); return }
+            // start() dispatches a reader onto relayExecutor — can reject when full/stopped.
+            val started = try { assoc.start() } catch (_: java.util.concurrent.RejectedExecutionException) { false }
+            if (!started) { udpMap.remove(key); assoc.close(); return }
         }
         assoc.onClientPayload(payload)
     }
@@ -513,9 +546,10 @@ class DesyncVpnService : VpnService(), Tunnel {
                 // poll far less often so we don't wake the CPU every second 24/7 while the VPN runs.
                 val uiWatching = _state.subscriptionCount.value > 0
                 val interval = if (uiWatching) 1000L else 10000L
-                // Reap idle UDP at least every ~10s regardless of UI, so sockets don't linger.
+                // Reap idle UDP + TCP at least every ~10s regardless of UI, so sockets/threads
+                // from abandoned or half-open flows don't linger (and can't accumulate to OOM).
                 sinceReap += interval
-                if (uiWatching || sinceReap >= 10000L) { reapIdleUdp(); sinceReap = 0L }
+                if (uiWatching || sinceReap >= 10000L) { reapIdleFlows(); sinceReap = 0L }
                 if (uiWatching) {
                     _state.value = _state.value.copy(
                         activeTcp = tcpMap.size,
@@ -531,10 +565,15 @@ class DesyncVpnService : VpnService(), Tunnel {
         }
     }
 
-    private fun reapIdleUdp() {
+    private fun reapIdleFlows() {
         val now = System.currentTimeMillis()
         for ((k, a) in udpMap) {
             if (now - a.lastUsed > UDP_IDLE_MS) { a.close(); udpMap.remove(k) }
+        }
+        // TCP flows have no FIN/RST guarantee (a half-open flow never closes itself), so reap any
+        // that are closed or idle past TCP_IDLE_MS — close() removes the entry via onConnectionClosed.
+        for ((k, c) in tcpMap) {
+            if (c.isIdle(TCP_IDLE_MS)) { c.close(); tcpMap.remove(k) }
         }
     }
 
