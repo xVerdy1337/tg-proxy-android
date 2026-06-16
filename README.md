@@ -93,12 +93,20 @@ Telegram → MTProto Proxy (127.0.0.1:1443) → WebSocket (TLS) → Telegram DC
 - VpnService (TUN-перехват TCP/UDP)
 - AES-CTR шифрование (MTProto)
 
-## Вдохновение
+## Сторонние компоненты
 
-- [tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) — оригинальная Python-реализация WS-прокси
-- [MTProxy](https://github.com/TelegramMessenger/MTProxy) — официальный MTProto-прокси
-- [ByeDPI](https://github.com/hufrea/byedpi) — техники DPI-десинхронизации
+Приложение включает нативный DPI-desync движок **ByeDPI (ciadpi) v0.17.3**
+([hufrea/byedpi](https://github.com/hufrea/byedpi), лицензия MIT),
+скомпилированный в составе сборки и вызываемый через JNI. Полный перечень
+сторонних компонентов и их лицензий — в файле
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Лицензия
 
-MIT
+Проприетарная — All Rights Reserved, правообладатель Гращенко Артём Дмитриевич.
+См. файл [LICENSE](LICENSE). Использование возможно только по отдельному
+письменному соглашению с правообладателем.
+
+Лицензия распространяется на приложение в целом, за исключением сторонних
+компонентов с открытым исходным кодом (см. выше), которые остаются под
+собственными лицензиями.

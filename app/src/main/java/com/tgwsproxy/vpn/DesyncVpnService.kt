@@ -112,8 +112,40 @@ class DesyncVpnService : VpnService(), Tunnel {
          */
         fun buildByedpiArgs(command: String, ip: String, port: Int): Array<String> {
             val base = mutableListOf("ciadpi", "-i", ip, "-p", port.toString())
-            base.addAll(shellSplit(command))
+            base.addAll(filterListenFlags(shellSplit(command)))
             return base.toTypedArray()
+        }
+
+        /**
+         * Strip any listen-endpoint flags (-i/--ip, -p/--port) from a user/preset command so it
+         * can never override the pinned 127.0.0.1:<port>. Without this, a pasted "-i 0.0.0.0"
+         * would (getopt last-wins) expose the auth-less SOCKS5 proxy to the whole network.
+         * Handles both "-i 0.0.0.0" and the glued "-i0.0.0.0" / "--ip=0.0.0.0" forms.
+         *
+         * The glued short form is matched narrowly — only when the char right after -i/-p is the
+         * start of an address/port value (digit, '.' or ':'), e.g. "-i0.0.0.0", "-p1080", "-i::".
+         * This deliberately does NOT swallow unrelated tokens that merely begin with -i/-p (a
+         * future "-probe" or "-ipv6"), which a blanket startsWith would wrongly drop.
+         */
+        private fun filterListenFlags(tokens: List<String>): List<String> {
+            val out = ArrayList<String>(tokens.size)
+            var i = 0
+            while (i < tokens.size) {
+                val t = tokens[i]
+                val separate = t == "-i" || t == "-p" || t == "--ip" || t == "--port"
+                val glued = (t.startsWith("-i") || t.startsWith("-p")) && t.length > 2 &&
+                    (t[2].isDigit() || t[2] == '.' || t[2] == ':')
+                val longGlued = t.startsWith("--ip=") || t.startsWith("--port=")
+                if (separate || glued || longGlued) {
+                    // separate-argument form ("-i" "0.0.0.0") — also drop the following value
+                    if (separate && i + 1 < tokens.size) i++
+                    i++
+                    continue
+                }
+                out.add(t)
+                i++
+            }
+            return out
         }
 
         private fun shellSplit(s: String): List<String> {
@@ -344,6 +376,9 @@ class DesyncVpnService : VpnService(), Tunnel {
                 if (n <= 0) { if (n < 0) break else continue }
                 val packet = buffer.copyOf(n)
                 if (PacketUtils.ipVersion(packet) != 4) continue // drop IPv6 → force IPv4
+                // Drop malformed/truncated packets before the L4 accessors index by ihl/dataOffset —
+                // a crafted short packet would otherwise throw and tear down the whole VPN (DoS).
+                if (!PacketUtils.isWellFormedIpv4L4(packet)) continue
                 when (PacketUtils.protocol(packet)) {
                     PacketUtils.PROTO_TCP -> handleTcp(packet)
                     PacketUtils.PROTO_UDP -> handleUdp(packet)
