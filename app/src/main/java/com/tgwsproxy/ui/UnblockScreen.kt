@@ -574,7 +574,15 @@ private fun LiveStatsCard(state: DesyncVpnService.VpnState) {
 @Composable
 private fun StatItem(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+        // tnum = tabular figures: live stats (connections/bytes) update every second; proportional
+        // digits would change width each tick and jitter the centered layout.
+        Text(
+            value,
+            color = TextPrimary,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 18.sp,
+            fontFeatureSettings = "tnum"
+        )
         Spacer(Modifier.height(2.dp))
         Text(label, color = TextSecondary, style = MaterialTheme.typography.labelSmall)
     }
