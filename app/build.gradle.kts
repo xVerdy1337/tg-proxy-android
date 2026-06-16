@@ -21,6 +21,10 @@ android {
 
     }
 
+    // Pin the NDK so CI installs it in a dedicated, cached step instead of AGP auto-provisioning
+    // it mid-build (a corrupt sdkmanager download fails the whole configuration phase otherwise).
+    ndkVersion = "25.1.8937393"
+
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")

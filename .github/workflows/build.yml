@@ -29,6 +29,10 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Install NDK and CMake
+        run: |
+          sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 

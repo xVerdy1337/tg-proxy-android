@@ -475,7 +475,15 @@ private fun RowScope.StatChip(
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
         Column {
-            Text(value, style = MaterialTheme.typography.titleMedium, color = TextPrimary, fontWeight = FontWeight.SemiBold)
+            // tnum = tabular figures: these values tick every second (uptime/bytes/connections),
+            // and proportional digits would shift width each update, jittering the layout.
+            Text(
+                value,
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
+                fontWeight = FontWeight.SemiBold,
+                fontFeatureSettings = "tnum"
+            )
             Text(label, style = MaterialTheme.typography.labelSmall, color = TextSecondary)
         }
     }
