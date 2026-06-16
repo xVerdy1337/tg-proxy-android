@@ -5,7 +5,6 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
-import kotlin.concurrent.thread
 import kotlin.random.Random
 
 /**
@@ -64,7 +63,7 @@ class TcpConnection(
     }
 
     private fun connectUpstream() {
-        thread(name = "up-tcp-$serverPort", isDaemon = true) {
+        tunnel.relayExecutor.execute {
             try {
                 // Connect to the local byedpi SOCKS5 proxy. Loopback is never routed through the
                 // TUN, so no protect() is needed (and protecting loopback would be a no-op anyway).
@@ -75,7 +74,7 @@ class TcpConnection(
                 } catch (e: Exception) {
                     tunnel.reportError("byedpi SOCKS connect → ${e.javaClass.simpleName}: ${e.message}")
                     tunnel.onConnectResult(false)
-                    reset(); return@thread
+                    reset(); return@execute
                 }
 
                 // SOCKS5 CONNECT to the real destination; byedpi then desyncs + dials out.
@@ -88,7 +87,7 @@ class TcpConnection(
                 if (!ok) {
                     tunnel.onConnectResult(false)
                     try { s.close() } catch (_: Exception) {}
-                    reset(); return@thread
+                    reset(); return@execute
                 }
 
                 tunnel.onConnectResult(true)

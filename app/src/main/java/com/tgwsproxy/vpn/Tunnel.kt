@@ -2,12 +2,21 @@ package com.tgwsproxy.vpn
 
 import java.net.DatagramSocket
 import java.net.Socket
+import java.util.concurrent.Executor
 
 /**
  * The bridge a [TcpConnection] / [UdpAssociation] uses to talk back to the TUN and to create
  * VPN-protected upstream sockets. Implemented by [DesyncVpnService].
  */
 interface Tunnel {
+    /**
+     * Shared pool for per-flow blocking relay loops. A cached pool (not raw `thread{}` per flow,
+     * nor a hard-capped dispatcher) reuses idle threads to cut allocation churn while still growing
+     * for many concurrent long-lived flows — a fixed cap would starve a VPN holding lots of idle
+     * sockets, since each flow's downstream pump occupies a thread for the flow's whole lifetime.
+     */
+    val relayExecutor: Executor
+
     /** Write a fully-built IP packet back into the TUN (delivered to the app). Thread-safe. */
     fun writeToTun(packet: ByteArray)
 

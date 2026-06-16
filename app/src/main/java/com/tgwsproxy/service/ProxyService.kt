@@ -46,6 +46,7 @@ class ProxyService : Service() {
         const val ACTION_STOP = "com.tgwsproxy.action.STOP"
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "proxy_channel"
+        private const val NOTIFY_THROTTLE_MS = 2000L
         const val PREFS = "tgwsproxy_prefs"
         const val KEY_CF_DOMAIN = "cf_domain"
         const val KEY_FAKE_TLS_DOMAIN = "fake_tls_domain"
@@ -319,12 +320,11 @@ class ProxyService : Service() {
 
             if (wifiLock == null) {
                 val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                } else {
-                    @Suppress("DEPRECATION")
-                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
-                }
+                // FULL_HIGH_PERF keeps Wi-Fi awake for the relay without the extra power draw of
+                // FULL_LOW_LATENCY (that mode is meant for gaming/voice and pins the radio in a
+                // high-power, low-latency state — overkill for a mostly-idle proxy).
+                @Suppress("DEPRECATION")
+                val mode = WifiManager.WIFI_MODE_FULL_HIGH_PERF
                 wifiLock = wm.createWifiLock(mode, "Jevio:ProxyWifiLock").apply {
                     setReferenceCounted(false)
                 }
@@ -538,7 +538,34 @@ class ProxyService : Service() {
             .build()
     }
 
+    @Volatile private var lastNotifyAt: Long = 0
+    private var pendingNotifyJob: Job? = null
+
+    /**
+     * Refresh the foreground notification, throttled to at most once every 2s. Telegram opens and
+     * closes many DC connections in bursts, so an un-throttled notify() on every change meant
+     * dozens of binder transactions + shade redraws per minute (each a CPU wakeup). Bursts are
+     * coalesced, and a trailing update is always scheduled so the final connection count is shown.
+     */
     private fun updateNotification() {
+        val now = System.currentTimeMillis()
+        val sinceLast = now - lastNotifyAt
+        if (sinceLast >= NOTIFY_THROTTLE_MS) {
+            pendingNotifyJob?.cancel()
+            pendingNotifyJob = null
+            lastNotifyAt = now
+            pushNotification()
+        } else if (pendingNotifyJob?.isActive != true) {
+            // Schedule one trailing update at the end of the current throttle window.
+            pendingNotifyJob = serviceScope.launch {
+                delay(NOTIFY_THROTTLE_MS - sinceLast)
+                lastNotifyAt = System.currentTimeMillis()
+                pushNotification()
+            }
+        }
+    }
+
+    private fun pushNotification() {
         val notification = buildNotification()
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(NOTIFICATION_ID, notification)

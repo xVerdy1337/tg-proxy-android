@@ -4,7 +4,6 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
-import kotlin.concurrent.thread
 
 /**
  * One UDP flow (mostly DNS) relayed over a protected [DatagramSocket]. QUIC (UDP:443) is never
@@ -27,7 +26,7 @@ class UdpAssociation(
 
     fun start(): Boolean {
         if (!tunnel.protectUdp(socket)) { close(); return false }
-        thread(name = "up-udp-$serverPort", isDaemon = true) {
+        tunnel.relayExecutor.execute {
             val buf = ByteArray(65535)
             try {
                 while (!closed) {

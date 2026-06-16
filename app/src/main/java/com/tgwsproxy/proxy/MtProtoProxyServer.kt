@@ -343,19 +343,36 @@ class MtProtoProxyServer(
             routeCache.remove(cacheKey) // cached endpoint went stale — fall back to full race
         }
 
-        val candidates = ArrayList<WsCandidate>()
-
+        val directCandidates = ArrayList<WsCandidate>()
         val wsTargetIp = wsFrontIps[dcId] ?: wsFrontIps[2]!!
         for (domain in MtProtoHandshake.wsDomains(dcId, isMedia)) {
-            candidates.add(WsCandidate(wsTargetIp, domain, "direct"))
+            directCandidates.add(WsCandidate(wsTargetIp, domain, "direct"))
         }
 
+        val cfCandidates = ArrayList<WsCandidate>()
         val cfDc = if (dcId == 203) 2 else dcId
         for (base in cfDomains) {
-            candidates.add(WsCandidate(null, "kws$cfDc.$base", "cloudflare"))
+            cfCandidates.add(WsCandidate(null, "kws$cfDc.$base", "cloudflare"))
         }
 
-        onLog("[$label] connecting WS: racing ${candidates.size} endpoints (direct + Cloudflare)")
+        // Wave 1: race only the few direct web-front endpoints first. In the common case one wins
+        // within a second, so we open ~2-3 TLS handshakes instead of ~18 — a big radio/CPU saver,
+        // especially when a network switch forces every session to redial at once. Only if the
+        // direct wave fails do we fall back to racing the full Cloudflare pool (wave 2).
+        onLog("[$label] connecting WS: ${directCandidates.size} direct endpoints")
+        raceCandidates(directCandidates, WS_WAVE_TIMEOUT_MS, label)?.let { return it }
+
+        onLog("[$label] direct failed — racing ${cfCandidates.size} Cloudflare endpoints")
+        return raceCandidates(cfCandidates, WS_RACE_TIMEOUT_MS, label)
+    }
+
+    /** Race [candidates] concurrently, returning the first that connects (losers are closed). */
+    private suspend fun raceCandidates(
+        candidates: List<WsCandidate>,
+        timeoutMs: Long,
+        label: String,
+    ): Pair<WebSocketBridge, WsCandidate>? {
+        if (candidates.isEmpty()) return null
 
         // Carry bridge + winning candidate together so there's no race between "who won" and
         // "which endpoint won" (the candidate is needed later to cache a proven route).
@@ -381,12 +398,11 @@ class MtProtoProxyServer(
             winner.complete(null)
         }
 
-        val result = withTimeoutOrNull(WS_RACE_TIMEOUT_MS) { winner.await() }
+        val result = withTimeoutOrNull(timeoutMs) { winner.await() }
         jobs.forEach { it.cancel() }
         synchronized(bridges) {
             for (b in bridges) if (b !== result?.first) try { b.close() } catch (_: Exception) {}
         }
-        if (result == null) onLog("[$label] all WS endpoints failed")
         // Note: caching happens in bridgeData once the route actually carries data, not here.
         return result
     }
@@ -551,6 +567,9 @@ class MtProtoProxyServer(
         const val HANDSHAKE_TIMEOUT_MS = 10_000
         // Whole WS candidate race can't outlast this (in case a bridge.connect() never returns).
         const val WS_RACE_TIMEOUT_MS = 15_000L
+        // First-wave (direct endpoints) budget before falling back to the Cloudflare pool. Short
+        // so a failing direct route escalates quickly, long enough for a healthy one to win.
+        const val WS_WAVE_TIMEOUT_MS = 4_000L
         // Idle I/O timeout on the benign masking relay so a silent peer can't hang it forever.
         const val RELAY_IO_TIMEOUT_MS = 15_000
 
