@@ -34,6 +34,11 @@ import java.io.FileOutputStream
 import java.net.DatagramSocket
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executor
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
@@ -112,8 +117,40 @@ class DesyncVpnService : VpnService(), Tunnel {
          */
         fun buildByedpiArgs(command: String, ip: String, port: Int): Array<String> {
             val base = mutableListOf("ciadpi", "-i", ip, "-p", port.toString())
-            base.addAll(shellSplit(command))
+            base.addAll(filterListenFlags(shellSplit(command)))
             return base.toTypedArray()
+        }
+
+        /**
+         * Strip any listen-endpoint flags (-i/--ip, -p/--port) from a user/preset command so it
+         * can never override the pinned 127.0.0.1:<port>. Without this, a pasted "-i 0.0.0.0"
+         * would (getopt last-wins) expose the auth-less SOCKS5 proxy to the whole network.
+         * Handles both "-i 0.0.0.0" and the glued "-i0.0.0.0" / "--ip=0.0.0.0" forms.
+         *
+         * The glued short form is matched narrowly — only when the char right after -i/-p is the
+         * start of an address/port value (digit, '.' or ':'), e.g. "-i0.0.0.0", "-p1080", "-i::".
+         * This deliberately does NOT swallow unrelated tokens that merely begin with -i/-p (a
+         * future "-probe" or "-ipv6"), which a blanket startsWith would wrongly drop.
+         */
+        private fun filterListenFlags(tokens: List<String>): List<String> {
+            val out = ArrayList<String>(tokens.size)
+            var i = 0
+            while (i < tokens.size) {
+                val t = tokens[i]
+                val separate = t == "-i" || t == "-p" || t == "--ip" || t == "--port"
+                val glued = (t.startsWith("-i") || t.startsWith("-p")) && t.length > 2 &&
+                    (t[2].isDigit() || t[2] == '.' || t[2] == ':')
+                val longGlued = t.startsWith("--ip=") || t.startsWith("--port=")
+                if (separate || glued || longGlued) {
+                    // separate-argument form ("-i" "0.0.0.0") — also drop the following value
+                    if (separate && i + 1 < tokens.size) i++
+                    i++
+                    continue
+                }
+                out.add(t)
+                i++
+            }
+            return out
         }
 
         private fun shellSplit(s: String): List<String> {
@@ -196,6 +233,22 @@ class DesyncVpnService : VpnService(), Tunnel {
     private var readThread: Thread? = null
     private var statsJob: Job? = null
     @Volatile private var running = false
+
+    // Shared pool for per-flow relay loops (see Tunnel.relayExecutor). A cached pool reuses idle
+    // threads — so we don't allocate a fresh thread per TCP/UDP flow — while still scaling up for
+    // many concurrent long-lived flows. Threads idle out after 30s; recreated lazily on next start.
+    @Volatile private var relayPool: ThreadPoolExecutor? = null
+    override val relayExecutor: Executor
+        get() = relayPool ?: synchronized(this) {
+            relayPool ?: ThreadPoolExecutor(
+                0, Int.MAX_VALUE, 30L, TimeUnit.SECONDS, SynchronousQueue(),
+                object : ThreadFactory {
+                    private val n = AtomicLong(0)
+                    override fun newThread(r: Runnable) =
+                        Thread(r, "vpn-relay-${n.incrementAndGet()}").apply { isDaemon = true }
+                }
+            ).also { relayPool = it }
+        }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -344,6 +397,9 @@ class DesyncVpnService : VpnService(), Tunnel {
                 if (n <= 0) { if (n < 0) break else continue }
                 val packet = buffer.copyOf(n)
                 if (PacketUtils.ipVersion(packet) != 4) continue // drop IPv6 → force IPv4
+                // Drop malformed/truncated packets before the L4 accessors index by ihl/dataOffset —
+                // a crafted short packet would otherwise throw and tear down the whole VPN (DoS).
+                if (!PacketUtils.isWellFormedIpv4L4(packet)) continue
                 when (PacketUtils.protocol(packet)) {
                     PacketUtils.PROTO_TCP -> handleTcp(packet)
                     PacketUtils.PROTO_UDP -> handleUdp(packet)
@@ -451,17 +507,26 @@ class DesyncVpnService : VpnService(), Tunnel {
     private fun startStats() {
         statsJob?.cancel()
         statsJob = scope.launch {
+            var sinceReap = 0L
             while (isActive && running) {
-                reapIdleUdp()
-                _state.value = _state.value.copy(
-                    activeTcp = tcpMap.size,
-                    activeUdp = udpMap.size,
-                    bytesUp = bytesUp.get(),
-                    bytesDown = bytesDown.get(),
-                    connOk = connOk.get().toInt(),
-                    connFail = connFail.get().toInt(),
-                )
-                delay(1000)
+                // Only the UI consumes these stats. When nobody is collecting _state (app closed),
+                // poll far less often so we don't wake the CPU every second 24/7 while the VPN runs.
+                val uiWatching = _state.subscriptionCount.value > 0
+                val interval = if (uiWatching) 1000L else 10000L
+                // Reap idle UDP at least every ~10s regardless of UI, so sockets don't linger.
+                sinceReap += interval
+                if (uiWatching || sinceReap >= 10000L) { reapIdleUdp(); sinceReap = 0L }
+                if (uiWatching) {
+                    _state.value = _state.value.copy(
+                        activeTcp = tcpMap.size,
+                        activeUdp = udpMap.size,
+                        bytesUp = bytesUp.get(),
+                        bytesDown = bytesDown.get(),
+                        connOk = connOk.get().toInt(),
+                        connFail = connFail.get().toInt(),
+                    )
+                }
+                delay(interval)
             }
         }
     }
@@ -479,6 +544,8 @@ class DesyncVpnService : VpnService(), Tunnel {
         for (c in tcpMap.values) c.close()
         for (u in udpMap.values) u.close()
         tcpMap.clear(); udpMap.clear()
+        relayPool?.shutdownNow()
+        relayPool = null
         stopByedpi()
         try { tunIn?.close() } catch (_: Exception) {}
         try { tunOut?.close() } catch (_: Exception) {}

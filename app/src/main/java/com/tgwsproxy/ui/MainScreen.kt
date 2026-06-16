@@ -1214,13 +1214,22 @@ private fun checkForUpdate(context: Context): String? {
         val text = conn.inputStream.bufferedReader().use { it.readText() }
         val json = org.json.JSONObject(text)
         val tag = json.optString("tag_name", "")
-        val htmlUrl = json.optString(
-            "html_url",
-            "https://github.com/xVerdy1337/tg-proxy-android/releases/latest"
-        )
-        if (tag.isNotEmpty() && isNewer(tag, currentVersionName(context))) htmlUrl else null
+        val safeReleasesUrl = "https://github.com/xVerdy1337/tg-proxy-android/releases/latest"
+        val htmlUrl = json.optString("html_url", safeReleasesUrl)
+        // The URL comes from the API response and is later opened via ACTION_VIEW. Only trust it
+        // if it's an https github.com link — a tampered/compromised response could otherwise hand
+        // us an intent:// or arbitrary-scheme URI. Fall back to the known-good releases page.
+        val openUrl = if (isTrustedGithubUrl(htmlUrl)) htmlUrl else safeReleasesUrl
+        if (tag.isNotEmpty() && isNewer(tag, currentVersionName(context))) openUrl else null
     } catch (e: Exception) { null }
 }
+
+/** True only for https://github.com/... URLs (host exactly github.com or a subdomain). */
+private fun isTrustedGithubUrl(url: String): Boolean = try {
+    val u = java.net.URI(url)
+    u.scheme.equals("https", ignoreCase = true) &&
+        u.host?.let { it.equals("github.com", true) || it.endsWith(".github.com", true) } == true
+} catch (e: Exception) { false }
 
 private const val PREFS_ONBOARDING = "jevio_onboarding"
 private const val KEY_ONBOARDING_SHOWN = "onboarding_shown"

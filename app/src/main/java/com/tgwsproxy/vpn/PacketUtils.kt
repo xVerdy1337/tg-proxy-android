@@ -14,6 +14,31 @@ object PacketUtils {
 
     fun ipVersion(p: ByteArray): Int = if (p.isEmpty()) 0 else (p[0].toInt() ushr 4) and 0x0F
 
+    /**
+     * True if [p] is a structurally valid IPv4 TCP/UDP packet whose L4 header fits within the
+     * buffer. The L4 accessors below index by [ihl] / dataOffset taken from the packet itself;
+     * a truncated or malformed packet (large IHL, missing L4 header) would otherwise throw
+     * ArrayIndexOutOfBounds and — since readLoop's catch tears down the whole VPN — let any
+     * local app kill the tunnel with a single crafted packet. Callers must drop packets that
+     * fail this check instead of parsing them.
+     */
+    fun isWellFormedIpv4L4(p: ByteArray): Boolean {
+        if (p.size < 20) return false
+        if (((p[0].toInt() ushr 4) and 0x0F) != 4) return false
+        val ihl = ihl(p)
+        if (ihl < 20 || ihl > p.size) return false
+        return when (protocol(p)) {
+            PROTO_TCP -> {
+                // need fixed TCP header (20B) for flags/seq/ack/window/dataOffset
+                if (ihl + 20 > p.size) return false
+                val dataOff = ((p[ihl + 12].toInt() ushr 4) and 0x0F) * 4
+                dataOff >= 20 && ihl + dataOff <= p.size
+            }
+            PROTO_UDP -> ihl + 8 <= p.size // fixed UDP header
+            else -> false
+        }
+    }
+
     // ---- IPv4 header accessors (offsets within the whole packet) ----
 
     fun ihl(p: ByteArray): Int = (p[0].toInt() and 0x0F) * 4
