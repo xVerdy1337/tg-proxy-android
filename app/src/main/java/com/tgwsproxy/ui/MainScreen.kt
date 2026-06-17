@@ -479,10 +479,9 @@ private fun RowScope.StatChip(
             // and proportional digits would shift width each update, jittering the layout.
             Text(
                 value,
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
                 color = TextPrimary,
-                fontWeight = FontWeight.SemiBold,
-                fontFeatureSettings = "tnum"
+                fontWeight = FontWeight.SemiBold
             )
             Text(label, style = MaterialTheme.typography.labelSmall, color = TextSecondary)
         }

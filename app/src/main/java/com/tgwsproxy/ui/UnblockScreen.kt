@@ -581,7 +581,7 @@ private fun StatItem(label: String, value: String) {
             color = TextPrimary,
             fontWeight = FontWeight.SemiBold,
             fontSize = 18.sp,
-            fontFeatureSettings = "tnum"
+            style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
         )
         Spacer(Modifier.height(2.dp))
         Text(label, color = TextSecondary, style = MaterialTheme.typography.labelSmall)
