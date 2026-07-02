@@ -7,9 +7,21 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+# Release signing:
+#   Provide these repository secrets ONCE (generate the keystore locally a single time):
+#     RELEASE_KEYSTORE_BASE64  - `base64 -w0 release.keystore`
+#     RELEASE_KEYSTORE_PASSWORD
+#     RELEASE_KEY_ALIAS
+#     RELEASE_KEY_PASSWORD
+#   When the secret is absent the release APK is simply left unsigned (build.gradle.kts already
+#   falls back to "unsigned" rather than to a public debug key) - it is NEVER re-generated on the
+#   fly, so update-in-place of an installed release keeps working (stable signing identity).
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
 
     steps:
       - name: Checkout repository
@@ -36,22 +48,15 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Generate CI keystore
+      - name: Decode release keystore
+        id: keystore
+        if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' }}
         run: |
-          keytool -genkey -v -keystore app/ci.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
-          echo "KEYSTORE_PATH=ci.keystore" >> $GITHUB_ENV
-          echo "KEYSTORE_PASSWORD=android" >> $GITHUB_ENV
-          echo "KEY_ALIAS=androiddebugkey" >> $GITHUB_ENV
-          echo "KEY_PASSWORD=android" >> $GITHUB_ENV
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "keystore_path=$RUNNER_TEMP/release.keystore" >> "$GITHUB_OUTPUT"
 
       - name: Build Debug APK
         run: gradle assembleDebug
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
-          KEYSTORE_PATH: ci.keystore
-          KEYSTORE_PASSWORD: android
-          KEY_ALIAS: androiddebugkey
-          KEY_PASSWORD: android
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
@@ -63,11 +68,12 @@ jobs:
       - name: Build Release APK
         run: gradle assembleRelease
         env:
-          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
-          KEYSTORE_PATH: ci.keystore
-          KEYSTORE_PASSWORD: android
-          KEY_ALIAS: androiddebugkey
-          KEY_PASSWORD: android
+          # Empty when no keystore secret is set -> build.gradle.kts leaves the release unsigned
+          # instead of signing with a throwaway/public key.
+          KEYSTORE_PATH: ${{ steps.keystore.outputs.keystore_path }}
+          KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
