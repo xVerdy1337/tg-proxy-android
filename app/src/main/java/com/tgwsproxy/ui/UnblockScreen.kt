@@ -57,6 +57,14 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.ui.platform.LocalContext
+import android.provider.Settings
 import com.tgwsproxy.ui.theme.*
 import com.tgwsproxy.vpn.DesyncVpnService
 import java.util.Locale
@@ -109,8 +117,13 @@ fun UnblockScreen(
 
         item { ServicesRow(probe, autoTune) }
 
-        if (running) {
-            item { LiveStatsCard(state) }
+        item {
+            // Asymmetric enter/exit (Emil): reveal ~220ms, dismiss faster ~140ms; no jarring pop-in.
+            AnimatedVisibility(
+                visible = running,
+                enter = fadeIn(tween(220, easing = EmilEaseOut)) + expandVertically(tween(220, easing = EmilEaseOut)),
+                exit = fadeOut(tween(140)) + shrinkVertically(tween(140)),
+            ) { LiveStatsCard(state) }
         }
 
         item { Text("Метод обхода", style = MaterialTheme.typography.labelLarge, color = TextSecondary) }
@@ -151,8 +164,12 @@ fun UnblockScreen(
             )
         }
 
-        if (running) {
-            item { RestartHintCard() }
+        item {
+            AnimatedVisibility(
+                visible = running,
+                enter = fadeIn(tween(220, easing = EmilEaseOut)) + expandVertically(tween(220, easing = EmilEaseOut)),
+                exit = fadeOut(tween(140)) + shrinkVertically(tween(140)),
+            ) { RestartHintCard() }
         }
 
         item { DisclaimerCard() }
@@ -171,13 +188,16 @@ private fun HeroUnblockCard(
     val accent = if (running) Accent else TextMuted
 
     // Gentle breathing pulse on the status badge while the VPN is active.
+    // Respect reduced-motion (Emil / a11y): keep the opacity level, drop the movement.
+    val reduce = reducedMotionEnabled()
     val pulse = rememberInfiniteTransition(label = "hero-pulse")
-    val pulseAlpha by pulse.animateFloat(
+    val animatedPulse by pulse.animateFloat(
         initialValue = 0.10f,
         targetValue = 0.28f,
         animationSpec = infiniteRepeatable(tween(1300), RepeatMode.Reverse),
         label = "hero-pulse-alpha"
     )
+    val pulseAlpha = if (reduce) 0.20f else animatedPulse
     val badgeAlpha = if (running) pulseAlpha else 0.15f
 
     Column(
@@ -276,6 +296,27 @@ private fun BigToggleButton(running: Boolean, onClick: () -> Unit) {
 private val OkGreen = Color(0xFF5BBF7B)
 
 /**
+ * Strong ease-out curve (Emil Kowalski / animations.dev). The built-in CSS/Compose easings
+ * are too weak to feel intentional; this is the design-eng standard UI ease-out.
+ */
+private val EmilEaseOut = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
+
+/**
+ * Reduced-motion (accessibility): true when the OS animator duration scale is 0
+ * (Developer options / a11y "remove animations"). We keep opacity/level cues but drop
+ * continuous movement, per the design-eng reduced-motion guidance.
+ */
+@Composable
+private fun reducedMotionEnabled(): Boolean {
+    val context = LocalContext.current
+    return remember {
+        Settings.Global.getFloat(
+            context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f
+        ) == 0f
+    }
+}
+
+/**
  * Scale-on-press feedback ("make interfaces feel better" skill): a subtle, interruptible
  * scale(0.96) while pressed. animateFloatAsState retargets mid-press, so releasing early
  * springs back smoothly. Never go below 0.95 — it starts to feel exaggerated.
@@ -283,7 +324,12 @@ private val OkGreen = Color(0xFF5BBF7B)
 @Composable
 private fun rememberPressScale(interaction: MutableInteractionSource): Float {
     val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.96f else 1f, label = "pressScale")
+    // Snappy, custom-curve press feedback (Emil: ~140ms, strong ease-out, interruptible).
+    val scale by animateFloatAsState(
+        if (pressed) 0.96f else 1f,
+        animationSpec = tween(durationMillis = 140, easing = EmilEaseOut),
+        label = "pressScale"
+    )
     return scale
 }
 
