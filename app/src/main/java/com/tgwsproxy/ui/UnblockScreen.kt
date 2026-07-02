@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -581,7 +582,8 @@ private fun StatItem(label: String, value: String) {
             color = TextPrimary,
             fontWeight = FontWeight.SemiBold,
             fontSize = 18.sp,
-            fontFeatureSettings = "tnum"
+            // tnum lives on TextStyle, not as a Text() argument — carry it via style.
+            style = LocalTextStyle.current.copy(fontFeatureSettings = "tnum")
         )
         Spacer(Modifier.height(2.dp))
         Text(label, color = TextSecondary, style = MaterialTheme.typography.labelSmall)
