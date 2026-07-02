@@ -204,7 +204,11 @@ private fun HeroUnblockCard(
                 imageVector = if (running) Icons.Default.Check else Icons.Default.PlayArrow,
                 contentDescription = null,
                 tint = accent,
-                modifier = Modifier.size(38.dp)
+                // Optical centering: a play triangle's visual weight sits left of its geometric
+                // center, so nudge it right when showing PlayArrow (skill: optical > geometric).
+                modifier = Modifier
+                    .size(38.dp)
+                    .then(if (running) Modifier else Modifier.offset(x = 2.dp))
             )
         }
         Spacer(Modifier.height(14.dp))
@@ -246,7 +250,7 @@ private fun BigToggleButton(running: Boolean, onClick: () -> Unit) {
     val haptic = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.97f else 1f, label = "toggleScale")
+    val scale by animateFloatAsState(if (pressed) 0.96f else 1f, label = "toggleScale")
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -270,6 +274,18 @@ private fun BigToggleButton(running: Boolean, onClick: () -> Unit) {
 }
 
 private val OkGreen = Color(0xFF5BBF7B)
+
+/**
+ * Scale-on-press feedback ("make interfaces feel better" skill): a subtle, interruptible
+ * scale(0.96) while pressed. animateFloatAsState retargets mid-press, so releasing early
+ * springs back smoothly. Never go below 0.95 — it starts to feel exaggerated.
+ */
+@Composable
+private fun rememberPressScale(interaction: MutableInteractionSource): Float {
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.96f else 1f, label = "pressScale")
+    return scale
+}
 
 @Composable
 private fun AutoTuneCard(
@@ -299,7 +315,9 @@ private fun AutoTuneCard(
                     CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
                     Text(
                         "Проверяю ${autoTune.index}/${autoTune.total}: ${autoTune.currentLabel}",
-                        color = TextPrimary, style = MaterialTheme.typography.bodySmall
+                        color = TextPrimary,
+                        // tabular figures so the "3/10" counter keeps constant width as it ticks.
+                        style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum")
                     )
                 }
                 Spacer(Modifier.height(6.dp))
@@ -350,12 +368,15 @@ private fun AutoTuneCard(
 @Composable
 private fun PrimaryButton(label: String, enabled: Boolean = true, onClick: () -> Unit) {
     val haptic = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberPressScale(interaction)
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(12.dp))
             .background(if (enabled) Accent else SurfaceVariant)
-            .clickable(enabled = enabled) {
+            .clickable(interactionSource = interaction, indication = LocalIndication.current, enabled = enabled) {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onClick()
             }
@@ -373,12 +394,15 @@ private fun PrimaryButton(label: String, enabled: Boolean = true, onClick: () ->
 
 @Composable
 private fun SecondaryButton(label: String, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberPressScale(interaction)
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(12.dp))
             .background(SurfaceVariant)
-            .clickable { onClick() }
+            .clickable(interactionSource = interaction, indication = LocalIndication.current) { onClick() }
             .padding(vertical = 12.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -664,11 +688,14 @@ private fun PresetChip(
     onSelect: (String) -> Unit,
 ) {
     val selected = current == value
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberPressScale(interaction)
     Box(
         modifier = modifier
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(10.dp))
             .background(if (selected) Accent else SurfaceVariant)
-            .clickable { onSelect(value) }
+            .clickable(interactionSource = interaction, indication = LocalIndication.current) { onSelect(value) }
             .padding(vertical = 10.dp),
         contentAlignment = Alignment.Center
     ) {
