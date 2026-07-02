@@ -153,17 +153,30 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
         _autoTune.value = AutoTuneUiState(running = true, total = strategies.size)
         viewModelScope.launch {
             var lastHosts: Map<String, Boolean> = emptyMap()
+            var bestHosts: Map<String, Boolean> = emptyMap()
             val found = withContext(Dispatchers.IO) {
                 var hit: StrategyTester.Strategy? = null
+                var bestOkCount = 0
                 for ((i, s) in strategies.withIndex()) {
                     _autoTune.value = _autoTune.value.copy(index = i + 1, currentLabel = s.label)
                     val res = StrategyTester.testStrategy(s, hosts, port = 1081 + (i % 4))
-                    lastHosts = res.hosts.associate { hr ->
+                    val hostMap = res.hosts.associate { hr ->
                         (targets.firstOrNull { it.first == hr.host }?.second ?: hr.host) to hr.ok
                     }
-                    if (res.allOk) { hit = s; break }
+                    lastHosts = hostMap
+                    // Keep the strategy that unblocks the MOST hosts (>=1). Requiring every host to
+                    // pass in one shot was too strict: a strategy that opens YouTube but not
+                    // Instagram (or a host that merely flapped on a timeout) was discarded, so the
+                    // user saw "ни один метод не пробил" even though YouTube actually worked.
+                    val okCount = res.hosts.count { it.ok }
+                    if (okCount > bestOkCount) {
+                        bestOkCount = okCount
+                        hit = s
+                        bestHosts = hostMap
+                    }
+                    if (res.allOk) break // can't beat all-hosts-pass; stop early
                 }
-                hit
+                if (bestOkCount > 0) hit else null
             }
             if (found != null) {
                 setByedpiCmd(found.command)
@@ -171,7 +184,7 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                     finished = true,
                     foundLabel = found.label,
                     foundCommand = found.command,
-                    hostOk = lastHosts,
+                    hostOk = bestHosts,
                 )
             } else {
                 _autoTune.value = AutoTuneUiState(
