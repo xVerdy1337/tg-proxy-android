@@ -1,6 +1,10 @@
-# TG WS Proxy Android
+# Jevio Unblocker (TG WS Proxy Android)
 
-Android-приложение для обхода блокировок. Состоит из двух независимых модулей:
+> Android-приложение для обхода блокировок. Пользовательское имя — **«Jevio Unblocker»**; внутреннее имя проекта — `TgWsProxy` (package `com.tgwsproxy`).
+
+**🔒 Приватность прежде всего:** приложение **не туннелирует ваш трафик через внешний сервер** для разблокировки сайтов — вся DPI-десинхронизация происходит **локально на устройстве**. Никакого VPN-провайдера-посредника, который видит ваш трафик. (Для Telegram-модуля трафик идёт напрямую к дата-центрам Telegram по WebSocket, без промежуточных серверов, кроме опционального вашего собственного Cloudflare Worker.)
+
+Состоит из двух независимых модулей:
 
 1. **Telegram-прокси** — локальный MTProto-прокси с WebSocket-туннелированием к Telegram DC.
 2. **Разблокировка сайтов** — DPI-desync VPN в стиле ByeDPI для обхода блокировок YouTube, Discord, Instagram и др. без внешнего сервера.
@@ -41,10 +45,13 @@ Telegram → MTProto Proxy (127.0.0.1:1443) → WebSocket (TLS) → Telegram DC
 
 Локальный `VpnService` перехватывает исходящий TCP-трафик и манипулирует первыми байтами TLS-рукопожатия (ClientHello), чтобы DPI (например, ТСПУ) не мог прочитать SNI и заблокировать/замедлить соединение. Внешний сервер при этом получает корректное TLS-рукопожатие — меняется только то, как байты фрагментируются и упорядочиваются на проводе. Трафик **никуда не туннелируется** — обработка идёт локально на устройстве.
 
-Доступные методы десинхронизации:
-- **SPLIT** — разрезание TCP-полезной нагрузки на два сегмента внутри SNI
-- **TLSREC** — рефрагментация TLS-записи на две валидные записи по границе SNI
-- **DISORDER** — как SPLIT, но второй сегмент отправляется первым
+Под капотом два движка десинхронизации с разными ролями:
+
+- **Боевой data-path — нативный ByeDPI (ciadpi).** Весь TCP-трафик VPN десинхронизируется нативным движком ByeDPI через локальный SOCKS5 (`DesyncVpnService` → `TcpConnection` → byedpi). Это packet-level десинхронизация (fake/TTL/seqovl и т.п.), совместимая со стратегиями zapret/ByeByeDPI.
+- **Пробник автоподбора — чистый Kotlin `DesyncEngine`.** Используется только для проверки прямого соединения и автоподбора стратегии (кнопки «Проверить» / «Автоподбор»), а не в VPN-пути. Реализует методы:
+  - **SPLIT** — разрезание TCP-полезной нагрузки на два сегмента внутри SNI
+  - **TLSREC** — рефрагментация TLS-записи на две валидные записи по границе SNI
+  - **DISORDER** — как SPLIT, но второй сегмент отправляется первым
 
 ### Возможности
 
@@ -67,7 +74,7 @@ Telegram → MTProto Proxy (127.0.0.1:1443) → WebSocket (TLS) → Telegram DC
   - `DesyncVpnService` — foreground VpnService для DPI-desync
   - `ProxyTileService` / `DesyncTileService` — плитки Quick Settings
 - **Proxy Engine**: Kotlin-реализация MTProto-WS bridge (`proxy/`)
-- **Desync Engine**: dependency-free DPI-desync ядро (`desync/`, `vpn/`, `net/`)
+- **Desync**: нативный ByeDPI (data-path) + Kotlin-пробник `DesyncEngine` для автоподбора (`desync/`, `vpn/`, `net/`)
 
 ## Сборка
 
@@ -82,8 +89,14 @@ Telegram → MTProto Proxy (127.0.0.1:1443) → WebSocket (TLS) → Telegram DC
 
 ### Через командную строку
 ```bash
-./gradlew assembleDebug
+./gradlew assembleDebug     # debug APK
+./gradlew assembleRelease   # release APK (подпись — из keystore в env, иначе unsigned)
 ```
+
+Подпись release-сборки берётся из постоянного keystore, задаваемого через переменные окружения
+(`KEYSTORE_PATH`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`); если они не заданы, release
+остаётся **неподписанным** (никакого эфемерного/публичного ключа). Подробнее о CI-подписи и
+публикации релизов — в workflow'ах в `.github/workflows/`.
 
 ## Технологии
 
@@ -92,6 +105,7 @@ Telegram → MTProto Proxy (127.0.0.1:1443) → WebSocket (TLS) → Telegram DC
 - OkHttp (WebSocket)
 - VpnService (TUN-перехват TCP/UDP)
 - AES-CTR шифрование (MTProto)
+- Нативный ByeDPI (ciadpi) через JNI (NDK)
 
 ## Сторонние компоненты
 
