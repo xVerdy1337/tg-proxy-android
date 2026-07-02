@@ -96,6 +96,7 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
 
     private val targets = listOf(
         "www.youtube.com" to "YouTube",
+        "redirector.googlevideo.com" to "YouTube (видео)",
         "www.instagram.com" to "Instagram",
     )
 

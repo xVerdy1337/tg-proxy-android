@@ -389,6 +389,7 @@ private fun SecondaryButton(label: String, onClick: () -> Unit) {
 @Composable
 private fun ServicesRow(probe: ProbeUiState, autoTune: AutoTuneUiState) {
     val yt = probe.results.firstOrNull { it.display == "YouTube" }
+    val ytv = probe.results.firstOrNull { it.display == "YouTube (видео)" }
     val ig = probe.results.firstOrNull { it.display == "Instagram" }
     val busy = probe.checking || autoTune.running
     Row(
@@ -396,6 +397,7 @@ private fun ServicesRow(probe: ProbeUiState, autoTune: AutoTuneUiState) {
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         ServiceChip("YouTube", yt, busy, autoTune.hostOk["YouTube"], Modifier.weight(1f))
+        ServiceChip("Видео", ytv, busy, autoTune.hostOk["YouTube (видео)"], Modifier.weight(1f))
         ServiceChip("Instagram", ig, busy, autoTune.hostOk["Instagram"], Modifier.weight(1f))
     }
 }
