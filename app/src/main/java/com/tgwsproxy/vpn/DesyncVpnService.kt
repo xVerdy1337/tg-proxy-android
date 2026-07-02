@@ -17,7 +17,6 @@ import com.tgwsproxy.MainActivity
 import com.tgwsproxy.R
 import com.tgwsproxy.core.ByeDpiProxy
 import com.tgwsproxy.service.DesyncTileService
-import com.tgwsproxy.desync.DesyncEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -257,7 +256,11 @@ class DesyncVpnService : VpnService(), Tunnel {
     private val connOk = AtomicLong(0)
     private val connFail = AtomicLong(0)
 
-    private var method: DesyncEngine.Method? = DesyncEngine.Method.TLSREC
+    // The active preset name (PRESET_AUTO/TLSREC/SPLIT/OFF). Purely for reporting in
+    // VpnState.preset — the real desync strategy is the byedpi command built in loadPrefs().
+    // NOTE: byedpi (native ciadpi) is the data-path desync engine; the pure-Kotlin
+    // DesyncEngine is only used by the direct-connection HelloProbe/StrategyTester, not here.
+    private var activePreset: String = PRESET_AUTO
     private var blockQuic = true
     private var allApps = true
     private var excludedUser: Set<String> = emptySet()
@@ -306,12 +309,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         allApps = p.getBoolean(KEY_ALL_APPS, true)
         excludedUser = p.getStringSet(KEY_EXCLUDED_USER, emptySet())?.toSet() ?: emptySet()
         val preset = p.getString(KEY_PRESET, PRESET_AUTO) ?: PRESET_AUTO
-        method = when (preset) {
-            PRESET_SPLIT -> DesyncEngine.Method.SPLIT
-            PRESET_AUTO, PRESET_TLSREC -> DesyncEngine.Method.TLSREC
-            PRESET_OFF -> null
-            else -> DesyncEngine.Method.TLSREC
-        }
+        activePreset = preset
         // Custom command wins; otherwise derive byedpi args from the preset.
         val custom = (p.getString(KEY_BYEDPI_CMD, "") ?: "").trim()
         val command = if (custom.isNotEmpty()) custom else presetToByedpiArgs(preset)
@@ -643,12 +641,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         } catch (_: Exception) {}
     }
 
-    private fun presetString(): String = when (method) {
-        DesyncEngine.Method.SPLIT -> PRESET_SPLIT
-        DesyncEngine.Method.TLSREC -> PRESET_TLSREC
-        null -> PRESET_OFF
-        else -> PRESET_TLSREC
-    }
+    private fun presetString(): String = activePreset
 
     // ---- notification ----
 
