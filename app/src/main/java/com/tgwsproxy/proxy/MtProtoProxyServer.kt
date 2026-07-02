@@ -17,8 +17,9 @@ class MtProtoProxyServer(
     private val secret: String,
     private val onLog: (String) -> Unit,
     private val onConnectionChange: (Int) -> Unit,
-    // Optional user-supplied Cloudflare-proxy base domain (e.g. "mydomain.com").
-    // When set it is tried FIRST in the CF fallback, before the bundled defaults.
+    // Optional user-supplied Cloudflare-proxy domain(s), separated by comma / space / semicolon
+    // (e.g. "mydomain.com, other.com"). When set they are tried FIRST in the CF fallback, in the
+    // given order, before the bundled defaults.
     private val cfDomain: String = "",
     // Optional Fake-TLS masking domain. When non-empty, clients connect with an `ee...`
     // secret and wrap the obfuscated2 stream in TLS records that look like HTTPS to [this
@@ -62,21 +63,34 @@ class MtProtoProxyServer(
     // resolves to Cloudflare anycast IPs (NOT Telegram IPs), and Cloudflare proxies the
     // /apiws WebSocket through to Telegram. This is what makes the proxy survive networks
     // that block Telegram's IP ranges directly (DPI / TSPU).
-    private val defaultCfDomains = listOf(
-        "noskomnadzor.co.uk",
-        "kartoshka.co.uk",
-        "cakeisalie.co.uk",
-        "lovetrue.co.uk",
-        "sorokdva.co.uk",
-        "havegreatday.co.uk",
-        "pomogite.co.uk",
-        "pclead.co.uk",
-        "offshor.co.uk"
+    // Bundled CF-fronting domain labels are obfuscated in source (Caesar-shifted by CF_SHIFT)
+    // so they don't sit as plaintext strings in the shipped APK; decoded at runtime.
+    private val encodedCfLabels = listOf(
+        "uvzrvtuhkgvy",
+        "rhyavzorh",
+        "jhrlpzhspl",
+        "svclaybl",
+        "zvyvrkch",
+        "ohclnylhakhf",
+        "wvtvnpal",
+        "wjslhk",
+        "vmmzovy"
     )
 
-    private val cfDomains: List<String> by lazy {
-        val user = cfDomain.trim()
-        if (user.isNotEmpty()) listOf(user) + defaultCfDomains else defaultCfDomains
+    private fun decodeCfLabel(s: String): String = buildString {
+        for (c in s) append(if (c in 'a'..'z') 'a' + ((c - 'a' + 26 - CF_SHIFT) % 26) else c)
+    }
+
+    private val defaultCfDomains: List<String> by lazy {
+        encodedCfLabels.map { decodeCfLabel(it) + ".co.uk" }
+    }
+
+    // User-supplied CF domains: split on comma / semicolon / space, trimmed, de-duplicated.
+    private val userCfDomains: List<String> by lazy {
+        cfDomain.split(',', ';', ' ')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
     }
 
     fun start() {
@@ -362,7 +376,7 @@ class MtProtoProxyServer(
 
         val cfCandidates = ArrayList<WsCandidate>()
         val cfDc = if (dcId == 203) 2 else dcId
-        for (base in cfDomains) {
+        for (base in userCfDomains + defaultCfDomains.shuffled()) {
             cfCandidates.add(WsCandidate(null, "kws$cfDc.$base", "cloudflare"))
         }
 
@@ -587,6 +601,8 @@ class MtProtoProxyServer(
         const val MAX_CLIENT_HELLO = 4096
         // Max concurrent client connections (loopback proxy; Telegram needs ~15). Flood guard.
         const val MAX_CLIENTS = 128
+        // Caesar shift used to obfuscate the bundled CF-fronting domain labels in source.
+        const val CF_SHIFT = 7
 
         /** Decode a hex MTProto secret, failing loudly on odd length / non-hex instead of crashing. */
         fun parseSecret(s: String): ByteArray {
