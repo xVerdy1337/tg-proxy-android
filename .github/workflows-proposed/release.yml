@@ -1,0 +1,77 @@
+name: Release APK
+
+# Cut a release by pushing a tag like `v1.1`:
+#   git tag v1.1 && git push origin v1.1
+# The job builds the release APK, and (only if the signing secrets are set) publishes the
+# SIGNED apk as a GitHub Release asset. Without the keystore secrets the release APK is left
+# unsigned by build.gradle.kts and Android cannot install it, so signing secrets are required
+# for a distributable release:
+#   RELEASE_KEYSTORE_BASE64  - `base64 -w0 release.keystore`
+#   RELEASE_KEYSTORE_PASSWORD
+#   RELEASE_KEY_ALIAS
+#   RELEASE_KEY_PASSWORD
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create the GitHub Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK and CMake
+        run: sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Fail early if signing secrets are missing
+        if: ${{ env.RELEASE_KEYSTORE_BASE64 == '' }}
+        run: |
+          echo "::error::RELEASE_KEYSTORE_BASE64 is not set - the release APK would be unsigned"
+          echo "::error::and Android cannot install an unsigned APK. Set the keystore secrets first."
+          exit 1
+
+      - name: Decode release keystore
+        id: keystore
+        run: |
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "keystore_path=$RUNNER_TEMP/release.keystore" >> "$GITHUB_OUTPUT"
+
+      - name: Build signed Release APK
+        run: gradle assembleRelease
+        env:
+          KEYSTORE_PATH: ${{ steps.keystore.outputs.keystore_path }}
+          KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+
+      - name: Publish GitHub Release with the signed APK
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: app/build/outputs/apk/release/*.apk
