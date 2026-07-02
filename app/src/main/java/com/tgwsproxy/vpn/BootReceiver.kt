@@ -16,8 +16,10 @@ import androidx.core.content.ContextCompat
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action ?: return
-        if (action != Intent.ACTION_BOOT_COMPLETED &&
-            action != "android.intent.action.QUICKBOOT_POWERON") return
+        // Only the protected BOOT_COMPLETED broadcast (deliverable by the system only). We
+        // intentionally drop the unprotected QUICKBOOT_POWERON, which any app could spoof to
+        // start the VPN service without the user's involvement.
+        if (action != Intent.ACTION_BOOT_COMPLETED) return
 
         val wasRunning = context
             .getSharedPreferences(DesyncVpnService.PREFS, Context.MODE_PRIVATE)

@@ -122,26 +122,46 @@ class DesyncVpnService : VpnService(), Tunnel {
         }
 
         /**
-         * Strip any listen-endpoint flags (-i/--ip, -p/--port) from a user/preset command so it
-         * can never override the pinned 127.0.0.1:<port>. Without this, a pasted "-i 0.0.0.0"
-         * would (getopt last-wins) expose the auth-less SOCKS5 proxy to the whole network.
-         * Handles both "-i 0.0.0.0" and the glued "-i0.0.0.0" / "--ip=0.0.0.0" forms.
+         * Sanitise a user/preset byedpi command before it reaches the native engine. Two goals:
          *
-         * The glued short form is matched narrowly — only when the char right after -i/-p is the
-         * start of an address/port value (digit, '.' or ':'), e.g. "-i0.0.0.0", "-p1080", "-i::".
-         * This deliberately does NOT swallow unrelated tokens that merely begin with -i/-p (a
-         * future "-probe" or "-ipv6"), which a blanket startsWith would wrongly drop.
+         *  1. The listen endpoint (-i/--ip, -p/--port) must stay pinned to 127.0.0.1:<port>. A
+         *     pasted "-i 0.0.0.0" would otherwise (getopt last-wins) expose the auth-less SOCKS5
+         *     proxy to the whole network.
+         *  2. A DPI-strategy string has no business touching the filesystem or daemonising the
+         *     engine, so we also strip byedpi's file/daemon options: -y/--cache-file and
+         *     -w/--pidfile (write arbitrary paths), -H/--hosts and -j/--ipset (read arbitrary
+         *     files), and -D/--daemon, -E/--transparent.
+         *
+         * Handles the separate form ("-i" "0.0.0.0"), the long "=" form ("--ip=0.0.0.0"), and the
+         * glued short form ("-i0.0.0.0", "-yfile"). For -i/-p the glued match stays narrow (value
+         * must start with a digit/'.'/':'), so a future "-probe"/"-ipv6" isn't wrongly dropped;
+         * the file flags glue-match any value.
          */
         private fun filterListenFlags(tokens: List<String>): List<String> {
+            // Flags that take a following value (strip the flag AND its value).
+            val valueShort = setOf("-i", "-p", "-y", "-w", "-H", "-j")
+            val valueLong = setOf("--ip", "--port", "--cache-file", "--pidfile", "--hosts", "--ipset")
+            // Bare boolean flags (no value) to strip: daemonize / transparent mode.
+            val boolFlags = setOf("-D", "--daemon", "-E", "--transparent")
+            // Short flags whose value may be glued directly to the flag.
+            val gluableShort = listOf("-i", "-p", "-y", "-w", "-H", "-j")
+
             val out = ArrayList<String>(tokens.size)
             var i = 0
             while (i < tokens.size) {
                 val t = tokens[i]
-                val separate = t == "-i" || t == "-p" || t == "--ip" || t == "--port"
-                val glued = (t.startsWith("-i") || t.startsWith("-p")) && t.length > 2 &&
-                    (t[2].isDigit() || t[2] == '.' || t[2] == ':')
-                val longGlued = t.startsWith("--ip=") || t.startsWith("--port=")
-                if (separate || glued || longGlued) {
+                if (t in boolFlags) { i++; continue }
+                val separate = t in valueShort || t in valueLong
+                val longGlued = valueLong.any { t.startsWith("$it=") }
+                val glued = gluableShort.any { f ->
+                    t.length > 2 && t.startsWith(f) && when (f) {
+                        // -i/-p: only when the next char begins an address/port value, so we don't
+                        // swallow an unrelated token that merely starts with -i/-p.
+                        "-i", "-p" -> t[2].isDigit() || t[2] == '.' || t[2] == ':'
+                        else -> true
+                    }
+                }
+                if (separate || longGlued || glued) {
                     // separate-argument form ("-i" "0.0.0.0") — also drop the following value
                     if (separate && i + 1 < tokens.size) i++
                     i++

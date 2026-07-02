@@ -27,3 +27,7 @@ Thumbs.db
 # External native build
 .cxx/
 .externalNativeBuild/
+
+# Signing keystores (never commit — provided to CI via secrets)
+*.keystore
+*.jks

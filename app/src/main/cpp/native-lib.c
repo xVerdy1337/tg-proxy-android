@@ -10,7 +10,7 @@
 #include "main.h"
 
 extern int server_fd;
-static int g_proxy_running = 0;
+static volatile sig_atomic_t g_proxy_running = 0;
 
 struct params default_params = {
         .await_int = 10,

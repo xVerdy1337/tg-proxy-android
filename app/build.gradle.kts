@@ -33,21 +33,33 @@ android {
     }
 
     signingConfigs {
-        create("ci") {
-            storeFile = file(System.getenv("KEYSTORE_PATH") ?: "ci.keystore")
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "android"
-            keyAlias = System.getenv("KEY_ALIAS") ?: "androiddebugkey"
-            keyPassword = System.getenv("KEY_PASSWORD") ?: "android"
+        // Release signing pulls its keystore + passwords ONLY from environment variables
+        // (populated from CI secrets). There is no default/fallback password: if no keystore
+        // is provided the release is left unsigned rather than signed with a public key.
+        create("release") {
+            val ksPath = System.getenv("KEYSTORE_PATH")
+            if (ksPath != null && file(ksPath).exists()) {
+                storeFile = file(ksPath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
         }
     }
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("ci")
+            // Uses the SDK's auto-generated per-developer debug keystore (never shipped).
         }
         release {
             isMinifyEnabled = true
-            signingConfig = signingConfigs.getByName("ci")
+            // Attach the release signing config only when a keystore was actually provided
+            // (KEYSTORE_PATH points at an existing file); otherwise leave the release unsigned
+            // instead of falling back to a public debug key.
+            val releaseKsPath = System.getenv("KEYSTORE_PATH")
+            if (releaseKsPath != null && file(releaseKsPath).exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
