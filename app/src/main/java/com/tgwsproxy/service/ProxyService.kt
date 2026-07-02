@@ -49,6 +49,7 @@ class ProxyService : Service() {
         private const val NOTIFY_THROTTLE_MS = 2000L
         const val PREFS = "tgwsproxy_prefs"
         const val KEY_CF_DOMAIN = "cf_domain"
+        const val KEY_CF_WORKER_DOMAIN = "cf_worker_domain"
         const val KEY_FAKE_TLS_DOMAIN = "fake_tls_domain"
         const val KEY_SECRET = "proxy_secret"
         // Shared with ProxyTileService so the Quick Settings tile reflects live state.
@@ -81,6 +82,7 @@ class ProxyService : Service() {
         val logs: List<String> = emptyList(),
         val proxyLink: String = "",
         val cfDomain: String = "",
+        val cfWorkerDomain: String = "",
         val fakeTlsDomain: String = "",
         // Live traffic stats for the UI.
         val bytesUp: Long = 0,
@@ -137,6 +139,7 @@ class ProxyService : Service() {
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         // Restore the saved Cloudflare-proxy domain so the UI reflects it on launch.
         val savedDomain = prefs.getString(KEY_CF_DOMAIN, "") ?: ""
+        val savedWorker = prefs.getString(KEY_CF_WORKER_DOMAIN, "") ?: ""
         val savedFakeTls = prefs.getString(KEY_FAKE_TLS_DOMAIN, "") ?: ""
         // Restore (or create) the stable secret so the tg:// link stays the same
         // across stop/start — the user no longer has to re-add the proxy each time.
@@ -146,6 +149,7 @@ class ProxyService : Service() {
         _serviceState.update {
             it.copy(
                 cfDomain = savedDomain,
+                cfWorkerDomain = savedWorker,
                 fakeTlsDomain = savedFakeTls,
                 secret = secret,
                 proxyLink = buildProxyLink(host, port, secret, savedFakeTls)
@@ -198,6 +202,16 @@ class ProxyService : Service() {
             .putString(KEY_CF_DOMAIN, cleaned)
             .apply()
         _serviceState.update { it.copy(cfDomain = cleaned) }
+    }
+
+    /** Persist the user's Cloudflare Worker domain(s). Takes effect on the next start. */
+    fun setCfWorkerDomain(domain: String) {
+        val cleaned = domain.trim()
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_CF_WORKER_DOMAIN, cleaned)
+            .apply()
+        _serviceState.update { it.copy(cfWorkerDomain = cleaned) }
     }
 
     /**
@@ -289,6 +303,7 @@ class ProxyService : Service() {
                         updateNotification()
                     },
                     cfDomain = _serviceState.value.cfDomain,
+                    cfWorkerDomain = _serviceState.value.cfWorkerDomain,
                     fakeTlsDomain = fakeTlsDomain
                 )
                 proxyServer?.start()
