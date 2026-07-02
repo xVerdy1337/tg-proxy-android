@@ -509,7 +509,7 @@ static int try_set_tls_timer(struct poolhd *pool,
         }
         ssize_t end = val->tls_rec_size - val->tls_rec_pos;
         if (end <= 0)  {
-            LOG(LOG_E, "invalid record size: %zd\n", val->tls_rec_size);
+            LOG(LOG_E, "invalid record size: %d\n", val->tls_rec_size);
             return -1;
         }
         if (pos + end > n) end = n - pos;

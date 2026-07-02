@@ -220,6 +220,10 @@ class DesyncVpnService : VpnService(), Tunnel {
             "com.google.android.youtube",
             "com.google.android.apps.youtube.music",
             "com.instagram.android",
+            "com.facebook.katana",       // Facebook
+            "com.instagram.barcelona",   // Threads
+            "com.twitter.android",       // X (Twitter)
+            "com.discord",               // Discord
         )
 
         // Apps that DETECT the desync/VPN and block login — keep them off the bypass entirely
