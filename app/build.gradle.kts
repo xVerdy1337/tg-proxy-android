@@ -38,7 +38,9 @@ android {
         // is provided the release is left unsigned rather than signed with a public key.
         create("release") {
             val ksPath = System.getenv("KEYSTORE_PATH")
-            if (ksPath != null && file(ksPath).exists()) {
+            // isNullOrEmpty: an unset secret arrives as "" (empty), and file("") throws
+            // "path may not be null or empty" — treat empty the same as absent (unsigned release).
+            if (!ksPath.isNullOrEmpty() && file(ksPath).exists()) {
                 storeFile = file(ksPath)
                 storePassword = System.getenv("KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("KEY_ALIAS")
@@ -57,7 +59,7 @@ android {
             // (KEYSTORE_PATH points at an existing file); otherwise leave the release unsigned
             // instead of falling back to a public debug key.
             val releaseKsPath = System.getenv("KEYSTORE_PATH")
-            if (releaseKsPath != null && file(releaseKsPath).exists()) {
+            if (!releaseKsPath.isNullOrEmpty() && file(releaseKsPath).exists()) {
                 signingConfig = signingConfigs.getByName("release")
             }
             proguardFiles(
