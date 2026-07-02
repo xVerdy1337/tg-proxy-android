@@ -809,8 +809,8 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
                     OutlinedTextField(
                         value = domainInput,
                         onValueChange = { domainInput = it },
-                        label = { Text("Свой Cloudflare-домен", color = TextSecondary) },
-                        placeholder = { Text("example.com", color = TextSecondary) },
+                        label = { Text("Свои Cloudflare-домены", color = TextSecondary) },
+                        placeholder = { Text("example.com, mydomain.com", color = TextSecondary) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
                             keyboardType = KeyboardType.Uri,
@@ -828,7 +828,7 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "Оставьте пустым, чтобы использовать встроенные домены.",
+                        text = "Несколько доменов — через запятую. Оставьте пустым, чтобы использовать встроенные домены.",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextSecondary
                     )
