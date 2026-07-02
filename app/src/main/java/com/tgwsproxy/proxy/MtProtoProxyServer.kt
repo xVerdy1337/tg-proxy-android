@@ -21,6 +21,11 @@ class MtProtoProxyServer(
     // (e.g. "mydomain.com, other.com"). When set they are tried FIRST in the CF fallback, in the
     // given order, before the bundled defaults.
     private val cfDomain: String = "",
+    // Optional Cloudflare Worker domain(s) (comma / space / semicolon separated), e.g.
+    // "name.username.workers.dev". A user-deployed CF Worker relays a WebSocket to a RAW
+    // Telegram DC IP over Cloudflare's edge (free alternative to a purchased CF-proxy domain —
+    // no domain needed). Tried as an extra fallback tier when set. Empty = disabled.
+    private val cfWorkerDomain: String = "",
     // Optional Fake-TLS masking domain. When non-empty, clients connect with an `ee...`
     // secret and wrap the obfuscated2 stream in TLS records that look like HTTPS to [this
     // domain] — the strongest DPI bypass. Empty = plain (dd) handshake on the raw path.
@@ -88,6 +93,14 @@ class MtProtoProxyServer(
     // User-supplied CF domains: split on comma / semicolon / space, trimmed, de-duplicated.
     private val userCfDomains: List<String> by lazy {
         cfDomain.split(',', ';', ' ')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+    }
+
+    // User-supplied Cloudflare Worker domains: split on comma / semicolon / space, trimmed, deduped.
+    private val userCfWorkerDomains: List<String> by lazy {
+        cfWorkerDomain.split(',', ';', ' ')
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .distinct()
@@ -339,7 +352,7 @@ class MtProtoProxyServer(
         } catch (_: Exception) {}
     }
 
-    private data class WsCandidate(val pinnedIp: String?, val host: String, val kind: String)
+    private data class WsCandidate(val pinnedIp: String?, val host: String, val kind: String, val path: String = "/apiws")
 
     // Remembers the last endpoint that PROVED it carries Telegram data (set in bridgeData once
     // bytes actually flow back), keyed by "dcId/isMedia". On a reconnect we try it alone first
@@ -358,7 +371,7 @@ class MtProtoProxyServer(
 
         routeCache[cacheKey]?.let { cached ->
             val b = WebSocketBridge()
-            val ok = try { b.connect(cached.pinnedIp, cached.host) } catch (_: Exception) { false }
+            val ok = try { b.connect(cached.pinnedIp, cached.host, cached.path) } catch (_: Exception) { false }
             if (ok) {
                 lastRoute = cached.kind
                 onLog("[$label] WS reconnected via ${cached.host} (${cached.kind}, cached)")
@@ -388,7 +401,24 @@ class MtProtoProxyServer(
         raceCandidates(directCandidates, WS_WAVE_TIMEOUT_MS, label)?.let { return it }
 
         onLog("[$label] direct failed — racing ${cfCandidates.size} Cloudflare endpoints")
-        return raceCandidates(cfCandidates, WS_RACE_TIMEOUT_MS, label)
+        raceCandidates(cfCandidates, WS_RACE_TIMEOUT_MS, label)?.let { return it }
+
+        // Extra tier: user-deployed Cloudflare Worker(s). Each relays a WebSocket to the RAW DC
+        // IP (dst) over Cloudflare's edge — a free alternative to a purchased CF-proxy domain.
+        // Only tried when the user configured a worker domain. Same relayInit + obfuscated2 +
+        // splitter framing as the raw TCP fallback (the worker just pipes bytes to dst:443).
+        if (userCfWorkerDomains.isNotEmpty()) {
+            val dcIp = dcDefaultIps[dcId] ?: dcDefaultIps[2]!!
+            val workerCandidates = ArrayList<WsCandidate>()
+            for (worker in userCfWorkerDomains.shuffled()) {
+                workerCandidates.add(
+                    WsCandidate(null, worker, "cf_worker", "/apiws?dst=$dcIp&dc=$dcId")
+                )
+            }
+            onLog("[$label] Cloudflare failed — racing ${workerCandidates.size} CF Worker endpoint(s)")
+            return raceCandidates(workerCandidates, WS_RACE_TIMEOUT_MS, label)
+        }
+        return null
     }
 
     /** Race [candidates] concurrently, returning the first that connects (losers are closed). */
@@ -408,7 +438,7 @@ class MtProtoProxyServer(
             serverScope.launch {
                 val b = WebSocketBridge()
                 bridges.add(b)
-                val ok = try { b.connect(c.pinnedIp, c.host) } catch (_: Exception) { false }
+                val ok = try { b.connect(c.pinnedIp, c.host, c.path) } catch (_: Exception) { false }
                 if (ok && !winner.isCompleted && winner.complete(Pair(b, c))) {
                     lastRoute = c.kind
                     onLog("[$label] WS connected via ${c.host} (${c.kind})")

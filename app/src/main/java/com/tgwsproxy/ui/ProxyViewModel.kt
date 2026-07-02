@@ -34,6 +34,7 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
             val running = prefs.getBoolean(ProxyService.KEY_RUNNING, false)
             val secret = prefs.getString(ProxyService.KEY_SECRET, "") ?: ""
             val cfDomain = prefs.getString(ProxyService.KEY_CF_DOMAIN, "") ?: ""
+            val cfWorkerDomain = prefs.getString(ProxyService.KEY_CF_WORKER_DOMAIN, "") ?: ""
             val fakeTlsDomain = prefs.getString(ProxyService.KEY_FAKE_TLS_DOMAIN, "") ?: ""
             val host = ProxyService.DEFAULT_HOST
             val port = ProxyService.DEFAULT_PORT
@@ -44,6 +45,7 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
                 port = port,
                 secret = secret,
                 cfDomain = cfDomain,
+                cfWorkerDomain = cfWorkerDomain,
                 fakeTlsDomain = fakeTlsDomain,
                 proxyLink = if (secret.isNotEmpty()) {
                     ProxyService.buildProxyLink(host, port, secret, fakeTlsDomain)
@@ -105,6 +107,7 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
                     logs = serviceState.logs,
                     proxyLink = serviceState.proxyLink,
                     cfDomain = serviceState.cfDomain,
+                    cfWorkerDomain = serviceState.cfWorkerDomain,
                     fakeTlsDomain = serviceState.fakeTlsDomain,
                     bytesUp = serviceState.bytesUp,
                     bytesDown = serviceState.bytesDown,
@@ -145,6 +148,11 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
         proxyService?.setCfDomain(domain)
     }
 
+    fun setCfWorkerDomain(domain: String) {
+        _uiState.value = _uiState.value.copy(cfWorkerDomain = domain)
+        proxyService?.setCfWorkerDomain(domain)
+    }
+
     fun setFakeTlsDomain(domain: String) {
         _uiState.value = _uiState.value.copy(fakeTlsDomain = domain)
         proxyService?.setFakeTlsDomain(domain)
@@ -170,6 +178,7 @@ data class ProxyUiState(
     val logs: List<String> = emptyList(),
     val proxyLink: String = "",
     val cfDomain: String = "",
+    val cfWorkerDomain: String = "",
     val fakeTlsDomain: String = "",
     val bytesUp: Long = 0,
     val bytesDown: Long = 0,

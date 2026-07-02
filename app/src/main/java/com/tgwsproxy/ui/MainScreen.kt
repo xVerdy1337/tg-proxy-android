@@ -271,7 +271,7 @@ fun MainScreen(
                     )
                 }
                 item { FakeTlsCard(uiState, onSave = { viewModel.setFakeTlsDomain(it) }) }
-                item { SettingsCard(uiState, onSaveCfDomain = { viewModel.setCfDomain(it) }) }
+                item { SettingsCard(uiState, onSaveCfDomain = { viewModel.setCfDomain(it) }, onSaveCfWorkerDomain = { viewModel.setCfWorkerDomain(it) }) }
             }
 
             item { TelegramChannelCard(context) }
@@ -757,9 +757,10 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit) {
+private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit, onSaveCfWorkerDomain: (String) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     var domainInput by remember(uiState.cfDomain) { mutableStateOf(uiState.cfDomain) }
+    var workerInput by remember(uiState.cfWorkerDomain) { mutableStateOf(uiState.cfWorkerDomain) }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -843,6 +844,52 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
                         Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("Сохранить", fontWeight = FontWeight.SemiBold)
+                    }
+
+                    Spacer(Modifier.height(20.dp))
+                    Text(
+                        text = "Cloudflare Worker — бесплатно, без покупки домена. Разверните воркер по инструкции (docs/CfWorker.md) и вставьте его адрес *.workers.dev.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = workerInput,
+                        onValueChange = { workerInput = it },
+                        label = { Text("Cloudflare Worker домен", color = TextSecondary) },
+                        placeholder = { Text("name.username.workers.dev", color = TextSecondary) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Uri,
+                            imeAction = ImeAction.Done
+                        ),
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            focusedBorderColor = Accent,
+                            unfocusedBorderColor = Border,
+                            cursorColor = Accent
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Несколько воркеров — через запятую. Оставьте пустым, чтобы не использовать.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = { onSaveCfWorkerDomain(workerInput.trim()) },
+                        enabled = workerInput.trim() != uiState.cfWorkerDomain,
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Background)
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Сохранить Worker", fontWeight = FontWeight.SemiBold)
                     }
                     if (uiState.isRunning) {
                         Spacer(Modifier.height(8.dp))
