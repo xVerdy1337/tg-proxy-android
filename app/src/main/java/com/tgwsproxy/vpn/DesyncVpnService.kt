@@ -274,6 +274,7 @@ class DesyncVpnService : VpnService(), Tunnel {
     private var readThread: Thread? = null
     private var statsJob: Job? = null
     @Volatile private var running = false
+    @Volatile private var cleaningUp = false
 
     // Shared, BOUNDED pool for per-flow relay loops (see Tunnel.relayExecutor). Each TCP/UDP flow
     // occupies one thread for its lifetime (blocking read), so the pool size hard-caps concurrent
@@ -331,12 +332,22 @@ class DesyncVpnService : VpnService(), Tunnel {
                 try { byedpiExitCode = proxy.startProxy(byedpiArgs) }
                 catch (e: Throwable) { byedpiExitCode = -1 }
             }
-            // Give byedpi a moment to bind/parse; if it already exited, the command was bad.
-            Thread.sleep(500)
-            val t = byedpiThread
-            if (t == null || !t.isAlive) {
+            // Readiness means the SOCKS listener accepts connections, not merely that its thread
+            // has survived for an arbitrary delay.
+            val deadline = System.currentTimeMillis() + 2_000
+            var ready = false
+            while (byedpiThread?.isAlive == true && System.currentTimeMillis() < deadline) {
+                try {
+                    Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", SOCKS_PORT), 100) }
+                    ready = true
+                    break
+                } catch (_: Exception) {
+                    Thread.sleep(50)
+                }
+            }
+            if (!ready) {
                 val code = byedpiExitCode ?: -1
-                _state.value = VpnState(isRunning = false, error = "byedpi: неверная команда (код $code)")
+                _state.value = VpnState(isRunning = false, error = "byedpi SOCKS is not ready (code $code)")
                 return false
             }
             true
@@ -599,31 +610,37 @@ class DesyncVpnService : VpnService(), Tunnel {
         }
     }
 
-    private fun stopEverything() {
-        running = false
-        statsJob?.cancel()
-        for (c in tcpMap.values) c.close()
-        for (u in udpMap.values) u.close()
-        tcpMap.clear(); udpMap.clear()
-        relayPool?.shutdownNow()
-        relayPool = null
-        stopByedpi()
-        try { tunIn?.close() } catch (_: Exception) {}
-        try { tunOut?.close() } catch (_: Exception) {}
-        try { pfd?.close() } catch (_: Exception) {}
-        pfd = null
-        persistRunning(false)
-        _state.value = VpnState(isRunning = false)
-        stopForegroundCompat()
-        stopSelf()
+    private fun stopEverything(stopService: Boolean = true) {
+        synchronized(this) {
+            if (cleaningUp) return
+            cleaningUp = true
+        }
+        try {
+            running = false
+            statsJob?.cancel()
+            for (c in tcpMap.values) c.close()
+            for (u in udpMap.values) u.close()
+            tcpMap.clear(); udpMap.clear()
+            relayPool?.shutdownNow()
+            relayPool = null
+            stopByedpi()
+            try { tunIn?.close() } catch (_: Exception) {}
+            try { tunOut?.close() } catch (_: Exception) {}
+            try { pfd?.close() } catch (_: Exception) {}
+            tunIn = null; tunOut = null; pfd = null
+            persistRunning(false)
+            _state.value = VpnState(isRunning = false)
+            stopForegroundCompat()
+            if (stopService) stopSelf()
+        } finally {
+            cleaningUp = false
+        }
     }
 
     override fun onDestroy() {
-        super.onDestroy()
-        running = false
+        stopEverything(stopService = false)
         scope.cancel()
-        persistRunning(false)
-        _state.value = VpnState(isRunning = false)
+        super.onDestroy()
     }
 
     override fun onRevoke() {

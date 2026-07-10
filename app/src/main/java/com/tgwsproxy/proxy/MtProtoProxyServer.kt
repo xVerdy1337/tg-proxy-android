@@ -1,6 +1,7 @@
 package com.tgwsproxy.proxy
 
 import kotlinx.coroutines.*
+import kotlinx.coroutines.selects.select
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -343,9 +344,15 @@ class MtProtoProxyServer(
                         }
                     } catch (_: Exception) {}
                 }
-                awaitAll(a, c)
+                select<Unit> {
+                    a.onAwait { }
+                    c.onAwait { }
+                }
+                try { clientSocket.close() } catch (_: Exception) {}
+                try { up.close() } catch (_: Exception) {}
+                a.cancel(); c.cancel()
             } finally {
-                // Always drop the upstream socket, even if awaitAll throws / the coroutine is
+                // Always drop the upstream socket, even if the relay is cancelled / the coroutine is
                 // cancelled mid-relay — otherwise the fd leaks until GC.
                 try { up.close() } catch (_: Exception) {}
             }
@@ -546,7 +553,13 @@ class MtProtoProxyServer(
         }
 
         try {
-            awaitAll(clientToWs, wsToClient)
+            select<Unit> {
+                clientToWs.onAwait { }
+                wsToClient.onAwait { }
+            }
+            try { clientSocket.close() } catch (_: Exception) {}
+            wsBridge.close()
+            clientToWs.cancel(); wsToClient.cancel()
         } catch (_: Exception) {
         } finally {
             watchdog.cancel()
@@ -607,7 +620,13 @@ class MtProtoProxyServer(
                     } catch (_: Exception) {}
                 }
 
-                awaitAll(clientToRemote, remoteToClient)
+                select<Unit> {
+                    clientToRemote.onAwait { }
+                    remoteToClient.onAwait { }
+                }
+                try { clientSocket.close() } catch (_: Exception) {}
+                try { remoteSocket.close() } catch (_: Exception) {}
+                clientToRemote.cancel(); remoteToClient.cancel()
                 true
             } finally {
                 try { remoteSocket.close() } catch (_: Exception) {}

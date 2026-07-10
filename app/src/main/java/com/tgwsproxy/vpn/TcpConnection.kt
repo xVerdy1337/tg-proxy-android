@@ -49,12 +49,14 @@ class TcpConnection(
     private var upOut: OutputStream? = null
     @Volatile private var connected = false
     private val pendingToUpstream = ArrayList<ByteArray>()
+    private var pendingToUpstreamBytes = 0
 
     companion object {
         private const val MSS = 1400
         private const val WIN = 65535
         // Max wait for the local byedpi SOCKS5 reply before giving up (frees the relay thread).
         private const val SOCKS_HANDSHAKE_TIMEOUT_MS = 10_000
+        private const val MAX_PENDING_UPSTREAM_BYTES = 512 * 1024
     }
 
     /** Called by the service when the initial SYN for this flow arrives. */
@@ -172,9 +174,12 @@ class TcpConnection(
             if (payload.isNotEmpty()) {
                 when {
                     seq == rcvNxt -> {
-                        rcvNxt = (rcvNxt + payload.size) and 0xFFFFFFFFL
-                        queueToUpstreamLocked(payload)
-                        sendSegment(PacketUtils.TcpFlag.ACK, ByteArray(0))
+                        if (queueToUpstreamLocked(payload)) {
+                            rcvNxt = (rcvNxt + payload.size) and 0xFFFFFFFFL
+                            sendSegment(PacketUtils.TcpFlag.ACK, ByteArray(0))
+                        } else {
+                            closeLocked(sendRst = true)
+                        }
                     }
                     else -> {
                         sendSegment(PacketUtils.TcpFlag.ACK, ByteArray(0))
@@ -192,21 +197,33 @@ class TcpConnection(
         }
     }
 
-    private fun queueToUpstreamLocked(data: ByteArray) {
-        if (!connected) { pendingToUpstream.add(data); return }
-        writeUpstreamLocked(data)
+    private fun queueToUpstreamLocked(data: ByteArray): Boolean {
+        if (!connected) {
+            if (pendingToUpstreamBytes + data.size > MAX_PENDING_UPSTREAM_BYTES) return false
+            pendingToUpstream.add(data)
+            pendingToUpstreamBytes += data.size
+            return true
+        }
+        return writeUpstreamLocked(data)
     }
 
     private fun flushPendingLocked() {
         val copy = ArrayList(pendingToUpstream)
         pendingToUpstream.clear()
-        for (chunk in copy) writeUpstreamLocked(chunk)
+        pendingToUpstreamBytes = 0
+        for (chunk in copy) if (!writeUpstreamLocked(chunk)) break
     }
 
-    private fun writeUpstreamLocked(data: ByteArray) {
-        val out = upOut ?: return
+    private fun writeUpstreamLocked(data: ByteArray): Boolean {
+        val out = upOut ?: return false
         // No Kotlin-side desync: byedpi reframes/fakes the ClientHello on its outbound socket.
-        try { out.write(data); out.flush() } catch (_: Exception) { reset() }
+        return try {
+            out.write(data)
+            true
+        } catch (_: Exception) {
+            closeLocked(sendRst = true)
+            false
+        }
     }
 
     /** Reads from byedpi (real server data) and streams it back to the client as TCP segments. */
@@ -256,6 +273,8 @@ class TcpConnection(
             try { sendSegment(PacketUtils.TcpFlag.RST or PacketUtils.TcpFlag.ACK, ByteArray(0)) } catch (_: Exception) {}
         }
         state = State.CLOSED
+        pendingToUpstream.clear()
+        pendingToUpstreamBytes = 0
         try { upstream?.close() } catch (_: Exception) {}
         tunnel.onConnectionClosed(key, udp = false)
     }

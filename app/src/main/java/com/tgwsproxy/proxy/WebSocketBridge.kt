@@ -23,13 +23,16 @@ class WebSocketBridge {
     // "connecting" and only redialed once the app was reopened. We keep readTimeout only for
     // the initial connect/handshake. 30s is a battery/reliability balance: most carrier/Wi-Fi
     // NATs hold an idle mapping 60-120s, so 30s keeps it alive with fewer radio wakeups than 20s.
-    private val baseClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .pingInterval(30, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
-        .build()
+    private companion object {
+        // Race candidates share one dispatcher, connection pool and thread set.
+        val BASE_CLIENT: OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .pingInterval(30, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
+    }
 
     private var webSocket: WebSocket? = null
     // Bounded buffer (not Channel.BUFFERED's tiny ~64). On overflow we drop the socket
@@ -53,7 +56,7 @@ class WebSocketBridge {
         // Use domain in URL → correct TLS SNI. With a pinned targetIp we override DNS so the
         // domain routes to the specific DC IP without a real lookup; otherwise fall back to
         // the system resolver (Cloudflare-fronted domains).
-        val builder = baseClient.newBuilder()
+        val builder = BASE_CLIENT.newBuilder()
         if (targetIp != null) {
             builder.dns(object : okhttp3.Dns {
                 override fun lookup(hostname: String): List<java.net.InetAddress> {
@@ -111,13 +114,14 @@ class WebSocketBridge {
         })
 
         latch.await(5, TimeUnit.SECONDS)
-        return connected
+        if (!connected) webSocket?.cancel()
+        return connected && isConnected
     }
 
     fun send(data: ByteArray): Boolean {
         // data.toByteString(0, size) avoids the array copy that the *data spread operator
         // forces on every frame (okio moved the 3-arg of() to this extension). send() is hot.
-        return webSocket?.send(data.toByteString(0, data.size)) ?: false
+        return isConnected && (webSocket?.send(data.toByteString(0, data.size)) ?: false)
     }
 
     suspend fun receive(): ByteArray? {
@@ -128,6 +132,7 @@ class WebSocketBridge {
 
     fun close() {
         isClosed = true
+        isConnected = false
         webSocket?.close(1000, "Closing")
         receiveChannel.close()
     }

@@ -46,7 +46,6 @@ class ProxyService : Service() {
         const val ACTION_STOP = "com.tgwsproxy.action.STOP"
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "proxy_channel"
-        private const val NOTIFY_THROTTLE_MS = 2000L
         const val PREFS = "tgwsproxy_prefs"
         const val KEY_CF_DOMAIN = "cf_domain"
         const val KEY_CF_WORKER_DOMAIN = "cf_worker_domain"
@@ -121,16 +120,20 @@ class ProxyService : Service() {
 
     override fun onBind(intent: Intent?): IBinder {
         uiBound = true
+        startStatsPump()
         return binder
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
         uiBound = false
+        statsJob?.cancel()
+        statsJob = null
         return true // allow onRebind when the UI comes back
     }
 
     override fun onRebind(intent: Intent?) {
         uiBound = true
+        startStatsPump()
     }
 
     override fun onCreate() {
@@ -279,7 +282,6 @@ class ProxyService : Service() {
         persistRunning(true)
         acquireWakeLocks()
         registerNetworkCallback()
-        startStatsPump()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
@@ -300,7 +302,6 @@ class ProxyService : Service() {
                     onLog = { logLine -> addLog(logLine) },
                     onConnectionChange = { count ->
                         _serviceState.update { it.copy(connectionCount = count) }
-                        updateNotification()
                     },
                     cfDomain = _serviceState.value.cfDomain,
                     cfWorkerDomain = _serviceState.value.cfWorkerDomain,
@@ -390,21 +391,19 @@ class ProxyService : Service() {
         }
     }
 
-    /** Poll the proxy server's live counters once a second and push them to the UI. */
+    /** Poll live counters only while the UI is visible; traffic forwarding does not depend on it. */
     private fun startStatsPump() {
         statsJob?.cancel()
         statsJob = serviceScope.launch {
-            while (isActive) {
+            while (isActive && uiBound) {
                 val server = proxyServer
-                if (server != null && uiBound) {
-                    // Only refresh the live counters when the UI is actually on screen.
+                if (server != null) {
                     val up = server.bytesUp.get()
                     val down = server.bytesDown.get()
                     val route = server.lastRoute
                     _serviceState.update { it.copy(bytesUp = up, bytesDown = down, route = route) }
                 }
-                // 1s cadence for a smooth live UI, 5s when backgrounded to save battery.
-                delay(if (uiBound) 1000 else 5000)
+                delay(1000)
             }
         }
     }
@@ -532,12 +531,7 @@ class ProxyService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val count = _serviceState.value.connectionCount
-        val statusLine = if (count > 0) {
-            getString(R.string.proxy_notification_connections, count)
-        } else {
-            getString(R.string.proxy_notification_text)
-        }
+                val statusLine = getString(R.string.proxy_notification_text)
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.proxy_notification_title))
@@ -553,38 +547,6 @@ class ProxyService : Service() {
             .build()
     }
 
-    @Volatile private var lastNotifyAt: Long = 0
-    private var pendingNotifyJob: Job? = null
-
-    /**
-     * Refresh the foreground notification, throttled to at most once every 2s. Telegram opens and
-     * closes many DC connections in bursts, so an un-throttled notify() on every change meant
-     * dozens of binder transactions + shade redraws per minute (each a CPU wakeup). Bursts are
-     * coalesced, and a trailing update is always scheduled so the final connection count is shown.
-     */
-    private fun updateNotification() {
-        val now = System.currentTimeMillis()
-        val sinceLast = now - lastNotifyAt
-        if (sinceLast >= NOTIFY_THROTTLE_MS) {
-            pendingNotifyJob?.cancel()
-            pendingNotifyJob = null
-            lastNotifyAt = now
-            pushNotification()
-        } else if (pendingNotifyJob?.isActive != true) {
-            // Schedule one trailing update at the end of the current throttle window.
-            pendingNotifyJob = serviceScope.launch {
-                delay(NOTIFY_THROTTLE_MS - sinceLast)
-                lastNotifyAt = System.currentTimeMillis()
-                pushNotification()
-            }
-        }
-    }
-
-    private fun pushNotification() {
-        val notification = buildNotification()
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(NOTIFICATION_ID, notification)
-    }
 
     override fun onDestroy() {
         super.onDestroy()
