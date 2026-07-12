@@ -275,6 +275,8 @@ class DesyncVpnService : VpnService(), Tunnel {
     private var statsJob: Job? = null
     @Volatile private var running = false
     @Volatile private var cleaningUp = false
+    // Keep the startup failure visible after stopSelf() triggers onDestroy().
+    @Volatile private var lastStopError: String? = null
 
     // Shared, BOUNDED pool for per-flow relay loops (see Tunnel.relayExecutor). Each TCP/UDP flow
     // occupies one thread for its lifetime (blocking read), so the pool size hard-caps concurrent
@@ -299,7 +301,9 @@ class DesyncVpnService : VpnService(), Tunnel {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { stopEverything(); return START_NOT_STICKY }
-            else -> startVpn()
+            else -> try { startVpn() } catch (e: Exception) {
+                stopEverything(error = formatFailure("запуска VPN", e))
+            }
         }
         return START_STICKY
     }
@@ -373,12 +377,16 @@ class DesyncVpnService : VpnService(), Tunnel {
 
     private fun startVpn() {
         if (running) return
+        lastStopError = null
         loadPrefs()
         createChannel()
         startForegroundCompat()
 
         // Bring up the native byedpi SOCKS5 proxy first — the relay dials it for every TCP flow.
-        if (!startByedpi()) { stopForegroundCompat(); stopSelf(); return }
+        if (!startByedpi()) {
+            stopEverything(error = _state.value.error ?: "byedpi не запустился")
+            return
+        }
 
         // IPv4 only on purpose: we do NOT add an IPv6 address/route. If we advertised IPv6 on the
         // TUN, apps (YouTube/Instagram use Happy Eyeballs) would prefer AAAA/IPv6 and we'd have to
@@ -418,9 +426,9 @@ class DesyncVpnService : VpnService(), Tunnel {
             tunIn = FileInputStream(fd.fileDescriptor)
             tunOut = FileOutputStream(fd.fileDescriptor)
         } catch (e: Exception) {
-            _state.value = VpnState(isRunning = false, error = "Не удалось поднять VPN: ${e.message}")
-            stopByedpi()
-            stopSelf()
+            val reason = formatFailure("поднятия VPN", e)
+            _state.value = VpnState(isRunning = false, error = reason)
+            stopEverything(error = reason)
             return
         }
 
@@ -610,12 +618,21 @@ class DesyncVpnService : VpnService(), Tunnel {
         }
     }
 
-    private fun stopEverything(stopService: Boolean = true) {
+    private fun stopEverything(
+        stopService: Boolean = true,
+        error: String? = null,
+        preserveExistingError: Boolean = false,
+    ) {
         synchronized(this) {
             if (cleaningUp) return
             cleaningUp = true
         }
         try {
+            if (preserveExistingError) {
+                if (error != null) lastStopError = error
+            } else {
+                lastStopError = error
+            }
             running = false
             statsJob?.cancel()
             for (c in tcpMap.values) c.close()
@@ -629,7 +646,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             try { pfd?.close() } catch (_: Exception) {}
             tunIn = null; tunOut = null; pfd = null
             persistRunning(false)
-            _state.value = VpnState(isRunning = false)
+            _state.value = VpnState(isRunning = false, error = lastStopError)
             stopForegroundCompat()
             if (stopService) stopSelf()
         } finally {
@@ -638,7 +655,7 @@ class DesyncVpnService : VpnService(), Tunnel {
     }
 
     override fun onDestroy() {
-        stopEverything(stopService = false)
+        stopEverything(stopService = false, preserveExistingError = true)
         scope.cancel()
         super.onDestroy()
     }
@@ -648,6 +665,9 @@ class DesyncVpnService : VpnService(), Tunnel {
         stopEverything()
         super.onRevoke()
     }
+
+    private fun formatFailure(stage: String, e: Exception): String =
+        "Не удалось $stage: ${e.javaClass.simpleName}: ${e.message ?: "без подробностей"}"
 
     private fun persistRunning(on: Boolean) {
         getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_VPN_RUNNING, on).apply()
