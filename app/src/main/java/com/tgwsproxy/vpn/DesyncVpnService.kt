@@ -54,6 +54,8 @@ class DesyncVpnService : VpnService(), Tunnel {
 
     data class VpnState(
         val isRunning: Boolean = false,
+        /** True while byedpi + TUN are still coming up after the user pressed enable. */
+        val isStarting: Boolean = false,
         val preset: String = PRESET_TLSREC,
         val blockQuic: Boolean = true,
         val scopeAllApps: Boolean = true,
@@ -304,8 +306,16 @@ class DesyncVpnService : VpnService(), Tunnel {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { stopEverything(); return START_NOT_STICKY }
-            else -> try { startVpn() } catch (e: Exception) {
-                stopEverything(error = formatFailure("запуска VPN", e))
+            else -> {
+                // Off the main thread so isStarting can paint immediately and byedpi's bind-wait
+                // doesn't freeze the UI (or risk an ANR) for up to a few seconds.
+                scope.launch {
+                    try {
+                        startVpn()
+                    } catch (e: Exception) {
+                        stopEverything(error = formatFailure("запуска VPN", e))
+                    }
+                }
             }
         }
         return START_STICKY
@@ -326,16 +336,22 @@ class DesyncVpnService : VpnService(), Tunnel {
     }
 
     private fun selectSocksPort(): Int {
+        val loopback = java.net.InetAddress.getByName("127.0.0.1")
         for (candidate in SOCKS_PORT_CANDIDATES) {
             try {
-                ServerSocket(candidate, 1, java.net.InetAddress.getByName("127.0.0.1")).use {
+                ServerSocket(candidate, 1, loopback).use {
                     return candidate
                 }
             } catch (_: Exception) {
                 // Another local proxy owns this port; try the next candidate.
             }
         }
-        return DEFAULT_SOCKS_PORT
+        // All fixed candidates busy — pick any free ephemeral port instead of failing on 1080.
+        try {
+            ServerSocket(0, 1, loopback).use { return it.localPort }
+        } catch (_: Exception) {
+            return DEFAULT_SOCKS_PORT
+        }
     }
 
     /**
@@ -345,35 +361,56 @@ class DesyncVpnService : VpnService(), Tunnel {
      * Returns true if the proxy is up.
      */
     private fun startByedpi(): Boolean {
+        // Drop any leftover instance (auto-tune, previous VPN session) so g_proxy_running is free.
+        stopByedpi()
         return try {
             val proxy = ByeDpiProxy()
             byedpiProxy = proxy
             byedpiExitCode = null
+            val args = byedpiArgs
+            val port = socksPort
             byedpiThread = thread(name = "byedpi-loop", isDaemon = true) {
-                try { byedpiExitCode = proxy.startProxy(byedpiArgs) }
-                catch (e: Throwable) { byedpiExitCode = -1 }
+                try { byedpiExitCode = proxy.startProxy(args) }
+                catch (_: Throwable) { byedpiExitCode = -1 }
             }
             // Readiness means the SOCKS listener accepts connections, not merely that its thread
             // has survived for an arbitrary delay.
-            val deadline = System.currentTimeMillis() + 2_000
+            val deadline = System.currentTimeMillis() + 3_000
             var ready = false
             while (byedpiThread?.isAlive == true && System.currentTimeMillis() < deadline) {
                 try {
-                    Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", socksPort), 100) }
+                    Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", port), 150) }
                     ready = true
                     break
                 } catch (_: Exception) {
-                    Thread.sleep(50)
+                    Thread.sleep(40)
                 }
             }
             if (!ready) {
-                val code = byedpiExitCode ?: -1
-                _state.value = VpnState(isRunning = false, error = "byedpi SOCKS is not ready on 127.0.0.1:$socksPort (code $code)")
+                val code = byedpiExitCode
+                val alive = byedpiThread?.isAlive == true
+                val reason = when {
+                    !alive && code == -1 ->
+                        "byedpi не запустился (порт $port занят или движок уже работает). Закрой ByeByeDPI/другие SOCKS и попробуй снова"
+                    !alive && code != null ->
+                        "byedpi завершился сразу (код $code). Проверь команду byedpi в настройках"
+                    alive ->
+                        "byedpi SOCKS не отвечает на 127.0.0.1:$port (таймаут). Попробуй ещё раз"
+                    else ->
+                        "byedpi SOCKS не готов на 127.0.0.1:$port"
+                }
+                _state.value = VpnState(isRunning = false, isStarting = false, error = reason)
+                stopByedpi()
                 return false
             }
             true
         } catch (e: Throwable) {
-            _state.value = VpnState(isRunning = false, error = "byedpi не запустился: ${e.message}")
+            _state.value = VpnState(
+                isRunning = false,
+                isStarting = false,
+                error = "byedpi не запустился: ${e.message ?: e.javaClass.simpleName}",
+            )
+            stopByedpi()
             false
         }
     }
@@ -381,11 +418,14 @@ class DesyncVpnService : VpnService(), Tunnel {
     private fun stopByedpi() {
         val proxy = byedpiProxy
         try { proxy?.stopProxy() } catch (_: Throwable) {}
-        // Give the loop up to 2s to unwind; if it's still alive, hard-close the socket.
+        // Give the loop up to 2s to unwind; if it's still alive, hard-close the socket and wait again.
         val t = byedpiThread
         try {
             t?.join(2000)
-            if (t != null && t.isAlive) { try { proxy?.forceClose() } catch (_: Throwable) {} }
+            if (t != null && t.isAlive) {
+                try { proxy?.forceClose() } catch (_: Throwable) {}
+                try { t.join(1500) } catch (_: Throwable) {}
+            }
         } catch (_: Throwable) {}
         byedpiProxy = null
         byedpiThread = null
@@ -393,9 +433,20 @@ class DesyncVpnService : VpnService(), Tunnel {
     }
 
     private fun startVpn() {
-        if (running) return
-        lastStopError = null
-        loadPrefs()
+        // Atomically claim startup so double-tap / tile + UI can't race two byedpi instances.
+        synchronized(this) {
+            if (running || cleaningUp || _state.value.isStarting) return
+            lastStopError = null
+            loadPrefs()
+            _state.value = VpnState(
+                isRunning = false,
+                isStarting = true,
+                preset = activePreset,
+                blockQuic = blockQuic,
+                scopeAllApps = allApps,
+                error = null,
+            )
+        }
         createChannel()
         startForegroundCompat()
 
@@ -404,6 +455,8 @@ class DesyncVpnService : VpnService(), Tunnel {
             stopEverything(error = _state.value.error ?: "byedpi не запустился")
             return
         }
+        // User may have hit stop while we waited for SOCKS readiness.
+        if (!_state.value.isStarting || cleaningUp) return
 
         // IPv4 only on purpose: we do NOT add an IPv6 address/route. If we advertised IPv6 on the
         // TUN, apps (YouTube/Instagram use Happy Eyeballs) would prefer AAAA/IPv6 and we'd have to
@@ -444,7 +497,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             tunOut = FileOutputStream(fd.fileDescriptor)
         } catch (e: Exception) {
             val reason = formatFailure("поднятия VPN", e)
-            _state.value = VpnState(isRunning = false, error = reason)
+            _state.value = VpnState(isRunning = false, isStarting = false, error = reason)
             stopEverything(error = reason)
             return
         }
@@ -455,10 +508,12 @@ class DesyncVpnService : VpnService(), Tunnel {
         bytesUp.set(0); bytesDown.set(0); connOk.set(0); connFail.set(0)
         _state.value = VpnState(
             isRunning = true,
+            isStarting = false,
             preset = presetString(),
             blockQuic = blockQuic,
             scopeAllApps = allApps,
             startedAt = System.currentTimeMillis(),
+            error = null,
         )
 
         readThread = thread(name = "tun-read", isDaemon = true) { readLoop() }
@@ -663,7 +718,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             try { pfd?.close() } catch (_: Exception) {}
             tunIn = null; tunOut = null; pfd = null
             persistRunning(false)
-            _state.value = VpnState(isRunning = false, error = lastStopError)
+            _state.value = VpnState(isRunning = false, isStarting = false, error = lastStopError)
             stopForegroundCompat()
             if (stopService) stopSelf()
         } finally {

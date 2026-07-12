@@ -84,14 +84,15 @@ JNIEXPORT jint JNICALL
 Java_com_tgwsproxy_core_ByeDpiProxy_jniStopProxy(__attribute__((unused)) JNIEnv *env, __attribute__((unused)) jobject thiz) {
     LOG(LOG_S, "send shutdown to proxy");
 
+    // Do NOT clear g_proxy_running here: main() still owns the event loop. Clearing early lets a
+    // second jniStartProxy race the first main() and fail with bind/"already running". The flag
+    // is cleared only when main() returns (see jniStartProxy).
     if (!g_proxy_running) {
         LOG(LOG_S, "proxy is not running");
         return -1;
     }
 
     shutdown(server_fd, SHUT_RDWR);
-    g_proxy_running = 0;
-
     return 0;
 }
 
@@ -99,13 +100,12 @@ JNIEXPORT jint JNICALL
 Java_com_tgwsproxy_core_ByeDpiProxy_jniForceClose(__attribute__((unused)) JNIEnv *env, __attribute__((unused)) jobject thiz) {
     LOG(LOG_S, "closing server socket (fd: %d)", server_fd);
 
+    // Same as stop: only tear down the listen fd so main() can unwind; leave g_proxy_running set.
     if (close(server_fd) == -1) {
         LOG(LOG_S, "failed to close server socket (fd: %d)", server_fd);
         return -1;
     }
 
     LOG(LOG_S, "proxy socket force close");
-    g_proxy_running = 0;
-
     return 0;
 }

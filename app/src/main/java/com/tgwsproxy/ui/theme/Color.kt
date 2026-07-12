@@ -21,7 +21,7 @@ val Cream = Color(0xFFEBEBD3)             // EBEBD3 — cream highlight
 
 val TextPrimary = Color(0xFFEBEBD3)       // cream text
 val TextSecondary = Color(0xFFA89CBC)     // muted mauve-grey
-val TextMuted = Color(0xFF7C7191)
+val TextMuted = Color(0xFF9B90AA)
 
 val Border = Color(0xFF463F5D)
 val Destructive = Color(0xFFE0617F)       // warm pink-red for stop

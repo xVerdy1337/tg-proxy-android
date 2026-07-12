@@ -172,8 +172,8 @@ fun MainScreen(
                     if (uiState.logs.isNotEmpty()) {
                         IconButton(onClick = { viewModel.clearLogs() }) {
                             Icon(
-                                imageVector = Icons.Default.Delete,
-                                contentDescription = "Очистить логи",
+                                imageVector = Icons.Default.ClearAll,
+                                contentDescription = "Очистить журнал",
                                 tint = TextSecondary
                             )
                         }
@@ -211,10 +211,10 @@ fun MainScreen(
                 onClick = { selectedTab = 1 },
                 icon = {
                     Icon(
-                        Icons.Default.LockOpen,
-                        contentDescription = null,
+                        Icons.Default.FiberManualRecord,
+                        contentDescription = "Статус обхода",
                         tint = if (selectedTab == 1) Accent else TextSecondary,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(12.dp)
                     )
                 },
                 text = { Text("YouTube · Instagram", color = if (selectedTab == 1) Accent else TextSecondary) }
@@ -241,7 +241,8 @@ fun MainScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                contentPadding = PaddingValues(bottom = 28.dp)
               ) {
             item { HeroStatusCard(uiState) }
 
@@ -925,9 +926,10 @@ private fun ControlButtons(
                 .height(58.dp),
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = if (uiState.isRunning) Destructive else Primary,
-                contentColor = Background
-            )
+                containerColor = if (uiState.isRunning) Color.Transparent else Primary,
+                contentColor = if (uiState.isRunning) Destructive else Background
+            ),
+            border = if (uiState.isRunning) BorderStroke(1.dp, Destructive) else null
         ) {
             Icon(
                 imageVector = if (uiState.isRunning) Icons.Default.Stop else Icons.Default.PlayArrow,
@@ -954,7 +956,7 @@ private fun ControlButtons(
                     .fillMaxWidth()
                     .height(52.dp),
                 shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Mauve, contentColor = Cream)
+                colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Background)
             ) {
                 Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
@@ -1163,9 +1165,9 @@ private fun TgTwoStepHint(running: Boolean) {
         )
         Text(
             if (running)
-                "Прокси включён. Шаг 2: нажмите «Добавить в Telegram» ниже."
+                "Прокси включён. Шаг 2: нажмите «Подключить Telegram» ниже."
             else
-                "1. Включите прокси.  2. Нажмите «Добавить в Telegram».",
+                "1. Включите прокси.  2. Нажмите «Подключить Telegram».",
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary
         )

@@ -99,11 +99,12 @@ fun UnblockScreen(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(bottom = 28.dp)
     ) {
         item { Spacer(Modifier.height(4.dp)) }
 
-        item { HeroUnblockCard(running, state, onEnable, onDisable) }
+        item { HeroUnblockCard(state, autoTune.running, onEnable, onDisable) }
 
         item {
             AutoTuneCard(
@@ -180,12 +181,19 @@ fun UnblockScreen(
 
 @Composable
 private fun HeroUnblockCard(
-    running: Boolean,
     state: DesyncVpnService.VpnState,
+    testing: Boolean,
     onEnable: () -> Unit,
     onDisable: () -> Unit,
 ) {
-    val accent = if (running) Accent else TextMuted
+    val running = state.isRunning
+    val starting = state.isStarting
+    val accent = when {
+        testing -> Accent
+        running -> Accent
+        starting -> Accent
+        else -> TextMuted
+    }
 
     // Gentle breathing pulse on the status badge while the VPN is active.
     // Respect reduced-motion (Emil / a11y): keep the opacity level, drop the movement.
@@ -198,7 +206,7 @@ private fun HeroUnblockCard(
         label = "hero-pulse-alpha"
     )
     val pulseAlpha = if (reduce) 0.20f else animatedPulse
-    val badgeAlpha = if (running) pulseAlpha else 0.15f
+    val badgeAlpha = if (running || starting || testing) pulseAlpha else 0.15f
 
     Column(
         modifier = Modifier
@@ -206,10 +214,14 @@ private fun HeroUnblockCard(
             .clip(RoundedCornerShape(20.dp))
             .background(
                 Brush.verticalGradient(
-                    if (running) listOf(Color(0xFF2B2540), Surface) else listOf(Surface, Surface)
+                    if (running || starting || testing) listOf(Color(0xFF2B2540), Surface) else listOf(Surface, Surface)
                 )
             )
-            .border(1.dp, if (running) Accent.copy(alpha = 0.45f) else Border, RoundedCornerShape(20.dp))
+            .border(
+                1.dp,
+                if (running || starting || testing) Accent.copy(alpha = 0.45f) else Border,
+                RoundedCornerShape(20.dp),
+            )
             .padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -220,16 +232,31 @@ private fun HeroUnblockCard(
                 .background(accent.copy(alpha = badgeAlpha)),
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = if (running) Icons.Default.Check else Icons.Default.PlayArrow,
-                contentDescription = null,
-                tint = accent,
-                // Optical centering: a play triangle's visual weight sits left of its geometric
-                // center, so nudge it right when showing PlayArrow (skill: optical > geometric).
-                modifier = Modifier
-                    .size(38.dp)
-                    .then(if (running) Modifier else Modifier.offset(x = 2.dp))
-            )
+            when {
+                testing -> CircularProgressIndicator(
+                    modifier = Modifier.size(34.dp),
+                    strokeWidth = 3.dp,
+                    color = Accent,
+                )
+                starting -> CircularProgressIndicator(
+                    modifier = Modifier.size(34.dp),
+                    strokeWidth = 3.dp,
+                    color = Accent,
+                )
+                running -> Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(38.dp),
+                )
+                else -> Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    tint = accent,
+                    // Optical centering: play triangle's visual weight sits left of geometric center.
+                    modifier = Modifier.size(38.dp).offset(x = 2.dp),
+                )
+            }
         }
         Spacer(Modifier.height(14.dp))
         Text(
@@ -239,57 +266,109 @@ private fun HeroUnblockCard(
             fontWeight = FontWeight.SemiBold
         )
         Spacer(Modifier.height(6.dp))
-        if (running) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        when {
+            testing -> Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = Accent)
+                Text("Тестирование методов обхода…", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+            }
+            running -> Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 Box(Modifier.size(8.dp).clip(CircleShape).background(OkGreen).alpha(pulseAlpha * 3.4f))
                 Text(
                     "Включено — обходим блокировку провайдера",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary
+                    color = TextSecondary,
                 )
             }
-        } else {
-            Text(
-                "Выключено. Нажмите, чтобы включить обход",
+            starting -> Text(
+                "Запуск… поднимаем обход (SOCKS + VPN)",
                 style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary
+                color = Accent,
+            )
+            else -> Text(
+                "Локальная обработка трафика без внешнего VPN-сервера",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
             )
         }
         state.error?.let {
-            Spacer(Modifier.height(6.dp))
-            Text(it, style = MaterialTheme.typography.bodySmall, color = Destructive)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = Destructive,
+                fontWeight = FontWeight.Medium,
+            )
         }
         Spacer(Modifier.height(16.dp))
-        BigToggleButton(running) { if (running) onDisable() else onEnable() }
+        BigToggleButton(
+            running = running,
+            testing = testing,
+            starting = starting,
+            onClick = {
+                when {
+                    starting -> Unit
+                    running -> onDisable()
+                    else -> onEnable()
+                }
+            },
+        )
     }
 }
 
 @Composable
-private fun BigToggleButton(running: Boolean, onClick: () -> Unit) {
-    val bg = if (running) Destructive else Accent
+private fun BigToggleButton(running: Boolean, starting: Boolean, testing: Boolean, onClick: () -> Unit) {
+    val busy = starting || testing
+    val bg = when {
+        busy -> Accent.copy(alpha = 0.55f)
+        running -> Destructive
+        else -> Accent
+    }
     val haptic = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.96f else 1f, label = "toggleScale")
+    val scale by animateFloatAsState(if (pressed && !busy) 0.96f else 1f, label = "toggleScale")
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(14.dp))
             .background(bg)
-            .clickable(interactionSource = interaction, indication = LocalIndication.current) {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                onClick()
-            }
+            .then(
+                if (busy) Modifier
+                else Modifier.clickable(interactionSource = interaction, indication = LocalIndication.current) {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onClick()
+                }
+            )
             .padding(vertical = 15.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            if (running) "Выключить" else "Включить разблокировку",
-            color = Background,
-            fontWeight = FontWeight.Bold,
-            fontSize = 16.sp
-        )
+        if (busy) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = Background,
+                )
+                Text(if (testing) "Тестирование методов…" else "Запуск…", color = Background, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            }
+        } else {
+            Text(
+                if (running) "Выключить" else "Включить разблокировку",
+                color = Background,
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp,
+            )
+        }
     }
 }
 
@@ -360,7 +439,7 @@ private fun AutoTuneCard(
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
                     Text(
-                        "Проверяю ${autoTune.index}/${autoTune.total}: ${autoTune.currentLabel}",
+                        "Проверяю ${autoTune.index}/${autoTune.total}",
                         color = TextPrimary,
                         // tabular figures so the "3/10" counter keeps constant width as it ticks.
                         style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum")
@@ -368,8 +447,8 @@ private fun AutoTuneCard(
                 }
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Не закрывай вкладку — подбор идёт через реальные подключения к YouTube и Instagram.",
-                    color = TextMuted, style = MaterialTheme.typography.labelSmall
+                    "Пожалуйста, не закрывайте вкладку во время проверки.",
+                    color = TextSecondary, style = MaterialTheme.typography.labelSmall
                 )
             }
 
@@ -377,7 +456,7 @@ private fun AutoTuneCard(
                 Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Default.Check, null, tint = OkGreen, modifier = Modifier.size(18.dp))
                     Text(
-                        "Готово: «${autoTune.foundLabel}» подобран и сохранён. Нажми «Включить» — и готово.",
+                        "Готово: «${autoTune.foundLabel}» подобран и сохранён. Нажмите «Включить» — и готово.",
                         color = OkGreen, style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -397,7 +476,7 @@ private fun AutoTuneCard(
                 if (vpnRunning) {
                     Text(
                         "Подбор работает только при выключенном VPN — он монопольно использует движок обхода.",
-                        color = TextMuted, style = MaterialTheme.typography.labelSmall
+                        color = TextSecondary, style = MaterialTheme.typography.labelSmall
                     )
                     Spacer(Modifier.height(10.dp))
                 }
@@ -637,7 +716,7 @@ private fun LiveStatsCard(state: DesyncVpnService.VpnState) {
         val err = state.error
         if (!err.isNullOrBlank()) {
             Spacer(Modifier.height(10.dp))
-            Text("Диагностика", color = TextMuted, style = MaterialTheme.typography.labelSmall)
+            Text("Диагностика", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
             Spacer(Modifier.height(2.dp))
             Text(err, color = Destructive, style = MaterialTheme.typography.bodySmall)
         }
@@ -720,7 +799,7 @@ private fun PresetCard(current: String, running: Boolean, activeLabel: String?, 
         Spacer(Modifier.height(8.dp))
         Text(
             "После смены метода выключи и включи VPN.",
-            color = TextMuted, style = MaterialTheme.typography.labelSmall
+            color = TextSecondary, style = MaterialTheme.typography.labelSmall
         )
     }
 }
@@ -902,7 +981,7 @@ private fun ByedpiCommandCard(
                 "как есть: -H:\"домены\"(хостлист) -An/-L(авто-секции) -Kt(TLS) -f1+s(fake у SNI) " +
                 "-t8(TTL) -s1+s(сплит) -d1+s(disorder) -r1+s(TLS-record) -M(mod-http) -Q(fake-tls). " +
                 "ip/порт прокси добавляются автоматически. После «Применить» выключи и включи VPN.",
-            color = TextMuted, style = MaterialTheme.typography.labelSmall
+            color = TextSecondary, style = MaterialTheme.typography.labelSmall
         )
     }
 }
@@ -1066,7 +1145,7 @@ private fun ExclusionDialog(
                                 Text(app.label, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
                                 Text(
                                     if (app.builtIn) "встроенное исключение" else app.pkg,
-                                    color = TextMuted, style = MaterialTheme.typography.labelSmall
+                                    color = TextSecondary, style = MaterialTheme.typography.labelSmall
                                 )
                             }
                         }
