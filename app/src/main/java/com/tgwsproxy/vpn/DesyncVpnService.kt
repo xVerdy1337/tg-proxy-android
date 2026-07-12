@@ -32,6 +32,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.DatagramSocket
 import java.net.Socket
+import java.net.ServerSocket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 import java.util.concurrent.SynchronousQueue
@@ -86,7 +87,8 @@ class DesyncVpnService : VpnService(), Tunnel {
         const val PRESET_OFF = "off"
 
         // Local byedpi SOCKS5 endpoint that the userspace TCP relay dials.
-        private const val SOCKS_PORT = 1080
+        private const val DEFAULT_SOCKS_PORT = 1080
+        private val SOCKS_PORT_CANDIDATES = intArrayOf(1080, 18080, 28080, 38080)
 
         /**
          * byedpi desync arguments per preset (the real DPI bypass). Tuned for YouTube + Instagram
@@ -265,6 +267,7 @@ class DesyncVpnService : VpnService(), Tunnel {
     private var allApps = true
     private var excludedUser: Set<String> = emptySet()
     private var byedpiArgs: Array<String> = arrayOf("ciadpi")
+    private var socksPort: Int = DEFAULT_SOCKS_PORT
 
     private var byedpiProxy: ByeDpiProxy? = null
     private var byedpiThread: Thread? = null
@@ -318,7 +321,21 @@ class DesyncVpnService : VpnService(), Tunnel {
         // Custom command wins; otherwise derive byedpi args from the preset.
         val custom = (p.getString(KEY_BYEDPI_CMD, "") ?: "").trim()
         val command = if (custom.isNotEmpty()) custom else presetToByedpiArgs(preset)
-        byedpiArgs = buildByedpiArgs(command, "127.0.0.1", SOCKS_PORT)
+        socksPort = selectSocksPort()
+        byedpiArgs = buildByedpiArgs(command, "127.0.0.1", socksPort)
+    }
+
+    private fun selectSocksPort(): Int {
+        for (candidate in SOCKS_PORT_CANDIDATES) {
+            try {
+                ServerSocket(candidate, 1, java.net.InetAddress.getByName("127.0.0.1")).use {
+                    return candidate
+                }
+            } catch (_: Exception) {
+                // Another local proxy owns this port; try the next candidate.
+            }
+        }
+        return DEFAULT_SOCKS_PORT
     }
 
     /**
@@ -342,7 +359,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             var ready = false
             while (byedpiThread?.isAlive == true && System.currentTimeMillis() < deadline) {
                 try {
-                    Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", SOCKS_PORT), 100) }
+                    Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", socksPort), 100) }
                     ready = true
                     break
                 } catch (_: Exception) {
@@ -351,7 +368,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             }
             if (!ready) {
                 val code = byedpiExitCode ?: -1
-                _state.value = VpnState(isRunning = false, error = "byedpi SOCKS is not ready (code $code)")
+                _state.value = VpnState(isRunning = false, error = "byedpi SOCKS is not ready on 127.0.0.1:$socksPort (code $code)")
                 return false
             }
             true
@@ -498,7 +515,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             val conn = TcpConnection(
                 clientIp = PacketUtils.srcIp(packet), clientPort = srcPort,
                 serverIp = PacketUtils.dstIp(packet), serverPort = dstPort,
-                tunnel = this, key = key, socksPort = SOCKS_PORT
+                tunnel = this, key = key, socksPort = socksPort
             )
             tcpMap[key] = conn
             // onSyn dispatches the upstream dial onto relayExecutor, which can reject when the pool
