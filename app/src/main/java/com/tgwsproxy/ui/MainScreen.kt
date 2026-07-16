@@ -16,6 +16,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -28,6 +29,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -45,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -148,13 +152,13 @@ fun MainScreen(
                         Image(
                             painter = painterResource(id = R.drawable.ic_jevio_logo),
                             contentDescription = "Jevio Unblocker",
-                            modifier = Modifier.size(34.dp)
+                            modifier = Modifier.size(30.dp)
                         )
-                        Spacer(modifier = Modifier.width(10.dp))
+                        Spacer(modifier = Modifier.width(9.dp))
                         Column {
                             Text(
                                 "Jevio Unblocker",
-                                style = MaterialTheme.typography.headlineMedium,
+                                style = MaterialTheme.typography.titleLarge,
                                 color = TextPrimary
                             )
                             Text(
@@ -191,7 +195,8 @@ fun MainScreen(
         TabRow(
             selectedTabIndex = selectedTab,
             containerColor = Background,
-            contentColor = Accent
+            contentColor = Accent,
+            divider = { HorizontalDivider(color = Border.copy(alpha = 0.65f)) }
         ) {
             Tab(
                 selected = selectedTab == 0,
@@ -211,10 +216,10 @@ fun MainScreen(
                 onClick = { selectedTab = 1 },
                 icon = {
                     Icon(
-                        Icons.Default.FiberManualRecord,
-                        contentDescription = "Статус обхода",
+                        Icons.Default.Public,
+                        contentDescription = "Разблокировка сайтов",
                         tint = if (selectedTab == 1) Accent else TextSecondary,
-                        modifier = Modifier.size(12.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                 },
                 text = { Text("YouTube · Instagram", color = if (selectedTab == 1) Accent else TextSecondary) }
@@ -246,8 +251,6 @@ fun MainScreen(
               ) {
             item { HeroStatusCard(uiState) }
 
-            item { BatteryOptimizationCard() }
-
             item {
                 ControlButtons(
                     uiState = uiState,
@@ -259,7 +262,9 @@ fun MainScreen(
                 )
             }
 
-            item { TgTwoStepHint(uiState.isRunning) }
+            // Keep the primary action close to the status card. Battery guidance is useful,
+            // but should not interrupt the first successful connection.
+            item { BatteryOptimizationCard() }
 
             item { TgAdvancedHeader(advancedTgOpen) { advancedTgOpen = !advancedTgOpen } }
 
@@ -361,7 +366,11 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = Surface)
+        colors = CardDefaults.cardColors(containerColor = Surface),
+        border = BorderStroke(
+            1.dp,
+            if (running) Success.copy(alpha = 0.42f) else Border.copy(alpha = 0.85f)
+        )
     ) {
         Column(
             modifier = Modifier
@@ -382,7 +391,7 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Статус прокси",
                         style = MaterialTheme.typography.bodyMedium,
@@ -392,7 +401,7 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
                     Text(
                         text = if (running) "Активен" else "Остановлен",
                         style = MaterialTheme.typography.headlineSmall,
-                        color = statusColor,
+                        color = if (running) Success else statusColor,
                         fontWeight = FontWeight.Bold
                     )
                     if (running && uiState.route.isNotEmpty()) {
@@ -412,12 +421,23 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
                             )
                         }
                     }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = if (running) {
+                            "Трафик Telegram проходит через локальный прокси."
+                        } else {
+                            "Запустите прокси, чтобы получить ссылку для подключения."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
                 }
+                Spacer(modifier = Modifier.width(16.dp))
                 Box(
                     modifier = Modifier
                         .size(18.dp)
                         .clip(CircleShape)
-                        .background(statusColor)
+                        .background(if (running) Success else statusColor)
                         .alpha(if (running) pulse else 1f)
                 )
             }
@@ -913,6 +933,13 @@ private fun ControlButtons(
     onOpenTelegram: () -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val buttonScale by animateFloatAsState(
+        targetValue = if (pressed) 0.96f else 1f,
+        animationSpec = tween(durationMillis = 140),
+        label = "proxyButtonScale"
+    )
     Column(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -923,7 +950,12 @@ private fun ControlButtons(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(58.dp),
+                .height(58.dp)
+                .graphicsLayer {
+                    scaleX = buttonScale
+                    scaleY = buttonScale
+                },
+            interactionSource = interaction,
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = if (uiState.isRunning) Color.Transparent else Primary,
@@ -1143,34 +1175,6 @@ private fun TelegramChannelCard(context: Context) {
                 modifier = Modifier.size(22.dp)
             )
         }
-    }
-}
-
-@Composable
-private fun TgTwoStepHint(running: Boolean) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(Accent.copy(alpha = 0.10f))
-            .padding(14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Icon(
-            if (running) Icons.Default.CheckCircle else Icons.Default.Info,
-            contentDescription = null,
-            tint = if (running) AccentSoft else Accent,
-            modifier = Modifier.size(18.dp)
-        )
-        Text(
-            if (running)
-                "Прокси включён. Шаг 2: нажмите «Подключить Telegram» ниже."
-            else
-                "1. Включите прокси.  2. Нажмите «Подключить Telegram».",
-            style = MaterialTheme.typography.bodySmall,
-            color = TextSecondary
-        )
     }
 }
 

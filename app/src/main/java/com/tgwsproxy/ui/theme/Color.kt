@@ -33,4 +33,5 @@ val AccentDark = Color(0xFFC15F7D)
 val AccentSoft = Color(0xFFE07A98)        // "active" status colour
 val Warning = Color(0xFFE0B36A)           // warm cream-amber
 val Info = Color(0xFF896998)              // mauve (cloudflare / WS lines)
+val Success = Color(0xFF72D39A)           // clear connection / completed state
 val LogSurface = Color(0xFF13111B)        // near-black log rows
