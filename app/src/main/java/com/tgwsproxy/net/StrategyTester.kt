@@ -2,6 +2,7 @@ package com.tgwsproxy.net
 
 import com.tgwsproxy.core.ByeDpiProxy
 import com.tgwsproxy.vpn.DesyncVpnService
+import com.tgwsproxy.vpn.ByedpiPresetCatalog
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.Socket
@@ -30,7 +31,7 @@ object StrategyTester {
     data class Strategy(val command: String, val label: String)
 
     /** Curated byedpi strategies, strongest / most-proven first. No {sni} placeholders. */
-    val STRATEGIES: List<Strategy> = listOf(
+    val STRATEGIES: List<Strategy> = (listOf(
         Strategy("-d1 -s1+s -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1", "Каскад disorder+split"),
         Strategy("-d1 -s1+s -r1+s -f-1 -t8 -a1", "Split+tlsrec+FAKE (TTL 8)"),
         Strategy("-f1+nme -t6 -a1", "FAKE split (TTL 6)"),
@@ -41,7 +42,9 @@ object StrategyTester {
         Strategy("-d2 -s1+s -d5+s -s10+s -d20+s -a1", "Каскад (шаг 2)"),
         Strategy("-r5+s -s25+s -a1 -At,r,s -s50 -r5+s -s50+s -a1", "tlsrec + split (двойной)"),
         Strategy("-d1 -s4 -d8 -s1+s -d5+s -s10+s -d20+s -a1", "Микс disorder/split"),
-    )
+    ) + ByedpiPresetCatalog.autotunePresets.map { preset ->
+        Strategy(preset.command, preset.label)
+    }).distinctBy { it.command }
 
     /** Friendly label for a saved command if it matches a known strategy, else null. */
     fun labelForCommand(command: String): String? =

@@ -93,9 +93,8 @@ class DesyncVpnService : VpnService(), Tunnel {
         private val SOCKS_PORT_CANDIDATES = intArrayOf(1080, 18080, 28080, 38080)
 
         /**
-         * byedpi desync arguments per preset (the real DPI bypass). Tuned for YouTube + Instagram
-         * on RU providers; all three carry `-a1` (auto-retry) and apply to every captured flow.
-         * A non-empty custom command in prefs overrides these.
+         * byedpi desync arguments are supplied by the shared catalog. A non-empty custom command
+         * in prefs overrides the selected catalog preset.
          *
          *   Авто (AUTO)   : cascading disorder+split across many offsets — the strongest general
          *                  strategy, confirmed to unblock YouTube + Instagram on RU TSPU.
@@ -105,13 +104,7 @@ class DesyncVpnService : VpnService(), Tunnel {
          *                  alternative for operators where disorder breaks the flow.
          * Flags: -d disorder, -s split, -r tlsrec, -f fake, -t fake TTL, +s = cut at the SNI.
          */
-        fun presetToByedpiArgs(preset: String): String = when (preset) {
-            PRESET_AUTO -> "-d1 -s1+s -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1"
-            PRESET_TLSREC -> "-d1 -s1+s -r1+s -f-1 -t8 -a1"
-            PRESET_SPLIT -> "-d1 -s1+s -s3+s -s6+s -s9+s -s12+s -s15+s -s20+s -s30+s -a1"
-            PRESET_OFF -> "" // plain SOCKS relay, no desync
-            else -> "-d1 -s1+s -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1"
-        }
+        fun presetToByedpiArgs(preset: String): String = ByedpiPresetCatalog.commandFor(preset)
 
         /**
          * Tokenise a byedpi command line into an argv array (argv[0] = "ciadpi").

@@ -48,6 +48,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -67,6 +69,9 @@ import androidx.compose.ui.platform.LocalContext
 import android.provider.Settings
 import com.tgwsproxy.ui.theme.*
 import com.tgwsproxy.vpn.DesyncVpnService
+import com.tgwsproxy.vpn.ByedpiPresetCatalog
+import com.tgwsproxy.vpn.ByedpiPreset
+import com.tgwsproxy.vpn.ByedpiPresetGroup
 import java.util.Locale
 
 @Composable
@@ -135,6 +140,7 @@ fun UnblockScreen(
                 running = running,
                 activeLabel = if (settings.byedpiCmd.isBlank()) null
                     else com.tgwsproxy.net.StrategyTester.labelForCommand(settings.byedpiCmd) ?: "своя команда",
+                command = settings.byedpiCmd,
                 onSelect = { vm.setPreset(it) },
             )
         }
@@ -158,6 +164,8 @@ fun UnblockScreen(
                 command = settings.byedpiCmd,
                 presetDefault = vm.defaultCmdForPreset(settings.preset),
                 onApplyCmd = { vm.setByedpiCmd(it) },
+                preset = settings.preset,
+                onSelectPreset = { vm.setPreset(it) },
                 allApps = settings.allApps,
                 onAllApps = { vm.setAllApps(it) },
                 excludedCount = excluded.size + vm.builtInExcluded.size,
@@ -222,24 +230,24 @@ private fun HeroUnblockCard(
                 if (running || starting || testing) Accent.copy(alpha = 0.45f) else Border,
                 RoundedCornerShape(20.dp),
             )
-            .padding(20.dp),
+            .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
             modifier = Modifier
-                .size(72.dp)
+                .size(52.dp)
                 .clip(CircleShape)
                 .background(accent.copy(alpha = badgeAlpha)),
             contentAlignment = Alignment.Center
         ) {
             when {
                 testing -> CircularProgressIndicator(
-                    modifier = Modifier.size(34.dp),
+                    modifier = Modifier.size(26.dp),
                     strokeWidth = 3.dp,
                     color = Accent,
                 )
                 starting -> CircularProgressIndicator(
-                    modifier = Modifier.size(34.dp),
+                    modifier = Modifier.size(26.dp),
                     strokeWidth = 3.dp,
                     color = Accent,
                 )
@@ -247,25 +255,25 @@ private fun HeroUnblockCard(
                     imageVector = Icons.Default.Check,
                     contentDescription = null,
                     tint = accent,
-                    modifier = Modifier.size(38.dp),
+                    modifier = Modifier.size(28.dp),
                 )
                 else -> Icon(
                     imageVector = Icons.Default.PlayArrow,
                     contentDescription = null,
                     tint = accent,
                     // Optical centering: play triangle's visual weight sits left of geometric center.
-                    modifier = Modifier.size(38.dp).offset(x = 2.dp),
+                    modifier = Modifier.size(28.dp).offset(x = 1.dp),
                 )
             }
         }
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(10.dp))
         Text(
             "Разблокировка YouTube и Instagram",
-            style = MaterialTheme.typography.titleLarge,
+            style = MaterialTheme.typography.titleMedium,
             color = TextPrimary,
             fontWeight = FontWeight.SemiBold
         )
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(4.dp))
         when {
             testing -> Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -427,7 +435,7 @@ private fun AutoTuneCard(
             Column {
                 Text("Автоподбор метода", color = TextPrimary, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Сами переберём методы и оставим рабочий",
+                    "Сами переберём ${com.tgwsproxy.net.StrategyTester.STRATEGIES.size} методов и оставим рабочий",
                     color = TextSecondary, style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -742,20 +750,34 @@ private fun StatItem(label: String, value: String) {
 }
 
 /** Human description of what each preset actually does — shown under the chips. */
-private fun presetDescription(preset: String): String = when (preset) {
-    DesyncVpnService.PRESET_AUTO ->
-        "Сильный каскадный сплит. Рекомендуется — пробивает большинство операторов."
-    DesyncVpnService.PRESET_TLSREC ->
-        "Метод A: сплит + tlsrec + FAKE-пакет с низким TTL. Бери, если «Авто» не справился."
-    DesyncVpnService.PRESET_SPLIT ->
-        "Метод B: лёгкий многоточечный сплит. Ниже задержка, запасной вариант."
-    DesyncVpnService.PRESET_OFF ->
-        "Без десинка: трафик идёт через VPN как есть. Только для диагностики «трубы»."
-    else -> ""
+private fun presetDescription(preset: String, command: String): String {
+    val selected = if (command.isBlank()) {
+        ByedpiPresetCatalog.byId(preset)
+    } else {
+        ByedpiPresetCatalog.byCommand(command)
+    }
+    return selected?.description
+        ?: "Своя команда byedpi. Проверь её на своей сети перед постоянным использованием."
 }
 
 @Composable
-private fun PresetCard(current: String, running: Boolean, activeLabel: String?, onSelect: (String) -> Unit) {
+private fun PresetCard(
+    current: String,
+    running: Boolean,
+    activeLabel: String?,
+    command: String,
+    onSelect: (String) -> Unit,
+) {
+    var catalogExpanded by remember { mutableStateOf(false) }
+    val coreIds = setOf(
+        DesyncVpnService.PRESET_AUTO,
+        DesyncVpnService.PRESET_TLSREC,
+        DesyncVpnService.PRESET_SPLIT,
+    )
+    val extraPresets = ByedpiPresetCatalog.presets.filterNot {
+        it.diagnostic || it.id in coreIds
+    }
+
     Card {
         Text("Метод обхода", color = TextPrimary, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
@@ -770,7 +792,41 @@ private fun PresetCard(current: String, running: Boolean, activeLabel: String?, 
             PresetChip("Метод B", DesyncVpnService.PRESET_SPLIT, current, Modifier.weight(1f), onSelect)
         }
         Spacer(Modifier.height(8.dp))
-        PresetChip("Без обхода (тест трубы)", DesyncVpnService.PRESET_OFF, current, Modifier.fillMaxWidth(), onSelect)
+        SecondaryButton(
+            if (catalogExpanded) "Скрыть каталог" else "Ещё конфиги (${extraPresets.size})",
+            onClick = { catalogExpanded = !catalogExpanded },
+        )
+
+        if (catalogExpanded) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Каталог ByeDPI",
+                color = TextPrimary,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                "Все варианты сначала проверяются автоподбором. Выбранный конфиг сохранится после перезапуска VPN.",
+                color = TextSecondary,
+                style = MaterialTheme.typography.labelSmall,
+            )
+            ByedpiPresetGroup.values().filterNot { it == ByedpiPresetGroup.DIAGNOSTIC }.forEach { group ->
+                val groupPresets = extraPresets.filter { it.group == group }
+                if (groupPresets.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(group.title, color = Accent, style = MaterialTheme.typography.labelMedium)
+                    Spacer(Modifier.height(4.dp))
+                    groupPresets.forEach { preset ->
+                        StrategyPresetRow(
+                            preset = preset,
+                            selected = command.trim() == preset.command ||
+                                (command.isBlank() && current == preset.id),
+                            onClick = { onSelect(preset.id) },
+                        )
+                        Spacer(Modifier.height(6.dp))
+                    }
+                }
+            }
+        }
 
         // Inline explanation of the currently selected method.
         Spacer(Modifier.height(10.dp))
@@ -785,7 +841,7 @@ private fun PresetCard(current: String, running: Boolean, activeLabel: String?, 
         ) {
             Icon(Icons.Default.Info, null, tint = Accent, modifier = Modifier.size(16.dp))
             Text(
-                presetDescription(current),
+                presetDescription(current, command),
                 color = TextSecondary, style = MaterialTheme.typography.labelSmall
             )
         }
@@ -801,6 +857,53 @@ private fun PresetCard(current: String, running: Boolean, activeLabel: String?, 
             "После смены метода выключи и включи VPN.",
             color = TextSecondary, style = MaterialTheme.typography.labelSmall
         )
+    }
+}
+
+@Composable
+private fun StrategyPresetRow(
+    preset: ByedpiPreset,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) Accent.copy(alpha = 0.16f) else SurfaceVariant)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(
+            imageVector = if (selected) Icons.Default.Check else Icons.Default.Tune,
+            contentDescription = if (selected) "Выбрано" else null,
+            tint = if (selected) Accent else TextSecondary,
+            modifier = Modifier.size(18.dp),
+        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                preset.label,
+                color = TextPrimary,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            )
+            Text(
+                preset.description,
+                color = TextSecondary,
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Text(
+                preset.command,
+                color = TextMuted,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
@@ -834,6 +937,30 @@ private fun PresetChip(
 }
 
 @Composable
+private fun DiagnosticPresetCard(
+    current: String,
+    onSelect: (String) -> Unit,
+) {
+    Card {
+        Text("Диагностика трубы", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Проверяет обычное подключение без desync. Нужен только чтобы понять, где проблема: в сети или в методе обхода.",
+            color = TextSecondary,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Spacer(Modifier.height(10.dp))
+        PresetChip(
+            "Проверить без обхода",
+            DesyncVpnService.PRESET_OFF,
+            current,
+            Modifier.fillMaxWidth(),
+            onSelect,
+        )
+    }
+}
+
+@Composable
 private fun AdvancedSection(
     expanded: Boolean,
     onToggle: () -> Unit,
@@ -842,6 +969,8 @@ private fun AdvancedSection(
     command: String,
     presetDefault: String,
     onApplyCmd: (String) -> Unit,
+    preset: String,
+    onSelectPreset: (String) -> Unit,
     allApps: Boolean,
     onAllApps: (Boolean) -> Unit,
     excludedCount: Int,
@@ -865,7 +994,7 @@ private fun AdvancedSection(
                 Text("Продвинутые настройки", color = TextPrimary, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "Ручная проверка, команда byedpi, охват приложений",
+                    "Диагностика, команда byedpi, охват приложений",
                     color = TextSecondary, style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -876,6 +1005,7 @@ private fun AdvancedSection(
         }
 
         if (expanded) {
+            DiagnosticPresetCard(preset, onSelectPreset)
             ProbeCard(probe, onCheck)
             ByedpiCommandCard(
                 command = command,

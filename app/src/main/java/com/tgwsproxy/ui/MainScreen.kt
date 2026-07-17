@@ -152,21 +152,14 @@ fun MainScreen(
                         Image(
                             painter = painterResource(id = R.drawable.ic_jevio_logo),
                             contentDescription = "Jevio Unblocker",
-                            modifier = Modifier.size(30.dp)
+                            modifier = Modifier.size(24.dp)
                         )
-                        Spacer(modifier = Modifier.width(9.dp))
-                        Column {
-                            Text(
-                                "Jevio Unblocker",
-                                style = MaterialTheme.typography.titleLarge,
-                                color = TextPrimary
-                            )
-                            Text(
-                                "Telegram, YouTube, Instagram без блокировок",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TextSecondary
-                            )
-                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            "Jevio Unblocker",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = TextPrimary
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -365,7 +358,7 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = Surface),
         border = BorderStroke(
             1.dp,
@@ -384,7 +377,7 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
                         }
                     )
                 )
-                .padding(22.dp)
+                .padding(16.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -397,7 +390,7 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextSecondary
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = if (running) "Активен" else "Остановлен",
                         style = MaterialTheme.typography.headlineSmall,
@@ -421,7 +414,7 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = if (running) {
                             "Трафик Telegram проходит через локальный прокси."
@@ -444,7 +437,7 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
 
             AnimatedVisibility(visible = running) {
                 Column {
-                    Spacer(modifier = Modifier.height(18.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         StatChip(
                             icon = Icons.Default.Timer,

@@ -262,8 +262,13 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setPreset(preset: String) {
-        prefs().edit().putString(DesyncVpnService.KEY_PRESET, preset).apply()
-        _settings.value = _settings.value.copy(preset = preset)
+        // A catalog preset must win over a previously auto-tuned/manual command. Otherwise the
+        // chip changes visually while the VPN still launches the old custom command.
+        prefs().edit()
+            .putString(DesyncVpnService.KEY_PRESET, preset)
+            .remove(DesyncVpnService.KEY_BYEDPI_CMD)
+            .apply()
+        _settings.value = _settings.value.copy(preset = preset, byedpiCmd = "")
     }
 
     fun setBlockQuic(on: Boolean) {
