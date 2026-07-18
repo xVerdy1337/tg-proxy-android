@@ -255,14 +255,7 @@ fun MainScreen(
         ) {
             item(key = "update-banner") { UpdateBanner(context = context) }
 
-            // ===== Разблокировка =====
-            unblockSections(
-                vm = desyncVm,
-                onEnable = onEnableVpn,
-                onDisable = onDisableVpn,
-            )
-
-            // ===== Telegram-прокси =====
+            // ===== Telegram-прокси: основной сценарий =====
             item(key = "tg-section-label") {
                 Text(
                     "Telegram-прокси",
@@ -344,6 +337,22 @@ fun MainScreen(
                     }
                 }
             }
+
+            // ===== Разблокировка сайтов: дополнительный модуль =====
+            item(key = "unblock-section-label") {
+                Text(
+                    "Разблокировка сайтов",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = TextSecondary,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+            }
+
+            unblockSections(
+                vm = desyncVm,
+                onEnable = onEnableVpn,
+                onDisable = onDisableVpn,
+            )
 
             item(key = "tg-channel") { TelegramChannelCard(context) }
 
@@ -1279,15 +1288,15 @@ private fun OnboardingDialog(onDismiss: () -> Unit) {
             )
             Spacer(Modifier.height(18.dp))
             OnboardingRow(
-                icon = Icons.Default.PlayArrow,
-                title = "Разблокировка сайтов",
-                body = "Подберите рабочий метод и включите локальный VPN — внешний VPN-сервер не используется.",
+                icon = Icons.Default.Send,
+                title = "Telegram-прокси",
+                body = "Запустите прокси и подключите Telegram по готовой ссылке.",
             )
             Spacer(Modifier.height(14.dp))
             OnboardingRow(
-                icon = Icons.Default.Send,
-                title = "Telegram-прокси",
-                body = "Запустите прокси и подключите Telegram по готовой ссылке ниже на экране.",
+                icon = Icons.Default.PlayArrow,
+                title = "Разблокировка сайтов",
+                body = "Дополнительно можно подобрать метод и включить локальный VPN без внешнего сервера.",
             )
             Spacer(Modifier.height(14.dp))
             OnboardingRow(
