@@ -47,6 +47,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -332,10 +333,10 @@ private fun HeroUnblockCard(
 @Composable
 private fun BigToggleButton(running: Boolean, starting: Boolean, testing: Boolean, onClick: () -> Unit) {
     val busy = starting || testing
-    val bg = when {
-        busy -> Accent.copy(alpha = 0.55f)
-        running -> Destructive
-        else -> Accent
+    val bg: Brush = when {
+        busy -> SolidColor(Accent.copy(alpha = 0.55f))
+        running -> SolidColor(Destructive)
+        else -> AccentGradient
     }
     val haptic = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
@@ -508,7 +509,7 @@ private fun PrimaryButton(label: String, enabled: Boolean = true, onClick: () ->
             .fillMaxWidth()
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(12.dp))
-            .background(if (enabled) Accent else SurfaceVariant)
+            .background(if (enabled) AccentGradient else SolidColor(SurfaceVariant))
             .clickable(interactionSource = interaction, indication = LocalIndication.current, enabled = enabled) {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onClick()
@@ -1195,9 +1196,9 @@ private fun Card(content: @Composable ColumnScope.() -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(18.dp))
             .background(Surface)
-            .border(1.dp, Border, RoundedCornerShape(14.dp))
+            .border(1.dp, Border, RoundedCornerShape(18.dp))
             .padding(16.dp),
         content = content
     )
@@ -1216,9 +1217,9 @@ private fun ExclusionDialog(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
+                .clip(RoundedCornerShape(20.dp))
                 .background(Surface)
-                .border(1.dp, Border, RoundedCornerShape(16.dp))
+                .border(1.dp, Border, RoundedCornerShape(20.dp))
                 .padding(16.dp)
         ) {
             Text("Не использовать обход для…", color = TextPrimary, fontWeight = FontWeight.SemiBold)

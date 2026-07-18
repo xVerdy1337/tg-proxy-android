@@ -46,7 +46,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
@@ -58,6 +57,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -185,39 +185,11 @@ fun MainScreen(
 
         UpdateBanner(context = context)
 
-        TabRow(
-            selectedTabIndex = selectedTab,
-            containerColor = Background,
-            contentColor = Accent,
-            divider = { HorizontalDivider(color = Border.copy(alpha = 0.65f)) }
-        ) {
-            Tab(
-                selected = selectedTab == 0,
-                onClick = { selectedTab = 0 },
-                icon = {
-                    Icon(
-                        Icons.Default.Send,
-                        contentDescription = null,
-                        tint = if (selectedTab == 0) Accent else TextSecondary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                },
-                text = { Text("Telegram", color = if (selectedTab == 0) Accent else TextSecondary) }
-            )
-            Tab(
-                selected = selectedTab == 1,
-                onClick = { selectedTab = 1 },
-                icon = {
-                    Icon(
-                        Icons.Default.Public,
-                        contentDescription = "Разблокировка сайтов",
-                        tint = if (selectedTab == 1) Accent else TextSecondary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                },
-                text = { Text("YouTube · Instagram", color = if (selectedTab == 1) Accent else TextSecondary) }
-            )
-        }
+        SegmentedTabs(
+            selected = selectedTab,
+            onSelect = { selectedTab = it },
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        )
 
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
           when (selectedTab) {
@@ -327,25 +299,86 @@ fun MainScreen(
     }
 }
 
+/**
+ * iOS-style segmented control replacing the default Material TabRow: one primary row,
+ * animated selection, icons + labels. Keeps both destinations equally discoverable.
+ */
+@Composable
+private fun SegmentedTabs(selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
+    val haptic = LocalHapticFeedback.current
+    val items = listOf(
+        Triple("Telegram", Icons.Default.Send, "Прокси для Telegram"),
+        Triple("YouTube · Instagram", Icons.Default.Public, "Разблокировка сайтов"),
+    )
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Surface)
+            .border(1.dp, Border.copy(alpha = 0.65f), RoundedCornerShape(14.dp))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        items.forEachIndexed { index, item ->
+            val (label, icon, contentDesc) = item
+            val isSelected = selected == index
+            val itemBg by animateColorAsState(
+                targetValue = if (isSelected) SurfaceVariant else Color.Transparent,
+                animationSpec = tween(200),
+                label = "segmentBg"
+            )
+            val iconTint by animateColorAsState(
+                targetValue = if (isSelected) Accent else TextSecondary,
+                animationSpec = tween(200),
+                label = "segmentTint"
+            )
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(itemBg)
+                    .clickable {
+                        if (!isSelected) {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onSelect(index)
+                        }
+                    }
+                    .padding(vertical = 12.dp, horizontal = 6.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(icon, contentDescription = contentDesc, tint = iconTint, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    label,
+                    color = if (isSelected) TextPrimary else TextSecondary,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun HeroStatusCard(uiState: ProxyUiState) {
     val running = uiState.isRunning
-    val statusColor by animateColorAsState(
-        targetValue = if (running) AccentSoft else TextMuted,
-        animationSpec = tween(300),
-        label = "statusColor"
-    )
 
-    val transition = rememberInfiniteTransition(label = "pulse")
-    val pulse by transition.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 1f,
+    // Breathing pulse on the status badge while the proxy runs; frozen under reduced-motion.
+    val reduce = reducedMotionEnabled()
+    val transition = rememberInfiniteTransition(label = "heroPulse")
+    val animatedPulse by transition.animateFloat(
+        initialValue = 0.10f,
+        targetValue = 0.28f,
         animationSpec = infiniteRepeatable(
-            animation = tween(900),
+            animation = tween(1300),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "pulseAlpha"
+        label = "heroPulseAlpha"
     )
+    val badgeAlpha = if (!running) 0.15f else if (reduce) 0.20f else animatedPulse
 
     // Live ticking clock for the uptime readout.
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -358,7 +391,7 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = Surface),
         border = BorderStroke(
             1.dp,
@@ -377,63 +410,64 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
                         }
                     )
                 )
-                .padding(16.dp)
+                .padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape)
+                    .background((if (running) Success else TextMuted).copy(alpha = badgeAlpha)),
+                contentAlignment = Alignment.Center
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Статус прокси",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSecondary
+                Icon(
+                    imageVector = if (running) Icons.Default.CheckCircle else Icons.Default.PowerSettingsNew,
+                    contentDescription = null,
+                    tint = if (running) Success else TextMuted,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = "Статус прокси",
+                style = MaterialTheme.typography.labelMedium,
+                color = TextSecondary
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = if (running) "Активен" else "Остановлен",
+                style = MaterialTheme.typography.headlineSmall,
+                color = if (running) Success else TextPrimary,
+                fontWeight = FontWeight.Bold
+            )
+            if (running && uiState.route.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.CloudDone,
+                        contentDescription = null,
+                        tint = Mauve,
+                        modifier = Modifier.size(14.dp)
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(Modifier.width(4.dp))
                     Text(
-                        text = if (running) "Активен" else "Остановлен",
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = if (running) Success else statusColor,
-                        fontWeight = FontWeight.Bold
-                    )
-                    if (running && uiState.route.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.CloudDone,
-                                contentDescription = null,
-                                tint = Mauve,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                text = "Маршрут: ${routeLabel(uiState.route)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TextSecondary
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = if (running) {
-                            "Трафик Telegram проходит через локальный прокси."
-                        } else {
-                            "Запустите прокси, чтобы получить ссылку для подключения."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
+                        text = "Маршрут: ${routeLabel(uiState.route)}",
+                        style = MaterialTheme.typography.labelSmall,
                         color = TextSecondary
                     )
                 }
-                Spacer(modifier = Modifier.width(16.dp))
-                Box(
-                    modifier = Modifier
-                        .size(18.dp)
-                        .clip(CircleShape)
-                        .background(if (running) Success else statusColor)
-                        .alpha(if (running) pulse else 1f)
-                )
             }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = if (running) {
+                    "Трафик Telegram проходит через локальный прокси."
+                } else {
+                    "Запустите прокси, чтобы получить ссылку для подключения."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                textAlign = TextAlign.Center
+            )
 
             AnimatedVisibility(visible = running) {
                 Column {
@@ -947,11 +981,17 @@ private fun ControlButtons(
                 .graphicsLayer {
                     scaleX = buttonScale
                     scaleY = buttonScale
-                },
+                }
+                // Gradient fill for the primary CTA; transparent container lets it show
+                // through while the Button keeps its own ripple clipped to the same shape.
+                .then(
+                    if (uiState.isRunning) Modifier
+                    else Modifier.background(AccentGradient, RoundedCornerShape(16.dp))
+                ),
             interactionSource = interaction,
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = if (uiState.isRunning) Color.Transparent else Primary,
+                containerColor = Color.Transparent,
                 contentColor = if (uiState.isRunning) Destructive else Background
             ),
             border = if (uiState.isRunning) BorderStroke(1.dp, Destructive) else null
@@ -979,9 +1019,10 @@ private fun ControlButtons(
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp),
+                    .height(52.dp)
+                    .background(AccentGradient, RoundedCornerShape(14.dp)),
                 shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Background)
+                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = Background)
             ) {
                 Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
@@ -1353,5 +1394,20 @@ private fun OnboardingRow(icon: ImageVector, title: String, body: String) {
             Text(title, color = TextPrimary, fontWeight = FontWeight.SemiBold)
             Text(body, color = TextSecondary, style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
+
+/**
+ * Reduced-motion (accessibility): true when the OS animator duration scale is 0
+ * (Developer options / a11y "remove animations"). Same rule as UnblockScreen:
+ * keep opacity/level cues, drop continuous movement.
+ */
+@Composable
+private fun reducedMotionEnabled(): Boolean {
+    val context = LocalContext.current
+    return remember {
+        Settings.Global.getFloat(
+            context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f
+        ) == 0f
     }
 }

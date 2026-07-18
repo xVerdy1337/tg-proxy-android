@@ -1,5 +1,6 @@
 package com.tgwsproxy.ui.theme
 
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 
 // === Jevio palette (coolors: 181621 / EBEBD3 / 463F5D / 896998 / E07A98) ===
@@ -35,3 +36,7 @@ val Warning = Color(0xFFE0B36A)           // warm cream-amber
 val Info = Color(0xFF896998)              // mauve (cloudflare / WS lines)
 val Success = Color(0xFF72D39A)           // clear connection / completed state
 val LogSurface = Color(0xFF13111B)        // near-black log rows
+
+// Rose gradient for primary CTAs. Dark (Background) text keeps >=4.5:1 contrast at both ends.
+val AccentGradient: Brush
+    get() = Brush.horizontalGradient(listOf(PrimaryLight, PrimaryDark))
