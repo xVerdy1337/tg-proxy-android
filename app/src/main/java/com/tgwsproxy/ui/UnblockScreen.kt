@@ -27,6 +27,8 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -48,6 +50,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -61,6 +64,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.expandVertically
@@ -122,7 +126,7 @@ fun UnblockScreen(
             )
         }
 
-        item { ServicesRow(probe, autoTune) }
+        item { ServicesCard(probe, autoTune) }
 
         item {
             // Asymmetric enter/exit (Emil): reveal ~220ms, dismiss faster ~140ms; no jarring pop-in.
@@ -276,13 +280,12 @@ private fun HeroUnblockCard(
         )
         Spacer(Modifier.height(4.dp))
         when {
-            testing -> Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = Accent)
-                Text("Тестирование методов обхода…", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
-            }
+            // The round badge above already shows a spinner — no need for a second one here.
+            testing -> Text(
+                "Тестирование методов обхода…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+            )
             running -> Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -454,7 +457,15 @@ private fun AutoTuneCard(
                         style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum")
                     )
                 }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(10.dp))
+                LinearProgressIndicator(
+                    progress = { (autoTune.index.toFloat() / autoTune.total.coerceAtLeast(1)).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)),
+                    color = Accent,
+                    trackColor = SurfaceVariant,
+                    strokeCap = StrokeCap.Round,
+                )
+                Spacer(Modifier.height(8.dp))
                 Text(
                     "Пожалуйста, не закрывайте вкладку во время проверки.",
                     color = TextSecondary, style = MaterialTheme.typography.labelSmall
@@ -545,28 +556,26 @@ private fun SecondaryButton(label: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ServicesRow(probe: ProbeUiState, autoTune: AutoTuneUiState) {
+private fun ServicesCard(probe: ProbeUiState, autoTune: AutoTuneUiState) {
     val yt = probe.results.firstOrNull { it.display == "YouTube" }
     val ytv = probe.results.firstOrNull { it.display == "YouTube (видео)" }
     val ig = probe.results.firstOrNull { it.display == "Instagram" }
     val busy = probe.checking || autoTune.running
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        ServiceChip("YouTube", yt, busy, autoTune.hostOk["YouTube"], Modifier.weight(1f))
-        ServiceChip("Видео", ytv, busy, autoTune.hostOk["YouTube (видео)"], Modifier.weight(1f))
-        ServiceChip("Instagram", ig, busy, autoTune.hostOk["Instagram"], Modifier.weight(1f))
+    Card {
+        ServiceRow("YouTube", yt, busy, autoTune.hostOk["YouTube"])
+        HorizontalDivider(color = Border.copy(alpha = 0.5f), modifier = Modifier.padding(vertical = 2.dp))
+        ServiceRow("YouTube (видео)", ytv, busy, autoTune.hostOk["YouTube (видео)"])
+        HorizontalDivider(color = Border.copy(alpha = 0.5f), modifier = Modifier.padding(vertical = 2.dp))
+        ServiceRow("Instagram", ig, busy, autoTune.hostOk["Instagram"])
     }
 }
 
 @Composable
-private fun ServiceChip(
+private fun ServiceRow(
     name: String,
     result: ServiceProbe?,
     checking: Boolean,
     forced: Boolean?,
-    modifier: Modifier = Modifier,
 ) {
     // Prefer the real auto-tune result (TLS handshake through byedpi) over the weak Kotlin probe.
     val (dotColor, statusText, working) = when {
@@ -578,20 +587,25 @@ private fun ServiceChip(
         result.plain == com.tgwsproxy.net.HelloProbe.Outcome.BLOCKED -> Triple(Destructive, "заблокировано", false)
         else -> Triple(Warning, "не удалось", false)
     }
+    // Smooth color transitions instead of snapping between states.
+    val animatedDot by animateColorAsState(targetValue = dotColor, animationSpec = tween(250), label = "serviceDot")
+    val statusColor = when {
+        working -> OkGreen
+        dotColor == Destructive -> Destructive
+        dotColor == Warning -> Warning
+        else -> TextSecondary
+    }
+    // Fixed row height + single-line text: status changes ("проверка…" → "работает" /
+    // "заблокировано") must never wrap or reflow the layout.
     Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(Surface)
-            .border(1.dp, Border, RoundedCornerShape(12.dp))
-            .padding(vertical = 12.dp, horizontal = 14.dp),
+        modifier = Modifier.fillMaxWidth().height(44.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Box(
             modifier = Modifier
                 .size(20.dp)
                 .clip(CircleShape)
-                .background(dotColor.copy(alpha = 0.22f)),
+                .background(animatedDot.copy(alpha = 0.22f)),
             contentAlignment = Alignment.Center
         ) {
             if (checking) {
@@ -603,13 +617,24 @@ private fun ServiceChip(
             } else if (working) {
                 Icon(Icons.Default.Check, null, tint = OkGreen, modifier = Modifier.size(14.dp))
             } else {
-                Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(dotColor))
+                Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(animatedDot))
             }
         }
-        Column {
-            Text(name, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
-            Text(statusText, color = TextSecondary, style = MaterialTheme.typography.labelSmall)
-        }
+        Spacer(Modifier.width(12.dp))
+        Text(
+            name,
+            color = TextPrimary,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            statusText,
+            color = statusColor,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+        )
     }
 }
 
