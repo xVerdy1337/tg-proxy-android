@@ -1,15 +1,39 @@
 package com.tgwsproxy.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.weight
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -26,8 +50,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
@@ -36,7 +60,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.ui.window.Dialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -51,144 +74,185 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.foundation.LocalIndication
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.core.CubicBezierEasing
-import androidx.compose.ui.platform.LocalContext
-import android.provider.Settings
-import com.tgwsproxy.ui.theme.*
-import com.tgwsproxy.vpn.DesyncVpnService
-import com.tgwsproxy.vpn.ByedpiPresetCatalog
+import androidx.compose.ui.window.Dialog
+import com.tgwsproxy.ui.theme.Accent
+import com.tgwsproxy.ui.theme.AccentGradient
+import com.tgwsproxy.ui.theme.Background
+import com.tgwsproxy.ui.theme.Border
+import com.tgwsproxy.ui.theme.Destructive
+import com.tgwsproxy.ui.theme.Mauve
+import com.tgwsproxy.ui.theme.Primary
+import com.tgwsproxy.ui.theme.Success
+import com.tgwsproxy.ui.theme.Surface
+import com.tgwsproxy.ui.theme.SurfaceVariant
+import com.tgwsproxy.ui.theme.TextMuted
+import com.tgwsproxy.ui.theme.TextPrimary
+import com.tgwsproxy.ui.theme.TextSecondary
+import com.tgwsproxy.ui.theme.Warning
 import com.tgwsproxy.vpn.ByedpiPreset
+import com.tgwsproxy.vpn.ByedpiPresetCatalog
 import com.tgwsproxy.vpn.ByedpiPresetGroup
+import com.tgwsproxy.vpn.DesyncVpnService
 import java.util.Locale
 
+private val OkGreen = Color(0xFF5BBF7B)
+
+/**
+ * Strong ease-out curve (Emil Kowalski / animations.dev). The built-in CSS/Compose easings
+ * are too weak to feel intentional; this is the design-eng standard UI ease-out.
+ */
+private val EmilEaseOut = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
+
+/**
+ * Reduced-motion (accessibility): true when the OS animator duration scale is 0
+ * (Developer options / a11y "remove animations"). We keep opacity/level cues but drop
+ * continuous movement, per the design-eng reduced-motion guidance.
+ */
 @Composable
-fun UnblockScreen(
+internal fun reducedMotionEnabled(): Boolean {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    return remember {
+        android.provider.Settings.Global.getFloat(
+            context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f
+        ) == 0f
+    }
+}
+
+/**
+ * Snappy, custom-curve press feedback (Emil: ~140ms, strong ease-out, interruptible).
+ * Never go below 0.95 — it starts to feel exaggerated.
+ */
+@Composable
+private fun rememberPressScale(interaction: MutableInteractionSource): Float {
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        if (pressed) 0.96f else 1f,
+        animationSpec = tween(durationMillis = 140, easing = EmilEaseOut),
+        label = "pressScale"
+    )
+    return scale
+}
+
+/**
+ * Inline all «Разблокировка» sections into the caller's LazyColumn — single-screen layout,
+ * no separate tab/scroll container. Caller owns spacing + bottom padding.
+ *
+ * `LazyListScope` is NOT @Composable, so each `item { }` lambda collects the flows it needs
+ * via `collectAsState()` itself — we don't hoist state reads to this scope.
+ */
+fun LazyListScope.unblockSections(
     vm: DesyncViewModel,
     onEnable: () -> Unit,
     onDisable: () -> Unit,
 ) {
-    val state by vm.vpnState.collectAsState()
-    val settings by vm.settings.collectAsState()
-    val probe by vm.probe.collectAsState()
-    val autoTune by vm.autoTune.collectAsState()
-    val running = state.isRunning
-    val installedApps by vm.installedApps.collectAsState()
-    val excluded by vm.excluded.collectAsState()
-    var advancedOpen by remember { mutableStateOf(false) }
-    var showExclusions by remember { mutableStateOf(false) }
-
-    if (showExclusions) {
-        ExclusionDialog(
-            apps = installedApps,
-            excluded = excluded,
-            builtIn = vm.builtInExcluded,
-            onToggle = { pkg, on -> vm.setExcluded(pkg, on) },
-            onClose = { showExclusions = false },
+    item(key = "unblock-hero") {
+        val state by vm.vpnState.collectAsState()
+        val autoTune by vm.autoTune.collectAsState()
+        HeroUnblockCard(
+            state = state,
+            testing = autoTune.running,
+            onEnable = onEnable,
+            onDisable = onDisable,
         )
     }
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-        contentPadding = PaddingValues(bottom = 28.dp)
-    ) {
-        item { Spacer(Modifier.height(4.dp)) }
+    item(key = "auto-tune") {
+        val autoTune by vm.autoTune.collectAsState()
+        val state by vm.vpnState.collectAsState()
+        AutoTuneCard(
+            autoTune = autoTune,
+            vpnRunning = state.isRunning,
+            onRun = { vm.runAutoTune() },
+            onReset = { vm.dismissAutoTune() },
+            onEnable = onEnable,
+        )
+    }
 
-        item { HeroUnblockCard(state, autoTune.running, onEnable, onDisable) }
+    item(key = "services") {
+        val probe by vm.probe.collectAsState()
+        val autoTune by vm.autoTune.collectAsState()
+        ServicesCard(probe, autoTune)
+    }
 
-        item {
-            AutoTuneCard(
-                autoTune = autoTune,
-                vpnRunning = running,
-                onRun = { vm.runAutoTune() },
-                onReset = { vm.dismissAutoTune() },
-                onEnable = onEnable,
+    item(key = "unblock-live-stats") {
+        val state by vm.vpnState.collectAsState()
+        AnimatedVisibility(
+            visible = state.isRunning,
+            enter = fadeIn(tween(220, easing = EmilEaseOut)) + expandVertically(tween(220, easing = EmilEaseOut)),
+            exit = fadeOut(tween(140)) + shrinkVertically(tween(140)),
+        ) { LiveStatsCard(state) }
+    }
+
+    item(key = "method-label") {
+        Text(
+            "Метод обхода",
+            style = MaterialTheme.typography.labelLarge,
+            color = TextSecondary,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+
+    item(key = "preset") {
+        val settings by vm.settings.collectAsState()
+        PresetCard(
+            current = settings.preset,
+            running = false,
+            activeLabel = if (settings.byedpiCmd.isBlank()) null
+                else com.tgwsproxy.net.StrategyTester.labelForCommand(settings.byedpiCmd) ?: "своя команда",
+            command = settings.byedpiCmd,
+            onSelect = { vm.setPreset(it) },
+        )
+    }
+
+    item(key = "toggle-quic") {
+        val settings by vm.settings.collectAsState()
+        ToggleCard(
+            icon = Icons.Default.Bolt,
+            title = "Блокировать QUIC",
+            subtitle = "Ускоряет обход для YouTube: заставляет приложение использовать обычный TLS вместо QUIC",
+            checked = settings.blockQuic,
+            onChange = { vm.setBlockQuic(it) }
+        )
+    }
+
+    item(key = "unblock-advanced") {
+        val settings by vm.settings.collectAsState()
+        val probe by vm.probe.collectAsState()
+        val excluded by vm.excluded.collectAsState()
+        var showExclusions by remember { mutableStateOf(false) }
+        if (showExclusions) {
+            val installedApps by vm.installedApps.collectAsState()
+            ExclusionDialog(
+                apps = installedApps,
+                excluded = excluded,
+                builtIn = vm.builtInExcluded,
+                onToggle = { pkg, on -> vm.setExcluded(pkg, on) },
+                onClose = { showExclusions = false },
             )
         }
-
-        item { ServicesCard(probe, autoTune) }
-
-        item {
-            // Asymmetric enter/exit (Emil): reveal ~220ms, dismiss faster ~140ms; no jarring pop-in.
-            AnimatedVisibility(
-                visible = running,
-                enter = fadeIn(tween(220, easing = EmilEaseOut)) + expandVertically(tween(220, easing = EmilEaseOut)),
-                exit = fadeOut(tween(140)) + shrinkVertically(tween(140)),
-            ) { LiveStatsCard(state) }
-        }
-
-        item { Text("Метод обхода", style = MaterialTheme.typography.labelLarge, color = TextSecondary) }
-
-        item {
-            PresetCard(
-                current = settings.preset,
-                running = running,
-                activeLabel = if (settings.byedpiCmd.isBlank()) null
-                    else com.tgwsproxy.net.StrategyTester.labelForCommand(settings.byedpiCmd) ?: "своя команда",
-                command = settings.byedpiCmd,
-                onSelect = { vm.setPreset(it) },
-            )
-        }
-
-        item {
-            ToggleCard(
-                icon = Icons.Default.Bolt,
-                title = "Блокировать QUIC",
-                subtitle = "Ускоряет обход для YouTube: заставляет приложение использовать обычный TLS вместо QUIC",
-                checked = settings.blockQuic,
-                onChange = { vm.setBlockQuic(it) }
-            )
-        }
-
-        item {
-            AdvancedSection(
-                expanded = advancedOpen,
-                onToggle = { advancedOpen = !advancedOpen },
-                probe = probe,
-                onCheck = { vm.runProbe() },
-                command = settings.byedpiCmd,
-                presetDefault = vm.defaultCmdForPreset(settings.preset),
-                onApplyCmd = { vm.setByedpiCmd(it) },
-                preset = settings.preset,
-                onSelectPreset = { vm.setPreset(it) },
-                allApps = settings.allApps,
-                onAllApps = { vm.setAllApps(it) },
-                excludedCount = excluded.size + vm.builtInExcluded.size,
-                onOpenExclusions = { vm.loadInstalledApps(); showExclusions = true },
-            )
-        }
-
-        item {
-            AnimatedVisibility(
-                visible = running,
-                enter = fadeIn(tween(220, easing = EmilEaseOut)) + expandVertically(tween(220, easing = EmilEaseOut)),
-                exit = fadeOut(tween(140)) + shrinkVertically(tween(140)),
-            ) { RestartHintCard() }
-        }
-
-        item { DisclaimerCard() }
-
-        item { Spacer(Modifier.height(24.dp)) }
+        UnblockAdvancedCard(
+            expanded = false,
+            probe = probe,
+            onCheck = { vm.runProbe() },
+            command = settings.byedpiCmd,
+            presetDefault = vm.defaultCmdForPreset(settings.preset),
+            onApplyCmd = { vm.setByedpiCmd(it) },
+            preset = settings.preset,
+            onSelectPreset = { vm.setPreset(it) },
+            allApps = settings.allApps,
+            onAllApps = { vm.setAllApps(it) },
+            excludedCount = excluded.size + vm.builtInExcluded.size,
+            onOpenExclusions = { vm.loadInstalledApps(); showExclusions = true },
+        )
     }
 }
 
@@ -208,8 +272,6 @@ private fun HeroUnblockCard(
         else -> TextMuted
     }
 
-    // Gentle breathing pulse on the status badge while the VPN is active.
-    // Respect reduced-motion (Emil / a11y): keep the opacity level, drop the movement.
     val reduce = reducedMotionEnabled()
     val pulse = rememberInfiniteTransition(label = "hero-pulse")
     val animatedPulse by pulse.animateFloat(
@@ -280,7 +342,6 @@ private fun HeroUnblockCard(
         )
         Spacer(Modifier.height(4.dp))
         when {
-            // The round badge above already shows a spinner — no need for a second one here.
             testing -> Text(
                 "Тестирование методов обхода…",
                 style = MaterialTheme.typography.bodyMedium,
@@ -344,16 +405,21 @@ private fun BigToggleButton(running: Boolean, starting: Boolean, testing: Boolea
     val haptic = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed && !busy) 0.96f else 1f, label = "toggleScale")
+    val scale by animateFloatAsState(
+        targetValue = if (pressed && !busy) 0.96f else 1f,
+        animationSpec = tween(durationMillis = 140, easing = EmilEaseOut),
+        label = "toggleScale",
+    )
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 48.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(14.dp))
             .background(bg)
             .then(
                 if (busy) Modifier
-                else Modifier.clickable(interactionSource = interaction, indication = LocalIndication.current) {
+                else Modifier.clickable(interactionSource = interaction, indication = androidx.compose.foundation.LocalIndication.current) {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     onClick()
                 }
@@ -384,46 +450,6 @@ private fun BigToggleButton(running: Boolean, starting: Boolean, testing: Boolea
     }
 }
 
-private val OkGreen = Color(0xFF5BBF7B)
-
-/**
- * Strong ease-out curve (Emil Kowalski / animations.dev). The built-in CSS/Compose easings
- * are too weak to feel intentional; this is the design-eng standard UI ease-out.
- */
-private val EmilEaseOut = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
-
-/**
- * Reduced-motion (accessibility): true when the OS animator duration scale is 0
- * (Developer options / a11y "remove animations"). We keep opacity/level cues but drop
- * continuous movement, per the design-eng reduced-motion guidance.
- */
-@Composable
-private fun reducedMotionEnabled(): Boolean {
-    val context = LocalContext.current
-    return remember {
-        Settings.Global.getFloat(
-            context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f
-        ) == 0f
-    }
-}
-
-/**
- * Scale-on-press feedback ("make interfaces feel better" skill): a subtle, interruptible
- * scale(0.96) while pressed. animateFloatAsState retargets mid-press, so releasing early
- * springs back smoothly. Never go below 0.95 — it starts to feel exaggerated.
- */
-@Composable
-private fun rememberPressScale(interaction: MutableInteractionSource): Float {
-    val pressed by interaction.collectIsPressedAsState()
-    // Snappy, custom-curve press feedback (Emil: ~140ms, strong ease-out, interruptible).
-    val scale by animateFloatAsState(
-        if (pressed) 0.96f else 1f,
-        animationSpec = tween(durationMillis = 140, easing = EmilEaseOut),
-        label = "pressScale"
-    )
-    return scale
-}
-
 @Composable
 private fun AutoTuneCard(
     autoTune: AutoTuneUiState,
@@ -432,7 +458,7 @@ private fun AutoTuneCard(
     onReset: () -> Unit,
     onEnable: () -> Unit,
 ) {
-    Card {
+    PanelCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.AutoFixHigh, null, tint = Accent, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(10.dp))
@@ -467,7 +493,7 @@ private fun AutoTuneCard(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Пожалуйста, не закрывайте вкладку во время проверки.",
+                    "Пожалуйста, не закрывайте приложение во время проверки.",
                     color = TextSecondary, style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -518,10 +544,11 @@ private fun PrimaryButton(label: String, enabled: Boolean = true, onClick: () ->
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 48.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(12.dp))
             .background(if (enabled) AccentGradient else SolidColor(SurfaceVariant))
-            .clickable(interactionSource = interaction, indication = LocalIndication.current, enabled = enabled) {
+            .clickable(interactionSource = interaction, indication = androidx.compose.foundation.LocalIndication.current, enabled = enabled) {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onClick()
             }
@@ -544,10 +571,11 @@ private fun SecondaryButton(label: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 48.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(12.dp))
             .background(SurfaceVariant)
-            .clickable(interactionSource = interaction, indication = LocalIndication.current) { onClick() }
+            .clickable(interactionSource = interaction, indication = androidx.compose.foundation.LocalIndication.current) { onClick() }
             .padding(vertical = 12.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -561,7 +589,7 @@ private fun ServicesCard(probe: ProbeUiState, autoTune: AutoTuneUiState) {
     val ytv = probe.results.firstOrNull { it.display == "YouTube (видео)" }
     val ig = probe.results.firstOrNull { it.display == "Instagram" }
     val busy = probe.checking || autoTune.running
-    Card {
+    PanelCard {
         ServiceRow("YouTube", yt, busy, autoTune.hostOk["YouTube"])
         HorizontalDivider(color = Border.copy(alpha = 0.5f), modifier = Modifier.padding(vertical = 2.dp))
         ServiceRow("YouTube (видео)", ytv, busy, autoTune.hostOk["YouTube (видео)"])
@@ -577,7 +605,6 @@ private fun ServiceRow(
     checking: Boolean,
     forced: Boolean?,
 ) {
-    // Prefer the real auto-tune result (TLS handshake through byedpi) over the weak Kotlin probe.
     val (dotColor, statusText, working) = when {
         checking -> Triple(SurfaceVariant, "проверка…", false)
         forced == true -> Triple(OkGreen, "работает", true)
@@ -587,7 +614,6 @@ private fun ServiceRow(
         result.plain == com.tgwsproxy.net.HelloProbe.Outcome.BLOCKED -> Triple(Destructive, "заблокировано", false)
         else -> Triple(Warning, "не удалось", false)
     }
-    // Smooth color transitions instead of snapping between states.
     val animatedDot by animateColorAsState(targetValue = dotColor, animationSpec = tween(250), label = "serviceDot")
     val statusColor = when {
         working -> OkGreen
@@ -595,8 +621,6 @@ private fun ServiceRow(
         dotColor == Warning -> Warning
         else -> TextSecondary
     }
-    // Fixed row height + single-line text: status changes ("проверка…" → "работает" /
-    // "заблокировано") must never wrap or reflow the layout.
     Row(
         modifier = Modifier.fillMaxWidth().height(44.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -639,98 +663,8 @@ private fun ServiceRow(
 }
 
 @Composable
-private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
-    Card {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Ручная проверка методов", color = TextPrimary, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    "Быстрая прямая проба split/tlsrec (без FAKE). Для полного подбора используй «Автоподбор» выше.",
-                    color = TextSecondary,
-                    style = MaterialTheme.typography.labelSmall
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(if (probe.checking) SurfaceVariant else Accent)
-                    .clickable(enabled = !probe.checking) { onCheck() }
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                if (probe.checking) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = TextSecondary
-                    )
-                } else {
-                    Text("Проверить", color = Background, fontWeight = FontWeight.SemiBold)
-                }
-            }
-        }
-        if (probe.results.isNotEmpty() && !probe.checking) {
-            Spacer(Modifier.height(12.dp))
-            for (r in probe.results) {
-                ProbeResultRow(r)
-                Spacer(Modifier.height(6.dp))
-            }
-            val anyWorks = probe.results.any { it.anyPass }
-            Spacer(Modifier.height(2.dp))
-            Text(
-                if (anyWorks)
-                    "Нашёлся рабочий простой метод. Но «Автоподбор» надёжнее — он проверяет и FAKE/TTL."
-                else
-                    "Простая проба не пробила — это не значит, что не работают каскадные методы. Запусти «Автоподбор» выше.",
-                color = if (anyWorks) OkGreen else Warning,
-                style = MaterialTheme.typography.labelSmall
-            )
-        }
-    }
-}
-
-@Composable
-private fun ProbeResultRow(r: ServiceProbe) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(r.display, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            MethodPill("Без обхода", r.plain)
-            MethodPill("A", r.tlsrec)
-            MethodPill("B", r.split)
-        }
-    }
-}
-
-@Composable
-private fun MethodPill(label: String, outcome: com.tgwsproxy.net.HelloProbe.Outcome?) {
-    val color = when (outcome) {
-        com.tgwsproxy.net.HelloProbe.Outcome.PASS -> OkGreen
-        com.tgwsproxy.net.HelloProbe.Outcome.BLOCKED -> Destructive
-        com.tgwsproxy.net.HelloProbe.Outcome.ERROR -> Warning
-        null -> SurfaceVariant
-    }
-    Text(
-        label,
-        color = color,
-        style = MaterialTheme.typography.labelSmall,
-        modifier = Modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(color.copy(alpha = 0.16f))
-            .padding(horizontal = 8.dp, vertical = 3.dp)
-    )
-}
-
-@Composable
 private fun LiveStatsCard(state: DesyncVpnService.VpnState) {
-    Card {
+    PanelCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
@@ -767,7 +701,6 @@ private fun StatItem(label: String, value: String) {
             color = TextPrimary,
             fontWeight = FontWeight.SemiBold,
             fontSize = 18.sp,
-            // tnum lives on TextStyle, not as a Text() argument — carry it via style.
             style = LocalTextStyle.current.copy(fontFeatureSettings = "tnum")
         )
         Spacer(Modifier.height(2.dp))
@@ -804,7 +737,7 @@ private fun PresetCard(
         it.diagnostic || it.id in coreIds
     }
 
-    Card {
+    PanelCard {
         Text("Метод обхода", color = TextPrimary, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         Text(
@@ -854,7 +787,6 @@ private fun PresetCard(
             }
         }
 
-        // Inline explanation of the currently selected method.
         Spacer(Modifier.height(10.dp))
         Row(
             modifier = Modifier
@@ -946,10 +878,11 @@ private fun PresetChip(
     val scale = rememberPressScale(interaction)
     Box(
         modifier = modifier
+            .heightIn(min = 48.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(10.dp))
             .background(if (selected) Accent else SurfaceVariant)
-            .clickable(interactionSource = interaction, indication = LocalIndication.current) { onSelect(value) }
+            .clickable(interactionSource = interaction, indication = androidx.compose.foundation.LocalIndication.current) { onSelect(value) }
             .padding(vertical = 10.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -962,12 +895,109 @@ private fun PresetChip(
     }
 }
 
+/**
+ * Сворачиваемый блок продвинутых настроек разблокировки: команда byedpi, охват приложений,
+ * исключения. Вне «advanced» — DiagnosticPresetCard и ручная проба, чтобы не пугать новичков.
+ */
+@Composable
+private fun UnblockAdvancedCard(
+    expanded: Boolean,
+    probe: ProbeUiState,
+    onCheck: () -> Unit,
+    command: String,
+    presetDefault: String,
+    onApplyCmd: (String) -> Unit,
+    preset: String,
+    onSelectPreset: (String) -> Unit,
+    allApps: Boolean,
+    onAllApps: (Boolean) -> Unit,
+    excludedCount: Int,
+    onOpenExclusions: () -> Unit,
+) {
+    var open by remember { mutableStateOf(expanded) }
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(Surface)
+                .border(1.dp, Border, RoundedCornerShape(14.dp))
+                .clickable { open = !open }
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Tune, null, tint = Mauve, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Продвинутые настройки", color = TextPrimary, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "Команда byedpi, охват приложений, исключения",
+                    color = TextSecondary, style = MaterialTheme.typography.labelSmall
+                )
+            }
+            Icon(
+                if (open) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                null, tint = TextSecondary, modifier = Modifier.size(22.dp)
+            )
+        }
+
+        AnimatedVisibility(
+            visible = open,
+            enter = fadeIn(tween(220, easing = EmilEaseOut)) + expandVertically(tween(220, easing = EmilEaseOut)),
+            exit = fadeOut(tween(140)) + shrinkVertically(tween(140)),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                DiagnosticPresetCard(preset, onSelectPreset)
+                ProbeCard(probe, onCheck)
+                ByedpiCommandCard(
+                    command = command,
+                    presetDefault = presetDefault,
+                    onApply = onApplyCmd,
+                )
+                ToggleCard(
+                    icon = Icons.Default.Lock,
+                    title = "Все приложения",
+                    subtitle = if (allApps)
+                        "Обход применяется ко всем приложениям (рекомендуется — надёжнее всего)"
+                    else
+                        "Только YouTube и Instagram. Часть их трафика идёт через Play Services / браузер и может не обходиться — включи «все приложения», если не работает",
+                    checked = allApps,
+                    onChange = onAllApps
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Surface)
+                        .border(1.dp, Border, RoundedCornerShape(14.dp))
+                        .clickable { onOpenExclusions() }
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Block, null, tint = Mauve, modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Не использовать обход для…", color = TextPrimary, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "$excludedCount приложений исключено (банки, Госуслуги и др. — чтобы не ловили VPN). Действует в режиме «все приложения»",
+                            color = TextSecondary, style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                    Icon(Icons.Default.KeyboardArrowDown, null, tint = TextSecondary, modifier = Modifier.size(22.dp))
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun DiagnosticPresetCard(
     current: String,
     onSelect: (String) -> Unit,
 ) {
-    Card {
+    PanelCard {
         Text("Диагностика трубы", color = TextPrimary, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         Text(
@@ -987,91 +1017,94 @@ private fun DiagnosticPresetCard(
 }
 
 @Composable
-private fun AdvancedSection(
-    expanded: Boolean,
-    onToggle: () -> Unit,
-    probe: ProbeUiState,
-    onCheck: () -> Unit,
-    command: String,
-    presetDefault: String,
-    onApplyCmd: (String) -> Unit,
-    preset: String,
-    onSelectPreset: (String) -> Unit,
-    allApps: Boolean,
-    onAllApps: (Boolean) -> Unit,
-    excludedCount: Int,
-    onOpenExclusions: () -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        // Clickable header that expands the advanced controls.
+private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
+    PanelCard {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(14.dp))
-                .background(Surface)
-                .border(1.dp, Border, RoundedCornerShape(14.dp))
-                .clickable { onToggle() }
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Icon(Icons.Default.Tune, null, tint = Mauve, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text("Продвинутые настройки", color = TextPrimary, fontWeight = FontWeight.Medium)
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Ручная проверка методов", color = TextPrimary, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "Диагностика, команда byedpi, охват приложений",
-                    color = TextSecondary, style = MaterialTheme.typography.labelSmall
+                    "Быстрая прямая проба split/tlsrec (без FAKE). Для полного подбора используй «Автоподбор» выше.",
+                    color = TextSecondary,
+                    style = MaterialTheme.typography.labelSmall
                 )
             }
-            Icon(
-                if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                null, tint = TextSecondary, modifier = Modifier.size(22.dp)
-            )
-        }
-
-        if (expanded) {
-            DiagnosticPresetCard(preset, onSelectPreset)
-            ProbeCard(probe, onCheck)
-            ByedpiCommandCard(
-                command = command,
-                presetDefault = presetDefault,
-                onApply = onApplyCmd,
-            )
-            ToggleCard(
-                icon = Icons.Default.Lock,
-                title = "Все приложения",
-                subtitle = if (allApps)
-                    "Обход применяется ко всем приложениям (рекомендуется — надёжнее всего)"
-                else
-                    "Только YouTube и Instagram. Часть их трафика идёт через Play Services / браузер и может не обходиться — включи «все приложения», если не работает",
-                checked = allApps,
-                onChange = onAllApps
-            )
-            Row(
+            Spacer(Modifier.width(12.dp))
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(Surface)
-                    .border(1.dp, Border, RoundedCornerShape(14.dp))
-                    .clickable { onOpenExclusions() }
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .heightIn(min = 44.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (probe.checking) SurfaceVariant else Accent)
+                    .clickable(enabled = !probe.checking) { onCheck() }
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.Block, null, tint = Mauve, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("Не использовать обход для…", color = TextPrimary, fontWeight = FontWeight.Medium)
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        "$excludedCount приложений исключено (банки, Госуслуги и др. — чтобы не ловили VPN). Действует в режиме «все приложения»",
-                        color = TextSecondary, style = MaterialTheme.typography.labelSmall
+                if (probe.checking) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = TextSecondary
                     )
+                } else {
+                    Text("Проверить", color = Background, fontWeight = FontWeight.SemiBold)
                 }
-                Icon(Icons.Default.KeyboardArrowDown, null, tint = TextSecondary, modifier = Modifier.size(22.dp))
             }
         }
+        if (probe.results.isNotEmpty() && !probe.checking) {
+            Spacer(Modifier.height(12.dp))
+            for (r in probe.results) {
+                ProbeResultRow(r)
+                Spacer(Modifier.height(6.dp))
+            }
+            val anyWorks = probe.results.any { it.anyPass }
+            Spacer(Modifier.height(2.dp))
+            Text(
+                if (anyWorks)
+                    "Нашёлся рабочий простой метод. Но «Автоподбор» надёжнее — он проверяет и FAKE/TTL."
+                else
+                    "Простая проба не пробила — это не значит, что не работают каскадные методы. Запусти «Автоподбор» выше.",
+                color = if (anyWorks) OkGreen else Warning,
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
     }
+}
+
+@Composable
+private fun ProbeResultRow(r: ServiceProbe) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(r.display, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            MethodPill("Без обхода", r.plain)
+            MethodPill("A", r.tlsrec)
+            MethodPill("B", r.split)
+        }
+    }
+}
+
+@Composable
+private fun MethodPill(label: String, outcome: com.tgwsproxy.net.HelloProbe.Outcome?) {
+    val color = when (outcome) {
+        com.tgwsproxy.net.HelloProbe.Outcome.PASS -> OkGreen
+        com.tgwsproxy.net.HelloProbe.Outcome.BLOCKED -> Destructive
+        com.tgwsproxy.net.HelloProbe.Outcome.ERROR -> Warning
+        null -> SurfaceVariant
+    }
+    Text(
+        label,
+        color = color,
+        style = MaterialTheme.typography.labelSmall,
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(color.copy(alpha = 0.16f))
+            .padding(horizontal = 8.dp, vertical = 3.dp)
+    )
 }
 
 @Composable
@@ -1081,7 +1114,7 @@ private fun ByedpiCommandCard(
     onApply: (String) -> Unit,
 ) {
     var text by remember(command) { mutableStateOf(command) }
-    Card {
+    PanelCard {
         Text("Команда byedpi (для продвинутых)", color = TextPrimary, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         Text(
@@ -1111,6 +1144,7 @@ private fun ByedpiCommandCard(
             Box(
                 modifier = Modifier
                     .weight(1f)
+                    .heightIn(min = 44.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .background(Accent)
                     .clickable { onApply(text.trim()) }
@@ -1122,6 +1156,7 @@ private fun ByedpiCommandCard(
             Box(
                 modifier = Modifier
                     .weight(1f)
+                    .heightIn(min = 44.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .background(SurfaceVariant)
                     .clickable { text = ""; onApply("") }
@@ -1144,13 +1179,13 @@ private fun ByedpiCommandCard(
 
 @Composable
 private fun ToggleCard(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon: ImageVector,
     title: String,
     subtitle: String,
     checked: Boolean,
     onChange: (Boolean) -> Unit,
 ) {
-    Card {
+    PanelCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, null, tint = Mauve, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(12.dp))
@@ -1172,61 +1207,6 @@ private fun ToggleCard(
             )
         }
     }
-}
-
-@Composable
-private fun RestartHintCard() {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(Warning.copy(alpha = 0.12f))
-            .padding(14.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(Icons.Default.Info, null, tint = Warning, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(10.dp))
-        Text(
-            "Изменения метода и настроек применятся после выключения и повторного включения.",
-            color = TextPrimary, style = MaterialTheme.typography.bodySmall
-        )
-    }
-}
-
-@Composable
-private fun DisclaimerCard() {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(Surface)
-            .border(1.dp, Border, RoundedCornerShape(12.dp))
-            .padding(14.dp)
-    ) {
-        Icon(Icons.Default.Info, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(10.dp))
-        Column {
-            Text("Бета-функция", color = TextPrimary, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(3.dp))
-            Text(
-                "Это локальный VPN: трафик не уходит на чужой сервер, приложение лишь меняет формат первых байтов соединения, чтобы провайдер не видел адрес. Работает не у всех операторов — если не помогло, попробуйте другой метод.",
-                color = TextSecondary, style = MaterialTheme.typography.bodySmall
-            )
-        }
-    }
-}
-
-@Composable
-private fun Card(content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(Surface)
-            .border(1.dp, Border, RoundedCornerShape(18.dp))
-            .padding(16.dp),
-        content = content
-    )
 }
 
 @Composable
@@ -1280,7 +1260,7 @@ private fun ExclusionDialog(
                 val filtered = apps.filter {
                     query.isBlank() || it.label.contains(query, ignoreCase = true) || it.pkg.contains(query, ignoreCase = true)
                 }
-                LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                androidx.compose.foundation.lazy.LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
                     items(filtered, key = { it.pkg }) { app ->
                         val checked = app.builtIn || excluded.contains(app.pkg)
                         Row(
@@ -1312,6 +1292,20 @@ private fun ExclusionDialog(
             PrimaryButton("Готово", onClick = onClose)
         }
     }
+}
+
+/** Reusable card surface — renamed from the previous local `Card` to avoid shadowing material3.Card. */
+@Composable
+private fun PanelCard(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(Surface)
+            .border(1.dp, Border, RoundedCornerShape(18.dp))
+            .padding(16.dp),
+        content = content
+    )
 }
 
 private fun formatBytesShort(b: Long): String {
