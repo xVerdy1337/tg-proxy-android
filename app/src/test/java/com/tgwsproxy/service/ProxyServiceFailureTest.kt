@@ -26,10 +26,9 @@ class ProxyServiceFailureTest {
             assertTrue("proxy startup did not fail in time", await {
                 !service.serviceState.value.isRunning
             })
-            assertTrue(
-                "failed startup must stop the service",
+            assertTrue("failed startup must stop the service", await {
                 shadowOf(service).isStoppedBySelf()
-            )
+            })
         }
     }
 
