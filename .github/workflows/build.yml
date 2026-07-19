@@ -45,6 +45,9 @@ jobs:
         run: |
           sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
 
+      - name: Run focused SOCKS5 regression test
+        run: gradle testDebugUnitTest --tests com.tgwsproxy.vpn.TcpConnectionTest
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
