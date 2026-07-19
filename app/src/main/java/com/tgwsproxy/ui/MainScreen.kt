@@ -127,14 +127,18 @@ import com.tgwsproxy.ui.theme.Destructive
 import com.tgwsproxy.ui.theme.Info
 import com.tgwsproxy.ui.theme.LogSurface
 import com.tgwsproxy.ui.theme.Mauve
+import com.tgwsproxy.ui.theme.OnAccent
 import com.tgwsproxy.ui.theme.Primary
 import com.tgwsproxy.ui.theme.Success
 import com.tgwsproxy.ui.theme.Surface
+import com.tgwsproxy.ui.theme.SurfaceElevated
 import com.tgwsproxy.ui.theme.SurfaceVariant
 import com.tgwsproxy.ui.theme.TextMuted
 import com.tgwsproxy.ui.theme.TextPrimary
 import com.tgwsproxy.ui.theme.TextSecondary
 import com.tgwsproxy.ui.theme.Warning
+import com.tgwsproxy.ui.theme.UpdateBorder
+import com.tgwsproxy.ui.theme.UpdateSurface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -403,9 +407,9 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
                 .background(
                     Brush.verticalGradient(
                         colors = if (running) {
-                            listOf(Color(0xFF3A2740), Surface)
+                            listOf(SurfaceElevated, Surface)
                         } else {
-                            listOf(Color(0xFF2A2233), Surface)
+                            listOf(SurfaceElevated, Surface)
                         }
                     )
                 )
@@ -416,13 +420,13 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
                 modifier = Modifier
                     .size(56.dp)
                     .clip(CircleShape)
-                    .background((if (running) Success else TextMuted).copy(alpha = badgeAlpha)),
+                    .background((if (running) Success else Warning).copy(alpha = badgeAlpha)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = if (running) Icons.Default.CheckCircle else Icons.Default.PowerSettingsNew,
                     contentDescription = null,
-                    tint = if (running) Success else TextMuted,
+                    tint = if (running) Success else Warning,
                     modifier = Modifier.size(28.dp)
                 )
             }
@@ -436,7 +440,7 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
             Text(
                 text = if (running) "Активен" else "Остановлен",
                 style = MaterialTheme.typography.headlineSmall,
-                color = if (running) Success else TextPrimary,
+                color = if (running) Success else Warning,
                 fontWeight = FontWeight.Bold
             )
             if (running && uiState.route.isNotEmpty()) {
@@ -495,7 +499,7 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
                             icon = Icons.Default.ArrowDownward,
                             label = "Получено",
                             value = formatBytes(uiState.bytesDown),
-                            tint = Primary
+                            tint = Info
                         )
                     }
                 }
@@ -559,12 +563,12 @@ private fun ControlButtons(
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = Color.Transparent,
-                contentColor = if (uiState.isRunning) Destructive else Background,
+                contentColor = if (uiState.isRunning) Destructive else OnAccent,
                 disabledContainerColor = Color.Transparent,
                 disabledContentColor = if (uiState.isRunning) {
                     Destructive.copy(alpha = 0.65f)
                 } else {
-                    Background.copy(alpha = 0.7f)
+                    OnAccent.copy(alpha = 0.7f)
                 },
             ),
             border = if (uiState.isRunning) BorderStroke(1.dp, Destructive) else null
@@ -573,7 +577,7 @@ private fun ControlButtons(
                 CircularProgressIndicator(
                     modifier = Modifier.size(20.dp),
                     strokeWidth = 2.dp,
-                    color = if (uiState.isRunning) Destructive else Background,
+                    color = if (uiState.isRunning) Destructive else OnAccent,
                 )
             } else {
                 Icon(
@@ -605,7 +609,7 @@ private fun ControlButtons(
                     .height(52.dp)
                     .background(AccentGradient, RoundedCornerShape(14.dp)),
                 shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = Background)
+                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = OnAccent)
             ) {
                 Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
@@ -1091,8 +1095,8 @@ private fun LogItem(log: String) {
         log.contains("ERROR", ignoreCase = true)          -> Destructive
         log.contains("failed", ignoreCase = true)         -> Warning
         log.contains("WARN", ignoreCase = true)           -> Warning
-        log.contains("handshake ok", ignoreCase = true)   -> Mauve
-        log.contains("Fake TLS", ignoreCase = true)       -> Primary
+        log.contains("handshake ok", ignoreCase = true)   -> Info
+        log.contains("Fake TLS", ignoreCase = true)       -> Info
         log.contains("Cloudflare", ignoreCase = true)     -> Info
         log.contains("WS connected", ignoreCase = true)   -> Info
         else -> TextSecondary
@@ -1147,7 +1151,7 @@ private fun TelegramChannelCard(context: Context) {
                 Icon(
                     imageVector = Icons.Default.Send,
                     contentDescription = null,
-                    tint = Primary,
+                    tint = Info,
                     modifier = Modifier.size(20.dp)
                 )
             }
@@ -1350,8 +1354,8 @@ private fun UpdateBanner(context: Context) {
             .fillMaxWidth()
             .padding(vertical = 4.dp)
             .clip(RoundedCornerShape(12.dp))
-            .background(Accent.copy(alpha = 0.15f))
-            .border(1.dp, Accent.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+            .background(UpdateSurface)
+            .border(1.dp, UpdateBorder, RoundedCornerShape(12.dp))
             .clickable {
                 runCatching {
                     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
@@ -1360,7 +1364,7 @@ private fun UpdateBanner(context: Context) {
             .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(Icons.Default.Refresh, contentDescription = null, tint = Accent, modifier = Modifier.size(22.dp))
+        Icon(Icons.Default.Refresh, contentDescription = null, tint = Primary, modifier = Modifier.size(22.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text("Доступна новая версия", color = TextPrimary, fontWeight = FontWeight.SemiBold)
@@ -1369,7 +1373,7 @@ private fun UpdateBanner(context: Context) {
                 color = TextSecondary, style = MaterialTheme.typography.labelSmall
             )
         }
-        Icon(Icons.Default.OpenInNew, contentDescription = null, tint = Accent, modifier = Modifier.size(20.dp))
+        Icon(Icons.Default.OpenInNew, contentDescription = null, tint = Primary, modifier = Modifier.size(20.dp))
     }
 }
 

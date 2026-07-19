@@ -88,10 +88,13 @@ import com.tgwsproxy.ui.theme.AccentGradient
 import com.tgwsproxy.ui.theme.Background
 import com.tgwsproxy.ui.theme.Border
 import com.tgwsproxy.ui.theme.Destructive
+import com.tgwsproxy.ui.theme.Info
 import com.tgwsproxy.ui.theme.Mauve
+import com.tgwsproxy.ui.theme.OnAccent
 import com.tgwsproxy.ui.theme.Primary
 import com.tgwsproxy.ui.theme.Success
 import com.tgwsproxy.ui.theme.Surface
+import com.tgwsproxy.ui.theme.SurfaceElevated
 import com.tgwsproxy.ui.theme.SurfaceVariant
 import com.tgwsproxy.ui.theme.TextMuted
 import com.tgwsproxy.ui.theme.TextPrimary
@@ -103,7 +106,7 @@ import com.tgwsproxy.vpn.ByedpiPresetGroup
 import com.tgwsproxy.vpn.DesyncVpnService
 import java.util.Locale
 
-private val OkGreen = Color(0xFF5BBF7B)
+private val OkGreen = Color(0xFF62D6A0)
 
 /**
  * Strong ease-out curve (Emil Kowalski / animations.dev). The built-in CSS/Compose easings
@@ -265,10 +268,9 @@ private fun HeroUnblockCard(
     val running = state.isRunning
     val starting = state.isStarting
     val accent = when {
-        testing -> Accent
-        running -> Accent
-        starting -> Accent
-        else -> TextMuted
+        testing || starting -> Info
+        running -> Success
+        else -> Warning
     }
 
     val reduce = reducedMotionEnabled()
@@ -288,12 +290,12 @@ private fun HeroUnblockCard(
             .clip(RoundedCornerShape(20.dp))
             .background(
                 Brush.verticalGradient(
-                    if (running || starting || testing) listOf(Color(0xFF2B2540), Surface) else listOf(Surface, Surface)
+                    if (running || starting || testing) listOf(SurfaceElevated, Surface) else listOf(Surface, Surface)
                 )
             )
             .border(
                 1.dp,
-                if (running || starting || testing) Accent.copy(alpha = 0.45f) else Border,
+                if (running || starting || testing) accent.copy(alpha = 0.45f) else Border,
                 RoundedCornerShape(20.dp),
             )
             .padding(16.dp),
@@ -310,12 +312,12 @@ private fun HeroUnblockCard(
                 testing -> CircularProgressIndicator(
                     modifier = Modifier.size(26.dp),
                     strokeWidth = 3.dp,
-                    color = Accent,
+                    color = Info,
                 )
                 starting -> CircularProgressIndicator(
                     modifier = Modifier.size(26.dp),
                     strokeWidth = 3.dp,
-                    color = Accent,
+                    color = Info,
                 )
                 running -> Icon(
                     imageVector = Icons.Default.Check,
@@ -360,7 +362,7 @@ private fun HeroUnblockCard(
             starting -> Text(
                 "Запуск… поднимаем обход (SOCKS + VPN)",
                 style = MaterialTheme.typography.bodyMedium,
-                color = Accent,
+                color = Info,
             )
             else -> Text(
                 "Локальная обработка трафика без внешнего VPN-сервера",
@@ -397,7 +399,7 @@ private fun HeroUnblockCard(
 private fun BigToggleButton(running: Boolean, starting: Boolean, testing: Boolean, onClick: () -> Unit) {
     val busy = starting || testing
     val bg: Brush = when {
-        busy -> SolidColor(Accent.copy(alpha = 0.55f))
+        busy -> SolidColor(Info.copy(alpha = 0.55f))
         running -> SolidColor(Destructive)
         else -> AccentGradient
     }
@@ -434,14 +436,14 @@ private fun BigToggleButton(running: Boolean, starting: Boolean, testing: Boolea
                 CircularProgressIndicator(
                     modifier = Modifier.size(18.dp),
                     strokeWidth = 2.dp,
-                    color = Background,
+                    color = OnAccent,
                 )
-                Text(if (testing) "Тестирование методов…" else "Запуск…", color = Background, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                Text(if (testing) "Тестирование методов…" else "Запуск…", color = OnAccent, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
             }
         } else {
             Text(
                 if (running) "Выключить" else "Включить разблокировку",
-                color = Background,
+                color = OnAccent,
                 fontWeight = FontWeight.Bold,
                 fontSize = 16.sp,
             )
@@ -486,7 +488,7 @@ private fun AutoTuneCard(
                 LinearProgressIndicator(
                     progress = { (autoTune.index.toFloat() / autoTune.total.coerceAtLeast(1)).coerceIn(0f, 1f) },
                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)),
-                    color = Accent,
+                    color = Info,
                     trackColor = SurfaceVariant,
                     strokeCap = StrokeCap.Round,
                 )
@@ -556,7 +558,7 @@ private fun PrimaryButton(label: String, enabled: Boolean = true, onClick: () ->
     ) {
         Text(
             label,
-            color = if (enabled) Background else TextMuted,
+            color = if (enabled) OnAccent else TextMuted,
             fontWeight = FontWeight.Bold,
             fontSize = 15.sp
         )
@@ -771,7 +773,7 @@ private fun PresetCard(
                 val groupPresets = extraPresets.filter { it.group == group }
                 if (groupPresets.isNotEmpty()) {
                     Spacer(Modifier.height(10.dp))
-                    Text(group.title, color = Accent, style = MaterialTheme.typography.labelMedium)
+                    Text(group.title, color = Info, style = MaterialTheme.typography.labelMedium)
                     Spacer(Modifier.height(4.dp))
                     groupPresets.forEach { preset ->
                         StrategyPresetRow(
@@ -1047,7 +1049,7 @@ private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
                         modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = TextSecondary
                     )
                 } else {
-                    Text("Проверить", color = Background, fontWeight = FontWeight.SemiBold)
+                    Text("Проверить", color = OnAccent, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -1150,7 +1152,7 @@ private fun ByedpiCommandCard(
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text("Применить", color = Background, fontWeight = FontWeight.SemiBold)
+                Text("Применить", color = OnAccent, fontWeight = FontWeight.SemiBold)
             }
             Box(
                 modifier = Modifier

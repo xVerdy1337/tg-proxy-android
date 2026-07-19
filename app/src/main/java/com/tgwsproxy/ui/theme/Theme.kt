@@ -6,7 +6,7 @@ import androidx.compose.runtime.Composable
 
 private val DarkColorScheme = darkColorScheme(
     primary = Primary,
-    onPrimary = Background,          // dark text on pink for contrast
+    onPrimary = OnAccent,          // dark text on pink for contrast
     secondary = Mauve,
     onSecondary = Cream,
     tertiary = MauveLight,
