@@ -245,17 +245,6 @@ private fun HeroUnblockCard(
                     maxLines = 2,
                 )
             }
-            Spacer(Modifier.width(12.dp))
-            JevioStatusBadge(
-                text = when {
-                    stopping -> "СТОП"
-                    testing -> "ПОДБОР"
-                    starting -> "ЗАПУСК"
-                    running -> "В СЕТИ"
-                    else -> "ГОТОВ"
-                },
-                active = running && !busy,
-            )
         }
 
         Spacer(Modifier.height(24.dp))

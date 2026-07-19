@@ -3,7 +3,6 @@ package com.tgwsproxy.ui
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -69,8 +68,6 @@ import com.tgwsproxy.ui.theme.GlassShadow
 import com.tgwsproxy.ui.theme.GlassSurface
 import com.tgwsproxy.ui.theme.Primary
 import com.tgwsproxy.ui.theme.Signal
-import com.tgwsproxy.ui.theme.SurfaceVariant
-import com.tgwsproxy.ui.theme.TextMuted
 import com.tgwsproxy.ui.theme.TextPrimary
 import com.tgwsproxy.ui.theme.SurfaceElevated
 
@@ -104,58 +101,6 @@ internal fun rememberPressScale(interaction: MutableInteractionSource): Float {
         label = "pressScale",
     )
     return scale
-}
-
-/** One non-wrapping status capsule for both Telegram and Sites headers. */
-@Composable
-internal fun JevioStatusBadge(
-    text: String,
-    active: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    val reduceMotion = reducedMotionEnabled()
-    val duration = if (reduceMotion) 0 else 220
-    val background by animateColorAsState(
-        targetValue = if (active) Signal else SurfaceVariant,
-        animationSpec = tween(duration, easing = JevioEaseOut),
-        label = "statusBackground",
-    )
-    val border by animateColorAsState(
-        targetValue = if (active) Signal else GlassBorder,
-        animationSpec = tween(duration, easing = JevioEaseOut),
-        label = "statusBorder",
-    )
-    val dot by animateColorAsState(
-        targetValue = if (active) Primary else TextMuted,
-        animationSpec = tween(duration, easing = JevioEaseOut),
-        label = "statusDot",
-    )
-
-    Row(
-        modifier = modifier
-            .heightIn(min = 32.dp)
-            .clip(RoundedCornerShape(999.dp))
-            .background(background)
-            .border(1.dp, border, RoundedCornerShape(999.dp))
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(6.dp)
-                .clip(CircleShape)
-                .background(dot),
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.6.sp),
-            color = TextPrimary,
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Clip,
-        )
-    }
 }
 
 /** Shared centered label that may wrap without entering the rounded end caps. */

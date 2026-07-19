@@ -12,6 +12,7 @@ import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -27,20 +28,24 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -120,6 +125,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -383,7 +389,7 @@ fun MainScreen(
 
 @Composable
 private fun MainTabRow(selected: MainTab, onSelect: (MainTab) -> Unit) {
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .shadow(12.dp, RoundedCornerShape(999.dp), ambientColor = GlassShadow, spotColor = GlassShadow)
@@ -391,25 +397,53 @@ private fun MainTabRow(selected: MainTab, onSelect: (MainTab) -> Unit) {
             .background(GlassSurfaceMuted)
             .border(1.dp, GlassBorder, RoundedCornerShape(999.dp))
             .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        MainTabChip(
-            label = "Telegram",
-            selected = selected == MainTab.Telegram,
-            onClick = { onSelect(MainTab.Telegram) },
-            modifier = Modifier.weight(1f),
-        )
-        MainTabChip(
-            label = "Сайты",
-            selected = selected == MainTab.Sites,
-            onClick = { onSelect(MainTab.Sites) },
-            modifier = Modifier.weight(1f),
-        )
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+        ) {
+            val reduceMotion = reducedMotionEnabled()
+            val segmentWidth = maxWidth / 2
+            val indicatorOffset by animateDpAsState(
+                targetValue = if (selected == MainTab.Telegram) 0.dp else segmentWidth,
+                animationSpec = tween(
+                    durationMillis = if (reduceMotion) 0 else 240,
+                    easing = JevioEaseOut,
+                ),
+                label = "mainTabIndicatorOffset",
+            )
+
+            Box(
+                modifier = Modifier
+                    .offset(x = indicatorOffset)
+                    .width(segmentWidth)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Signal)
+                    .border(1.dp, GlassBorder, RoundedCornerShape(999.dp)),
+            )
+
+            Row(modifier = Modifier.fillMaxSize()) {
+                MainTabButton(
+                    label = "Telegram",
+                    selected = selected == MainTab.Telegram,
+                    onClick = { onSelect(MainTab.Telegram) },
+                    modifier = Modifier.weight(1f),
+                )
+                MainTabButton(
+                    label = "Сайты",
+                    selected = selected == MainTab.Sites,
+                    onClick = { onSelect(MainTab.Sites) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun MainTabChip(
+private fun MainTabButton(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
@@ -418,41 +452,25 @@ private fun MainTabChip(
     val haptic = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
     val scale = rememberPressScale(interaction)
-    val reduceMotion = reducedMotionEnabled()
-    val background by animateColorAsState(
-        targetValue = if (selected) Signal else Color.Transparent,
-        animationSpec = tween(if (reduceMotion) 0 else 220, easing = JevioEaseOut),
-        label = "tabBackground",
-    )
-    val border by animateColorAsState(
-        targetValue = if (selected) GlassBorder else Color.Transparent,
-        animationSpec = tween(if (reduceMotion) 0 else 220, easing = JevioEaseOut),
-        label = "tabBorder",
-    )
     Box(
         modifier = modifier
-            .heightIn(min = 48.dp)
+            .fillMaxHeight()
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
             .clip(RoundedCornerShape(999.dp))
-            .background(background)
-            .border(
-                width = 1.dp,
-                color = border,
-                shape = RoundedCornerShape(999.dp),
-            )
-            .clickable(
+            .selectable(
+                selected = selected,
                 interactionSource = interaction,
                 indication = androidx.compose.foundation.LocalIndication.current,
+                role = Role.Tab,
             ) {
                 if (!selected) {
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 }
                 onClick()
-            }
-            .padding(vertical = 11.dp),
+            },
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -524,16 +542,6 @@ private fun TelegramHero(
                     maxLines = 2,
                 )
             }
-            Spacer(Modifier.width(12.dp))
-            JevioStatusBadge(
-                text = when {
-                    busy && running -> "СТОП"
-                    busy -> "ЗАПУСК"
-                    running -> "В СЕТИ"
-                    else -> "ГОТОВ"
-                },
-                active = running && !busy,
-            )
         }
 
         Spacer(Modifier.height(24.dp))
