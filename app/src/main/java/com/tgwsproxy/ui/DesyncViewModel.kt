@@ -8,6 +8,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tgwsproxy.net.HelloProbe
 import com.tgwsproxy.net.StrategyTester
+import com.tgwsproxy.vpn.ByedpiPresetCatalog
 import com.tgwsproxy.vpn.DesyncVpnService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -254,7 +255,7 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
 
     /** Default byedpi command for the current preset (shown as a hint / starting point). */
     fun defaultCmdForPreset(preset: String): String =
-        DesyncVpnService.presetToByedpiArgs(preset)
+        ByedpiPresetCatalog.commandFor(preset)
 
     fun setByedpiCmd(cmd: String) {
         prefs().edit().putString(DesyncVpnService.KEY_BYEDPI_CMD, cmd).apply()

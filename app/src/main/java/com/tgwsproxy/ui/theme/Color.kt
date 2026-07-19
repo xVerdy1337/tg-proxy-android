@@ -2,45 +2,50 @@ package com.tgwsproxy.ui.theme
 
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 
-// === Jevio palette (coolors: 181621 / EBEBD3 / 463F5D / 896998 / E07A98) ===
-// Deep ink background, cream text, layered purple surfaces, mauve + pink accents.
+// === Jevio matte light ===
+// Warm neutral canvas, smoky translucent surfaces, near-black ink and one lime accent.
+// Surfaces deliberately keep alpha: the soft shapes behind them create the matte-glass depth.
 
-val Background = Color(0xFF14111F)        // 181621 — deep ink
-val Surface = Color(0xFF221C30)           // cards (between bg and 463F5D)
-val SurfaceElevated = Color(0xFF2B233B)   // raised inner surfaces
-val SurfaceVariant = SurfaceElevated
+val Background = Color(0xFFECE9E3)        // warm stone / beige-white
+val Surface = Color(0xE8FFFFFF)           // translucent cards
+val SurfaceElevated = Color(0xF5FFFFFF)   // controls inside glass
+val SurfaceVariant = Color(0xB8DEDAD2)    // smoky chips / inputs
 
-val Primary = Color(0xFFE6789D)           // E07A98 — pink (main accent)
-val PrimaryDark = Color(0xFFC95E83)
-val PrimaryLight = Color(0xFFEF91AE)
-val OnAccent = Color(0xFF181321)
+val Primary = Color(0xFF181914)           // near-black ink
+val PrimaryDark = Color(0xFF090A08)
+val PrimaryLight = Color(0xFF3B3C35)
 
-val Mauve = Color(0xFF63C7E6)             // 896998 — secondary accent
-val MauveLight = Color(0xFF8BD7ED)
+val Mauve = Color(0xFF66645D)             // warm graphite
+val MauveLight = Color(0xFF929087)
 
-val Cream = Color(0xFFF7F4FA)             // EBEBD3 — cream highlight
+val Cream = Color(0xFFF7F5F0)
 
-val TextPrimary = Color(0xFFF7F4FA)       // cream text
-val TextSecondary = Color(0xFFB7AEC7)     // muted mauve-grey
-val TextMuted = Color(0xFF81778F)
+val TextPrimary = Color(0xFF181914)
+val TextSecondary = Color(0xFF65645E)
+val TextMuted = Color(0xFF8E8C84)
 
-val Border = Color(0xFF504462)
-val Destructive = Color(0xFFFF708A)       // warm pink-red for stop
-val ErrorContainer = Color(0xFF3A1A26)
+val Border = Color(0x80B9B5AD)
+val GlassBorder = Color(0xD9FFFFFF)
+val GlassSurface = Color(0xCFFFFFFF)
+val GlassSurfaceMuted = Color(0xA8F6F4EF)
+val GlassShadow = Color(0x16000000)
+val Destructive = Color(0xFFA93232)
+val ErrorContainer = Color(0xE8F7E5E3)
 
-// Semantic accents reused across the UI
-val Accent = Color(0xFFE6789D)            // primary CTA / running
-val AccentDark = Color(0xFFC95E83)
-val AccentSoft = Color(0xFFE6789D)        // "active" status colour
-val Warning = Color(0xFFF1C96D)           // warm cream-amber
-val Info = Color(0xFF63C7E6)              // mauve (cloudflare / WS lines)
-val Success = Color(0xFF62D6A0)           // clear connection / completed state
-val LogSurface = Color(0xFF13111B)        // near-black log rows
+val Accent = Primary                      // primary CTA remains the requested black capsule
+val AccentDark = PrimaryDark
+val AccentSoft = Primary
+val Signal = Color(0xFFDFFF4F)            // rare live / selected accent from the reference
+val Warning = Color(0xFF846200)
+val Info = Color(0xFF5C6B7A)
+val Success = Color(0xFF2D7045)
+val LogSurface = Color(0xB8DDD9D1)
 
-val UpdateSurface = Color(0xFF342432)
-val UpdateBorder = Color(0xFF8F506B)
-
-// Rose gradient for primary CTAs. Dark (Background) text keeps >=4.5:1 contrast at both ends.
+/** Solid ink fill (kept as Brush for existing call sites). */
 val AccentGradient: Brush
-    get() = Brush.horizontalGradient(listOf(PrimaryLight, PrimaryDark))
+    get() = SolidColor(Accent)
+
+/** Text/icon on filled primary buttons. */
+val OnAccent = Color(0xFFF7F5F0)

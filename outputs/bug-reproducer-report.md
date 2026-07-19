@@ -4,9 +4,9 @@
 
 > The focused regression test failed before the production change and passed after it. The same GitHub Actions run also built debug and release APKs successfully.
 
-**Project:** tg-proxy-android  
-**Bug:** Fragmented SOCKS5 success replies contaminate the TLS stream  
-**Environment:** GitHub Actions Ubuntu runner, JDK 17, Android SDK 35, NDK 25.1.8937393  
+**Project:** tg-proxy-android
+**Bug:** Fragmented SOCKS5 success replies contaminate the TLS stream
+**Environment:** GitHub Actions Ubuntu runner, JDK 17, Android SDK 35, NDK 25.1.8937393
 **Generated:** 2026-07-19
 
 ## Discovery scope
