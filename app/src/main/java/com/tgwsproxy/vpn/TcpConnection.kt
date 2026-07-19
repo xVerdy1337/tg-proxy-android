@@ -150,7 +150,7 @@ class TcpConnection(
             0x03 -> din.readUnsignedByte()
             else -> return false
         }
-        din.skipBytes(addrLen + 2) // BND.ADDR + BND.PORT
+        din.readFully(ByteArray(addrLen + 2)) // BND.ADDR + BND.PORT
         return rep == 0x00
     }
 
