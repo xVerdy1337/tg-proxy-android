@@ -140,6 +140,18 @@ fun LazyListScope.unblockSections(
         )
     }
 
+    item(key = "auto-tune") {
+        val autoTune by vm.autoTune.collectAsState()
+        val state by vm.vpnState.collectAsState()
+        AutoTuneCard(
+            autoTune = autoTune,
+            vpnRunning = state.isRunning,
+            onRun = { vm.runAutoTune() },
+            onReset = { vm.dismissAutoTune() },
+            onEnable = onEnable,
+        )
+    }
+
     item(key = "services") {
         val probe by vm.probe.collectAsState()
         val autoTune by vm.autoTune.collectAsState()
@@ -153,18 +165,6 @@ fun LazyListScope.unblockSections(
             enter = fadeIn(tween(220, easing = JevioEaseOut)) + expandVertically(tween(220, easing = JevioEaseOut)),
             exit = fadeOut(tween(140)) + shrinkVertically(tween(140)),
         ) { LiveStatsCard(state) }
-    }
-
-    item(key = "auto-tune") {
-        val autoTune by vm.autoTune.collectAsState()
-        val state by vm.vpnState.collectAsState()
-        AutoTuneCard(
-            autoTune = autoTune,
-            vpnRunning = state.isRunning,
-            onRun = { vm.runAutoTune() },
-            onReset = { vm.dismissAutoTune() },
-            onEnable = onEnable,
-        )
     }
 
     item(key = "unblock-settings") {

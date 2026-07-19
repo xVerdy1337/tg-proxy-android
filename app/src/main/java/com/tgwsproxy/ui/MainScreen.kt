@@ -227,7 +227,11 @@ fun MainScreen(
         }
     }
 
-    LaunchedEffect(uiState.logs.size, isAtBottom, tab) {
+    LaunchedEffect(tab) {
+        listState.scrollToItem(0)
+    }
+
+    LaunchedEffect(uiState.logs.size) {
         if (tab != MainTab.Telegram) return@LaunchedEffect
         val totalItems = listState.layoutInfo.totalItemsCount
         if (isAtBottom && totalItems > 0) {
