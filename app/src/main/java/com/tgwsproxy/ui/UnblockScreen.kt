@@ -3,11 +3,7 @@ package com.tgwsproxy.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.CubicBezierEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -94,7 +90,6 @@ import com.tgwsproxy.ui.theme.OnAccent
 import com.tgwsproxy.ui.theme.Primary
 import com.tgwsproxy.ui.theme.Success
 import com.tgwsproxy.ui.theme.Surface
-import com.tgwsproxy.ui.theme.SurfaceElevated
 import com.tgwsproxy.ui.theme.SurfaceVariant
 import com.tgwsproxy.ui.theme.TextMuted
 import com.tgwsproxy.ui.theme.TextPrimary
@@ -272,27 +267,13 @@ private fun HeroUnblockCard(
         running -> Success
         else -> Warning
     }
-
-    val reduce = reducedMotionEnabled()
-    val pulse = rememberInfiniteTransition(label = "hero-pulse")
-    val animatedPulse by pulse.animateFloat(
-        initialValue = 0.10f,
-        targetValue = 0.28f,
-        animationSpec = infiniteRepeatable(tween(1300), RepeatMode.Reverse),
-        label = "hero-pulse-alpha"
-    )
-    val pulseAlpha = if (reduce) 0.20f else animatedPulse
-    val badgeAlpha = if (running || starting || testing) pulseAlpha else 0.15f
+    val badgeAlpha = if (running || starting || testing) 0.20f else 0.15f
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
-            .background(
-                Brush.verticalGradient(
-                    if (running || starting || testing) listOf(SurfaceElevated, Surface) else listOf(Surface, Surface)
-                )
-            )
+            .background(Surface)
             .border(
                 1.dp,
                 if (running || starting || testing) accent.copy(alpha = 0.45f) else Border,
@@ -352,7 +333,7 @@ private fun HeroUnblockCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Box(Modifier.size(8.dp).clip(CircleShape).background(OkGreen).alpha(pulseAlpha * 3.4f))
+                Box(Modifier.size(8.dp).clip(CircleShape).background(OkGreen))
                 Text(
                     "Включено — обходим блокировку провайдера",
                     style = MaterialTheme.typography.bodyMedium,

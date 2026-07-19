@@ -10,10 +10,6 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -97,7 +93,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -131,7 +126,6 @@ import com.tgwsproxy.ui.theme.OnAccent
 import com.tgwsproxy.ui.theme.Primary
 import com.tgwsproxy.ui.theme.Success
 import com.tgwsproxy.ui.theme.Surface
-import com.tgwsproxy.ui.theme.SurfaceElevated
 import com.tgwsproxy.ui.theme.SurfaceVariant
 import com.tgwsproxy.ui.theme.TextMuted
 import com.tgwsproxy.ui.theme.TextPrimary
@@ -370,19 +364,7 @@ fun MainScreen(
 @Composable
 private fun HeroStatusCard(uiState: ProxyUiState) {
     val running = uiState.isRunning
-
-    val reduce = reducedMotionEnabled()
-    val transition = rememberInfiniteTransition(label = "heroPulse")
-    val animatedPulse by transition.animateFloat(
-        initialValue = 0.10f,
-        targetValue = 0.28f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1300),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "heroPulseAlpha"
-    )
-    val badgeAlpha = if (!running) 0.15f else if (reduce) 0.20f else animatedPulse
+    val badgeAlpha = if (running) 0.20f else 0.15f
 
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(running) {
@@ -404,15 +386,7 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(
-                    Brush.verticalGradient(
-                        colors = if (running) {
-                            listOf(SurfaceElevated, Surface)
-                        } else {
-                            listOf(SurfaceElevated, Surface)
-                        }
-                    )
-                )
+                .background(Surface)
                 .padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -1305,7 +1279,7 @@ private fun OnboardingDialog(onDismiss: () -> Unit) {
             Spacer(Modifier.height(14.dp))
             OnboardingRow(
                 icon = Icons.Default.Shield,
-                title = "Всё под контролем",
+                title = "Дополнительные настройки",
                 body = "Продвинутые параметры свёрнуты, а банки и системные сервисы можно исключить из обхода.",
             )
             Spacer(Modifier.height(24.dp))
@@ -1315,7 +1289,7 @@ private fun OnboardingDialog(onDismiss: () -> Unit) {
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Accent),
             ) {
-                Text("Понятно, начать", color = Background, fontWeight = FontWeight.SemiBold)
+                Text("Понятно, начать", color = OnAccent, fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -1324,15 +1298,7 @@ private fun OnboardingDialog(onDismiss: () -> Unit) {
 @Composable
 private fun OnboardingRow(icon: ImageVector, title: String, body: String) {
     Row(verticalAlignment = Alignment.Top) {
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Accent.copy(alpha = 0.14f)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(icon, contentDescription = null, tint = Accent, modifier = Modifier.size(22.dp))
-        }
+        Icon(icon, contentDescription = null, tint = Info, modifier = Modifier.size(24.dp))
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Text(title, color = TextPrimary, fontWeight = FontWeight.SemiBold)
