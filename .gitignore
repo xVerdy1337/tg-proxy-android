@@ -28,6 +28,10 @@ Thumbs.db
 .cxx/
 .externalNativeBuild/
 
+# Python tooling cache
+__pycache__/
+*.py[cod]
+
 # Signing keystores (never commit — provided to CI via secrets)
 *.keystore
 *.jks

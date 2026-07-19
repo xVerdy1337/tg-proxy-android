@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="background">#0F172A</color>
-    <color name="primary">#1E3A5F</color>
-    <color name="accent">#059669</color>
-    <color name="destructive">#DC2626</color>
-    <color name="text_primary">#FFFFFF</color>
-    <color name="text_secondary">#94A3B8</color>
-    <color name="surface">#1E293B</color>
-    <color name="border">#334155</color>
-    <color name="icon_background">#000000</color>
+    <color name="background">#F7F4EF</color>
+    <color name="primary">#1A1814</color>
+    <color name="accent">#1A1814</color>
+    <color name="destructive">#C23B3B</color>
+    <color name="text_primary">#1A1814</color>
+    <color name="text_secondary">#6B6560</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="border">#E8E2D9</color>
+    <color name="icon_background">#F7F4EF</color>
 </resources>

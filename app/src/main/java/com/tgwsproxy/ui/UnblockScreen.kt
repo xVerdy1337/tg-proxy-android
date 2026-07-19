@@ -13,6 +13,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,10 +23,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
@@ -33,6 +36,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -69,6 +73,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -79,23 +84,30 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.tgwsproxy.ui.theme.Accent
-import com.tgwsproxy.ui.theme.AccentGradient
 import com.tgwsproxy.ui.theme.Background
 import com.tgwsproxy.ui.theme.Border
 import com.tgwsproxy.ui.theme.Destructive
+import com.tgwsproxy.ui.theme.GlassBorder
+import com.tgwsproxy.ui.theme.GlassShadow
+import com.tgwsproxy.ui.theme.GlassSurfaceMuted
 import com.tgwsproxy.ui.theme.Mauve
+import com.tgwsproxy.ui.theme.OnAccent
 import com.tgwsproxy.ui.theme.Primary
+import com.tgwsproxy.ui.theme.Signal
 import com.tgwsproxy.ui.theme.Success
 import com.tgwsproxy.ui.theme.Surface
 import com.tgwsproxy.ui.theme.SurfaceVariant
 import com.tgwsproxy.ui.theme.TextMuted
 import com.tgwsproxy.ui.theme.TextPrimary
 import com.tgwsproxy.ui.theme.TextSecondary
+import com.tgwsproxy.ui.theme.TgWsProxyTheme
 import com.tgwsproxy.ui.theme.Warning
 import com.tgwsproxy.vpn.ByedpiPreset
 import com.tgwsproxy.vpn.ByedpiPresetCatalog
@@ -103,7 +115,7 @@ import com.tgwsproxy.vpn.ByedpiPresetGroup
 import com.tgwsproxy.vpn.DesyncVpnService
 import java.util.Locale
 
-private val OkGreen = Color(0xFF5BBF7B)
+private val OkGreen = Success
 
 /**
  * Strong ease-out curve (Emil Kowalski / animations.dev). The built-in CSS/Compose easings
@@ -164,18 +176,6 @@ fun LazyListScope.unblockSections(
         )
     }
 
-    item(key = "auto-tune") {
-        val autoTune by vm.autoTune.collectAsState()
-        val state by vm.vpnState.collectAsState()
-        AutoTuneCard(
-            autoTune = autoTune,
-            vpnRunning = state.isRunning,
-            onRun = { vm.runAutoTune() },
-            onReset = { vm.dismissAutoTune() },
-            onEnable = onEnable,
-        )
-    }
-
     item(key = "services") {
         val probe by vm.probe.collectAsState()
         val autoTune by vm.autoTune.collectAsState()
@@ -191,39 +191,19 @@ fun LazyListScope.unblockSections(
         ) { LiveStatsCard(state) }
     }
 
-    item(key = "method-label") {
-        Text(
-            "Метод обхода",
-            style = MaterialTheme.typography.labelLarge,
-            color = TextSecondary,
-            modifier = Modifier.padding(top = 4.dp),
+    item(key = "auto-tune") {
+        val autoTune by vm.autoTune.collectAsState()
+        val state by vm.vpnState.collectAsState()
+        AutoTuneCard(
+            autoTune = autoTune,
+            vpnRunning = state.isRunning,
+            onRun = { vm.runAutoTune() },
+            onReset = { vm.dismissAutoTune() },
+            onEnable = onEnable,
         )
     }
 
-    item(key = "preset") {
-        val settings by vm.settings.collectAsState()
-        PresetCard(
-            current = settings.preset,
-            running = false,
-            activeLabel = if (settings.byedpiCmd.isBlank()) null
-                else com.tgwsproxy.net.StrategyTester.labelForCommand(settings.byedpiCmd) ?: "своя команда",
-            command = settings.byedpiCmd,
-            onSelect = { vm.setPreset(it) },
-        )
-    }
-
-    item(key = "toggle-quic") {
-        val settings by vm.settings.collectAsState()
-        ToggleCard(
-            icon = Icons.Default.Bolt,
-            title = "Блокировать QUIC",
-            subtitle = "Ускоряет обход для YouTube: заставляет приложение использовать обычный TLS вместо QUIC",
-            checked = settings.blockQuic,
-            onChange = { vm.setBlockQuic(it) }
-        )
-    }
-
-    item(key = "unblock-advanced") {
+    item(key = "unblock-settings") {
         val settings by vm.settings.collectAsState()
         val probe by vm.probe.collectAsState()
         val excluded by vm.excluded.collectAsState()
@@ -238,16 +218,14 @@ fun LazyListScope.unblockSections(
                 onClose = { showExclusions = false },
             )
         }
-        UnblockAdvancedCard(
-            expanded = false,
+        UnblockSettingsCard(
+            settings = settings,
             probe = probe,
             onCheck = { vm.runProbe() },
-            command = settings.byedpiCmd,
-            presetDefault = vm.defaultCmdForPreset(settings.preset),
-            onApplyCmd = { vm.setByedpiCmd(it) },
-            preset = settings.preset,
             onSelectPreset = { vm.setPreset(it) },
-            allApps = settings.allApps,
+            onApplyCmd = { vm.setByedpiCmd(it) },
+            presetDefault = vm.defaultCmdForPreset(settings.preset),
+            onBlockQuic = { vm.setBlockQuic(it) },
             onAllApps = { vm.setAllApps(it) },
             excludedCount = excluded.size + vm.builtInExcluded.size,
             onOpenExclusions = { vm.loadInstalledApps(); showExclusions = true },
@@ -264,125 +242,118 @@ private fun HeroUnblockCard(
 ) {
     val running = state.isRunning
     val starting = state.isStarting
-    val accent = when {
-        testing -> Accent
-        running -> Accent
-        starting -> Accent
-        else -> TextMuted
-    }
+    val busy = starting || testing
+    val haptic = LocalHapticFeedback.current
 
-    val reduce = reducedMotionEnabled()
-    val pulse = rememberInfiniteTransition(label = "hero-pulse")
-    val animatedPulse by pulse.animateFloat(
-        initialValue = 0.10f,
-        targetValue = 0.28f,
-        animationSpec = infiniteRepeatable(tween(1300), RepeatMode.Reverse),
-        label = "hero-pulse-alpha"
-    )
-    val pulseAlpha = if (reduce) 0.20f else animatedPulse
-    val badgeAlpha = if (running || starting || testing) pulseAlpha else 0.15f
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
-            .background(
-                Brush.verticalGradient(
-                    if (running || starting || testing) listOf(Color(0xFF2B2540), Surface) else listOf(Surface, Surface)
-                )
-            )
-            .border(
-                1.dp,
-                if (running || starting || testing) Accent.copy(alpha = 0.45f) else Border,
-                RoundedCornerShape(20.dp),
-            )
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+    JevioGlassPanel(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(
-            modifier = Modifier
-                .size(52.dp)
-                .clip(CircleShape)
-                .background(accent.copy(alpha = badgeAlpha)),
-            contentAlignment = Alignment.Center
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            when {
-                testing -> CircularProgressIndicator(
-                    modifier = Modifier.size(26.dp),
-                    strokeWidth = 3.dp,
-                    color = Accent,
-                )
-                starting -> CircularProgressIndicator(
-                    modifier = Modifier.size(26.dp),
-                    strokeWidth = 3.dp,
-                    color = Accent,
-                )
-                running -> Icon(
-                    imageVector = Icons.Default.Check,
-                    contentDescription = null,
-                    tint = accent,
-                    modifier = Modifier.size(28.dp),
-                )
-                else -> Icon(
-                    imageVector = Icons.Default.PlayArrow,
-                    contentDescription = null,
-                    tint = accent,
-                    // Optical centering: play triangle's visual weight sits left of geometric center.
-                    modifier = Modifier.size(28.dp).offset(x = 1.dp),
-                )
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "Разблокировка YouTube и Instagram",
-            style = MaterialTheme.typography.titleMedium,
-            color = TextPrimary,
-            fontWeight = FontWeight.SemiBold
-        )
-        Spacer(Modifier.height(4.dp))
-        when {
-            testing -> Text(
-                "Тестирование методов обхода…",
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary,
-            )
-            running -> Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Box(Modifier.size(8.dp).clip(CircleShape).background(OkGreen).alpha(pulseAlpha * 3.4f))
+            Column {
                 Text(
-                    "Включено — обходим блокировку провайдера",
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = "Сайты",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = TextPrimary,
+                )
+                Text(
+                    text = "Локальный обход",
+                    style = MaterialTheme.typography.labelSmall,
                     color = TextSecondary,
                 )
             }
-            starting -> Text(
-                "Запуск… поднимаем обход (SOCKS + VPN)",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Accent,
-            )
-            else -> Text(
-                "Локальная обработка трафика без внешнего VPN-сервера",
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary,
-            )
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(if (running && !busy) Signal else SurfaceVariant)
+                    .border(
+                        width = 1.dp,
+                        color = if (running && !busy) Signal else GlassBorder,
+                        shape = RoundedCornerShape(999.dp),
+                    )
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(if (running && !busy) Primary else TextMuted),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (running && !busy) "В СЕТИ" else if (busy) "ЗАПУСК" else "ГОТОВ",
+                    style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.8.sp),
+                    color = TextPrimary,
+                )
+            }
         }
+
+        Spacer(Modifier.height(24.dp))
+        JevioStateDial(
+            active = running,
+            busy = busy,
+            icon = Icons.Default.Bolt,
+        )
+        Spacer(Modifier.height(18.dp))
+
+        Text(
+            text = when {
+                testing -> "Подбор…"
+                starting -> "Запуск…"
+                running -> "Включено"
+                else -> "Выключено"
+            },
+            color = if (running && !busy) OkGreen else TextPrimary,
+            style = MaterialTheme.typography.displayMedium,
+            fontWeight = FontWeight.Light,
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp),
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            when {
+                testing -> "Тестируем методы, не закрывайте приложение"
+                starting -> "Поднимаем локальный обход"
+                running -> "YouTube и Instagram без блокировок"
+                else -> "Локальный обход без внешнего VPN"
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextSecondary,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+        )
         state.error?.let {
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(10.dp))
             Text(
                 it,
                 style = MaterialTheme.typography.bodySmall,
                 color = Destructive,
                 fontWeight = FontWeight.Medium,
+                textAlign = TextAlign.Center,
             )
         }
-        Spacer(Modifier.height(16.dp))
-        BigToggleButton(
-            running = running,
-            testing = testing,
-            starting = starting,
+
+        Spacer(Modifier.height(24.dp))
+
+        SitesPillButton(
+            label = when {
+                testing -> "Тестирование…"
+                starting -> "Запуск…"
+                running -> "Выключить"
+                else -> "Включить"
+            },
+            loading = busy,
+            destructive = running && !busy,
+            enabled = !busy,
             onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 when {
                     starting -> Unit
                     running -> onDisable()
@@ -393,57 +364,55 @@ private fun HeroUnblockCard(
     }
 }
 
+/** Full-width fully-rounded pill CTA (not a circular icon). */
 @Composable
-private fun BigToggleButton(running: Boolean, starting: Boolean, testing: Boolean, onClick: () -> Unit) {
-    val busy = starting || testing
-    val bg: Brush = when {
-        busy -> SolidColor(Accent.copy(alpha = 0.55f))
-        running -> SolidColor(Destructive)
-        else -> AccentGradient
+private fun SitesPillButton(
+    label: String,
+    loading: Boolean,
+    destructive: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(999.dp)
+    val bg = when {
+        destructive -> GlassSurfaceMuted
+        !enabled || loading -> SurfaceVariant
+        else -> Accent
     }
-    val haptic = LocalHapticFeedback.current
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed && !busy) 0.96f else 1f,
-        animationSpec = tween(durationMillis = 140, easing = EmilEaseOut),
-        label = "toggleScale",
-    )
+    val fg = if (destructive) Destructive else OnAccent
+    val border = if (destructive) BorderStroke(1.5.dp, Destructive) else null
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(RoundedCornerShape(14.dp))
-            .background(bg)
-            .then(
-                if (busy) Modifier
-                else Modifier.clickable(interactionSource = interaction, indication = androidx.compose.foundation.LocalIndication.current) {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onClick()
-                }
+            .heightIn(min = 58.dp)
+            .shadow(
+                elevation = if (!destructive && enabled && !loading) 9.dp else 0.dp,
+                shape = shape,
+                ambientColor = GlassShadow,
+                spotColor = GlassShadow,
             )
-            .padding(vertical = 15.dp),
-        contentAlignment = Alignment.Center
+            .clip(shape)
+            .background(bg)
+            .then(if (border != null) Modifier.border(border, shape) else Modifier)
+            .clickable(enabled = enabled && !loading, onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        if (busy) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = Background,
-                )
-                Text(if (testing) "Тестирование методов…" else "Запуск…", color = Background, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-            }
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(22.dp),
+                strokeWidth = 2.dp,
+                color = fg,
+            )
         } else {
             Text(
-                if (running) "Выключить" else "Включить разблокировку",
-                color = Background,
-                fontWeight = FontWeight.Bold,
+                text = label,
+                color = fg,
+                fontWeight = FontWeight.Medium,
                 fontSize = 16.sp,
+                letterSpacing = (-0.15).sp,
+                textAlign = TextAlign.Center,
             )
         }
     }
@@ -457,28 +426,16 @@ private fun AutoTuneCard(
     onReset: () -> Unit,
     onEnable: () -> Unit,
 ) {
-    PanelCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.AutoFixHigh, null, tint = Accent, modifier = Modifier.size(22.dp))
-            Spacer(Modifier.width(10.dp))
-            Column {
-                Text("Автоподбор метода", color = TextPrimary, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "Сами переберём ${com.tgwsproxy.net.StrategyTester.STRATEGIES.size} методов и оставим рабочий",
-                    color = TextSecondary, style = MaterialTheme.typography.labelSmall
-                )
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-
-        when {
-            autoTune.running -> {
+    when {
+        autoTune.running -> {
+            PanelCard {
+                Text("Подбор метода", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
                     Text(
                         "Проверяю ${autoTune.index}/${autoTune.total}",
                         color = TextPrimary,
-                        // tabular figures so the "3/10" counter keeps constant width as it ticks.
                         style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum")
                     )
                 }
@@ -492,45 +449,42 @@ private fun AutoTuneCard(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Пожалуйста, не закрывайте приложение во время проверки.",
+                    "Не закрывайте приложение во время проверки.",
                     color = TextSecondary, style = MaterialTheme.typography.labelSmall
                 )
             }
+        }
 
-            autoTune.finished && autoTune.foundLabel != null -> {
-                Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Default.Check, null, tint = OkGreen, modifier = Modifier.size(18.dp))
-                    Text(
-                        "Готово: «${autoTune.foundLabel}» подобран и сохранён. Нажмите «Включить» — и готово.",
-                        color = OkGreen, style = MaterialTheme.typography.bodySmall
-                    )
-                }
+        autoTune.finished && autoTune.foundLabel != null -> {
+            PanelCard {
+                Text(
+                    "Подобран: «${autoTune.foundLabel}»",
+                    color = OkGreen, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold
+                )
                 Spacer(Modifier.height(10.dp))
-                PrimaryButton("Включить с этим методом", onClick = onEnable)
+                PrimaryButton("Включить", onClick = onEnable)
                 Spacer(Modifier.height(8.dp))
                 SecondaryButton("Подобрать заново", onReset)
             }
+        }
 
-            autoTune.finished && autoTune.error != null -> {
+        autoTune.finished && autoTune.error != null -> {
+            PanelCard {
                 Text(autoTune.error, color = Warning, style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(10.dp))
-                PrimaryButton(if (vpnRunning) "Сначала выключи VPN" else "Попробовать снова", enabled = !vpnRunning, onClick = onRun)
-            }
-
-            else -> {
-                if (vpnRunning) {
-                    Text(
-                        "Подбор работает только при выключенном VPN — он монопольно использует движок обхода.",
-                        color = TextSecondary, style = MaterialTheme.typography.labelSmall
-                    )
-                    Spacer(Modifier.height(10.dp))
-                }
                 PrimaryButton(
-                    if (vpnRunning) "Сначала выключи VPN" else "Подобрать автоматически",
+                    if (vpnRunning) "Сначала выключи VPN" else "Попробовать снова",
                     enabled = !vpnRunning,
-                    onClick = onRun
+                    onClick = onRun,
                 )
             }
+        }
+
+        else -> {
+            SecondaryButton(
+                if (vpnRunning) "Автоподбор (сначала выключи VPN)" else "Подобрать метод автоматически",
+                onClick = { if (!vpnRunning) onRun() },
+            )
         }
     }
 }
@@ -545,19 +499,19 @@ private fun PrimaryButton(label: String, enabled: Boolean = true, onClick: () ->
             .fillMaxWidth()
             .heightIn(min = 48.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (enabled) AccentGradient else SolidColor(SurfaceVariant))
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (enabled) Accent else SurfaceVariant)
             .clickable(interactionSource = interaction, indication = androidx.compose.foundation.LocalIndication.current, enabled = enabled) {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onClick()
             }
-            .padding(vertical = 13.dp),
+            .padding(vertical = 14.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             label,
-            color = if (enabled) Background else TextMuted,
-            fontWeight = FontWeight.Bold,
+            color = if (enabled) OnAccent else TextMuted,
+            fontWeight = FontWeight.Medium,
             fontSize = 15.sp
         )
     }
@@ -572,8 +526,9 @@ private fun SecondaryButton(label: String, onClick: () -> Unit) {
             .fillMaxWidth()
             .heightIn(min = 48.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(RoundedCornerShape(12.dp))
-            .background(SurfaceVariant)
+            .clip(RoundedCornerShape(999.dp))
+            .background(GlassSurfaceMuted)
+            .border(1.dp, Primary.copy(alpha = 0.20f), RoundedCornerShape(999.dp))
             .clickable(interactionSource = interaction, indication = androidx.compose.foundation.LocalIndication.current) { onClick() }
             .padding(vertical = 12.dp),
         contentAlignment = Alignment.Center
@@ -621,7 +576,10 @@ private fun ServiceRow(
         else -> TextSecondary
     }
     Row(
-        modifier = Modifier.fillMaxWidth().height(44.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -666,19 +624,18 @@ private fun LiveStatsCard(state: DesyncVpnService.VpnState) {
     PanelCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            StatItem("Соединения", "${state.activeTcp}")
-            StatItem("Отправлено", formatBytesShort(state.bytesUp))
-            StatItem("Получено", formatBytesShort(state.bytesDown))
+            StatItem("Соединения", "${state.activeTcp}", Modifier.weight(1f))
+            StatItem("Отправлено", formatBytesShort(state.bytesUp), Modifier.weight(1f))
+            StatItem("Получено", formatBytesShort(state.bytesDown), Modifier.weight(1f))
         }
         Spacer(Modifier.height(12.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            StatItem("Подключено", "${state.connOk}")
-            StatItem("Не дошло", "${state.connFail}")
+            StatItem("Подключено", "${state.connOk}", Modifier.weight(1f))
+            StatItem("Не дошло", "${state.connFail}", Modifier.weight(1f))
+            Spacer(Modifier.weight(1f))
         }
         val err = state.error
         if (!err.isNullOrBlank()) {
@@ -691,8 +648,8 @@ private fun LiveStatsCard(state: DesyncVpnService.VpnState) {
 }
 
 @Composable
-private fun StatItem(label: String, value: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+private fun StatItem(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         // tnum = tabular figures: live stats (connections/bytes) update every second; proportional
         // digits would change width each tick and jitter the centered layout.
         Text(
@@ -700,10 +657,20 @@ private fun StatItem(label: String, value: String) {
             color = TextPrimary,
             fontWeight = FontWeight.SemiBold,
             fontSize = 18.sp,
-            style = LocalTextStyle.current.copy(fontFeatureSettings = "tnum")
+            style = LocalTextStyle.current.copy(fontFeatureSettings = "tnum"),
+            maxLines = 1,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(2.dp))
-        Text(label, color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+        Text(
+            label,
+            color = TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
@@ -887,7 +854,7 @@ private fun PresetChip(
     ) {
         Text(
             label,
-            color = if (selected) Background else TextPrimary,
+            color = if (selected) OnAccent else TextPrimary,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
             style = MaterialTheme.typography.labelLarge
         )
@@ -895,25 +862,23 @@ private fun PresetChip(
 }
 
 /**
- * Сворачиваемый блок продвинутых настроек разблокировки: команда byedpi, охват приложений,
- * исключения. Вне «advanced» — DiagnosticPresetCard и ручная проба, чтобы не пугать новичков.
+ * Все вторичные настройки разблокировки — свёрнуты под одной кнопкой «Настройки».
+ * На главном экране остаётся статус, big CTA, сервисы и автоподбор.
  */
 @Composable
-private fun UnblockAdvancedCard(
-    expanded: Boolean,
+private fun UnblockSettingsCard(
+    settings: DesyncSettings,
     probe: ProbeUiState,
     onCheck: () -> Unit,
-    command: String,
-    presetDefault: String,
-    onApplyCmd: (String) -> Unit,
-    preset: String,
     onSelectPreset: (String) -> Unit,
-    allApps: Boolean,
+    onApplyCmd: (String) -> Unit,
+    presetDefault: String,
+    onBlockQuic: (Boolean) -> Unit,
     onAllApps: (Boolean) -> Unit,
     excludedCount: Int,
     onOpenExclusions: () -> Unit,
 ) {
-    var open by remember { mutableStateOf(expanded) }
+    var open by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Row(
             modifier = Modifier
@@ -925,13 +890,13 @@ private fun UnblockAdvancedCard(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Default.Tune, null, tint = Mauve, modifier = Modifier.size(20.dp))
+            Icon(Icons.Default.Tune, null, tint = TextSecondary, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text("Продвинутые настройки", color = TextPrimary, fontWeight = FontWeight.Medium)
+                Text("Настройки", color = TextPrimary, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "Команда byedpi, охват приложений, исключения",
+                    "Метод, QUIC, приложения, byedpi",
                     color = TextSecondary, style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -947,21 +912,36 @@ private fun UnblockAdvancedCard(
             exit = fadeOut(tween(140)) + shrinkVertically(tween(140)),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                DiagnosticPresetCard(preset, onSelectPreset)
+                PresetCard(
+                    current = settings.preset,
+                    running = false,
+                    activeLabel = if (settings.byedpiCmd.isBlank()) null
+                    else com.tgwsproxy.net.StrategyTester.labelForCommand(settings.byedpiCmd) ?: "своя команда",
+                    command = settings.byedpiCmd,
+                    onSelect = onSelectPreset,
+                )
+                ToggleCard(
+                    icon = Icons.Default.Bolt,
+                    title = "Блокировать QUIC",
+                    subtitle = "Ускоряет обход для YouTube: обычный TLS вместо QUIC",
+                    checked = settings.blockQuic,
+                    onChange = onBlockQuic,
+                )
+                DiagnosticPresetCard(settings.preset, onSelectPreset)
                 ProbeCard(probe, onCheck)
                 ByedpiCommandCard(
-                    command = command,
+                    command = settings.byedpiCmd,
                     presetDefault = presetDefault,
                     onApply = onApplyCmd,
                 )
                 ToggleCard(
                     icon = Icons.Default.Lock,
                     title = "Все приложения",
-                    subtitle = if (allApps)
-                        "Обход применяется ко всем приложениям (рекомендуется — надёжнее всего)"
+                    subtitle = if (settings.allApps)
+                        "Обход для всех приложений (рекомендуется)"
                     else
-                        "Только YouTube и Instagram. Часть их трафика идёт через Play Services / браузер и может не обходиться — включи «все приложения», если не работает",
-                    checked = allApps,
+                        "Только YouTube и Instagram — включи «все», если не работает",
+                    checked = settings.allApps,
                     onChange = onAllApps
                 )
                 Row(
@@ -974,13 +954,13 @@ private fun UnblockAdvancedCard(
                         .padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Block, null, tint = Mauve, modifier = Modifier.size(22.dp))
+                    Icon(Icons.Default.Block, null, tint = TextSecondary, modifier = Modifier.size(22.dp))
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text("Не использовать обход для…", color = TextPrimary, fontWeight = FontWeight.Medium)
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            "$excludedCount приложений исключено (банки, Госуслуги и др. — чтобы не ловили VPN). Действует в режиме «все приложения»",
+                            "$excludedCount исключено (банки, Госуслуги…)",
                             color = TextSecondary, style = MaterialTheme.typography.labelSmall
                         )
                     }
@@ -1047,7 +1027,7 @@ private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
                         modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = TextSecondary
                     )
                 } else {
-                    Text("Проверить", color = Background, fontWeight = FontWeight.SemiBold)
+                    Text("Проверить", color = OnAccent, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -1150,7 +1130,7 @@ private fun ByedpiCommandCard(
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text("Применить", color = Background, fontWeight = FontWeight.SemiBold)
+                Text("Применить", color = OnAccent, fontWeight = FontWeight.SemiBold)
             }
             Box(
                 modifier = Modifier
@@ -1198,7 +1178,7 @@ private fun ToggleCard(
                 checked = checked,
                 onCheckedChange = onChange,
                 colors = SwitchDefaults.colors(
-                    checkedThumbColor = Background,
+                    checkedThumbColor = OnAccent,
                     checkedTrackColor = Accent,
                     uncheckedThumbColor = TextSecondary,
                     uncheckedTrackColor = SurfaceVariant
@@ -1296,14 +1276,11 @@ private fun ExclusionDialog(
 /** Reusable card surface — renamed from the previous local `Card` to avoid shadowing material3.Card. */
 @Composable
 private fun PanelCard(content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(Surface)
-            .border(1.dp, Border, RoundedCornerShape(18.dp))
-            .padding(16.dp),
-        content = content
+    JevioGlassPanel(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        contentPadding = PaddingValues(16.dp),
+        content = content,
     )
 }
 
@@ -1314,4 +1291,150 @@ private fun formatBytesShort(b: Long): String {
     val mb = kb / 1024.0
     if (mb < 1024) return String.format(Locale.US, "%.1f МБ", mb)
     return String.format(Locale.US, "%.2f ГБ", mb / 1024.0)
+}
+
+@Preview(
+    name = "Сайты — выключено",
+    widthDp = 390,
+    heightDp = 844,
+    showBackground = true,
+    backgroundColor = 0xFFF7F4EF,
+)
+@Composable
+private fun UnblockStoppedPreview() {
+    UnblockPreviewContent(
+        state = DesyncVpnService.VpnState(),
+        autoTune = AutoTuneUiState(),
+    )
+}
+
+@Preview(
+    name = "Сайты — работает",
+    widthDp = 390,
+    heightDp = 844,
+    showBackground = true,
+    backgroundColor = 0xFFF7F4EF,
+)
+@Composable
+private fun UnblockRunningPreview() {
+    UnblockPreviewContent(
+        state = DesyncVpnService.VpnState(
+            isRunning = true,
+            preset = DesyncVpnService.PRESET_AUTO,
+            activeTcp = 4,
+            bytesUp = 1_250_000,
+            bytesDown = 24_800_000,
+            connOk = 18,
+            connFail = 1,
+            startedAt = System.currentTimeMillis() - 12 * 60 * 1000,
+        ),
+        autoTune = AutoTuneUiState(
+            finished = true,
+            foundLabel = "Авто",
+            hostOk = mapOf(
+                "YouTube" to true,
+                "YouTube (видео)" to true,
+                "Instagram" to true,
+            ),
+        ),
+    )
+}
+
+@Composable
+private fun UnblockPreviewContent(
+    state: DesyncVpnService.VpnState,
+    autoTune: AutoTuneUiState,
+) {
+    TgWsProxyTheme {
+        JevioBackground(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                item {
+                    HeroUnblockCard(
+                        state = state,
+                        testing = autoTune.running,
+                        onEnable = {},
+                        onDisable = {},
+                    )
+                }
+                item {
+                    ServicesCard(
+                        probe = ProbeUiState(),
+                        autoTune = autoTune,
+                    )
+                }
+                if (state.isRunning) {
+                    item { LiveStatsCard(state) }
+                } else {
+                    item {
+                        AutoTuneCard(
+                            autoTune = autoTune,
+                            vpnRunning = false,
+                            onRun = {},
+                            onReset = {},
+                            onEnable = {},
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Preview(
+    name = "QA — Сайты — 320dp — шрифт 1.35×",
+    widthDp = 320,
+    heightDp = 900,
+    fontScale = 1.35f,
+    showBackground = true,
+    backgroundColor = 0xFFECE9E3,
+)
+@Composable
+private fun UnblockNarrowLargeTextPreview() {
+    UnblockPreviewContent(
+        state = DesyncVpnService.VpnState(
+            isStarting = true,
+            preset = DesyncVpnService.PRESET_AUTO,
+        ),
+        autoTune = AutoTuneUiState(),
+    )
+}
+
+/** The unblock part of [FullMainScreenPreview], kept here so it uses the real private components. */
+@Composable
+internal fun FullUnblockPreviewContent() {
+    val state = DesyncVpnService.VpnState()
+    val autoTune = AutoTuneUiState()
+    val settings = DesyncSettings()
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        HeroUnblockCard(
+            state = state,
+            testing = autoTune.running,
+            onEnable = {},
+            onDisable = {},
+        )
+        ServicesCard(probe = ProbeUiState(), autoTune = autoTune)
+        AutoTuneCard(
+            autoTune = autoTune,
+            vpnRunning = false,
+            onRun = {},
+            onReset = {},
+            onEnable = {},
+        )
+        UnblockSettingsCard(
+            settings = settings,
+            probe = ProbeUiState(),
+            onCheck = {},
+            onSelectPreset = {},
+            onApplyCmd = {},
+            presetDefault = ByedpiPresetCatalog.commandFor(settings.preset),
+            onBlockQuic = {},
+            onAllApps = {},
+            excludedCount = 0,
+            onOpenExclusions = {},
+        )
+    }
 }

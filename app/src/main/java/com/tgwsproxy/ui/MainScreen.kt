@@ -24,6 +24,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -97,6 +99,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -112,6 +115,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -121,19 +125,25 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.tgwsproxy.R
 import com.tgwsproxy.ui.theme.Background
 import com.tgwsproxy.ui.theme.Accent
-import com.tgwsproxy.ui.theme.AccentGradient
 import com.tgwsproxy.ui.theme.Border
 import com.tgwsproxy.ui.theme.Destructive
+import com.tgwsproxy.ui.theme.GlassBorder
+import com.tgwsproxy.ui.theme.GlassShadow
+import com.tgwsproxy.ui.theme.GlassSurfaceMuted
 import com.tgwsproxy.ui.theme.Info
 import com.tgwsproxy.ui.theme.LogSurface
 import com.tgwsproxy.ui.theme.Mauve
+import com.tgwsproxy.ui.theme.OnAccent
 import com.tgwsproxy.ui.theme.Primary
+import com.tgwsproxy.ui.theme.Signal
 import com.tgwsproxy.ui.theme.Success
 import com.tgwsproxy.ui.theme.Surface
+import com.tgwsproxy.ui.theme.SurfaceElevated
 import com.tgwsproxy.ui.theme.SurfaceVariant
 import com.tgwsproxy.ui.theme.TextMuted
 import com.tgwsproxy.ui.theme.TextPrimary
 import com.tgwsproxy.ui.theme.TextSecondary
+import com.tgwsproxy.ui.theme.TgWsProxyTheme
 import com.tgwsproxy.ui.theme.Warning
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -172,6 +182,8 @@ private fun routeLabel(route: String): String = when (route) {
     else -> "—"
 }
 
+private enum class MainTab { Telegram, Sites }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
@@ -183,6 +195,7 @@ fun MainScreen(
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val listState = rememberLazyListState()
+    var tab by remember { mutableStateOf(MainTab.Telegram) }
     var logsExpanded by remember { mutableStateOf(false) }
     var tgAdvancedOpen by remember { mutableStateOf(false) }
     var showOnboarding by remember { mutableStateOf(shouldShowOnboarding(context)) }
@@ -203,182 +216,238 @@ fun MainScreen(
         }
     }
 
-    LaunchedEffect(uiState.logs.size, isAtBottom) {
+    LaunchedEffect(uiState.logs.size, isAtBottom, tab) {
+        if (tab != MainTab.Telegram) return@LaunchedEffect
         val totalItems = listState.layoutInfo.totalItemsCount
         if (isAtBottom && totalItems > 0) {
             listState.animateScrollToItem(totalItems - 1)
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
+    JevioBackground(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            topBar = {
+                TopAppBar(
                 title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.heightIn(min = 38.dp),
+                    ) {
                         Image(
                             painter = painterResource(id = R.drawable.ic_jevio_logo),
                             contentDescription = "Jevio Unblocker",
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(28.dp)
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            "Jevio Unblocker",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = TextPrimary
-                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                "Jevio",
+                                style = MaterialTheme.typography.titleLarge,
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Light,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                            Text(
+                                "UNBLOCKER",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    letterSpacing = 1.5.sp,
+                                    lineHeight = 12.sp,
+                                ),
+                                color = TextSecondary,
+                                maxLines = 1,
+                            )
+                        }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Background),
-                actions = {
-                    if (uiState.logs.isNotEmpty()) {
-                        IconButton(onClick = { viewModel.clearLogs() }) {
-                            Icon(
-                                imageVector = Icons.Default.ClearAll,
-                                contentDescription = "Очистить журнал",
-                                tint = TextSecondary
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent,
+                    titleContentColor = TextPrimary,
+                ),
+            )
+            },
+            containerColor = Color.Transparent,
+        ) { padding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(horizontal = 20.dp)
+            ) {
+                Spacer(Modifier.height(4.dp))
+                MainTabRow(selected = tab, onSelect = { tab = it })
+                Spacer(Modifier.height(16.dp))
+
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    contentPadding = PaddingValues(bottom = 32.dp)
+                ) {
+                    item(key = "update-banner") { UpdateBanner(context = context) }
+
+                    when (tab) {
+                        MainTab.Telegram -> {
+                            item(key = "tg-hero") {
+                                TelegramHero(
+                                    uiState = uiState,
+                                    onToggle = { viewModel.toggleProxy() },
+                                    onOpenTelegram = {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uiState.proxyLink))
+                                        context.startActivity(intent)
+                                    },
+                                )
+                            }
+
+                            item(key = "battery-optimization") { BatteryOptimizationCard() }
+
+                            item(key = "tg-advanced") {
+                                TgAdvancedCard(
+                                    expanded = tgAdvancedOpen,
+                                    onToggle = { tgAdvancedOpen = !tgAdvancedOpen },
+                                    uiState = uiState,
+                                    context = context,
+                                    onRegenerateSecret = { viewModel.regenerateSecret() },
+                                    onSaveFakeTls = { viewModel.setFakeTlsDomain(it) },
+                                    onSaveCfDomain = { viewModel.setCfDomain(it) },
+                                    onSaveCfWorkerDomain = { viewModel.setCfWorkerDomain(it) },
+                                )
+                            }
+
+                            if (uiState.logs.isNotEmpty()) {
+                                item(key = "logs-header") {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 48.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .clickable { logsExpanded = !logsExpanded }
+                                            .padding(vertical = 4.dp)
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = "Логи",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                color = TextSecondary
+                                            )
+                                            Spacer(Modifier.width(8.dp))
+                                            Text(
+                                                text = "${uiState.logs.size}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = TextSecondary,
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(SurfaceVariant)
+                                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                        Icon(
+                                            imageVector = if (logsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                            contentDescription = if (logsExpanded) "Скрыть логи" else "Показать логи",
+                                            tint = TextSecondary
+                                        )
+                                    }
+                                }
+
+                                if (logsExpanded) {
+                                    itemsIndexed(uiState.logs) { _, log ->
+                                        LogItem(log)
+                                    }
+                                }
+                            }
+
+                            item(key = "tg-channel") { TelegramChannelCard(context) }
+                        }
+
+                        MainTab.Sites -> {
+                            unblockSections(
+                                vm = desyncVm,
+                                onEnable = onEnableVpn,
+                                onDisable = onDisableVpn,
                             )
+                            item(key = "tg-channel-sites") { TelegramChannelCard(context) }
                         }
                     }
                 }
-            )
-        },
-        containerColor = Background
-    ) { padding ->
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-            contentPadding = PaddingValues(bottom = 28.dp)
-        ) {
-            item(key = "update-banner") { UpdateBanner(context = context) }
-
-            // ===== Telegram-прокси: основной сценарий =====
-            item(key = "tg-section-label") {
-                Text(
-                    "Telegram-прокси",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = TextSecondary,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
             }
-
-            item(key = "tg-hero") { HeroStatusCard(uiState) }
-
-            item(key = "tg-controls") {
-                ControlButtons(
-                    uiState = uiState,
-                    onToggle = { viewModel.toggleProxy() },
-                    onOpenTelegram = {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uiState.proxyLink))
-                        context.startActivity(intent)
-                    }
-                )
-            }
-
-            item(key = "battery-optimization") { BatteryOptimizationCard() }
-
-            item(key = "tg-advanced") {
-                TgAdvancedCard(
-                    expanded = tgAdvancedOpen,
-                    onToggle = { tgAdvancedOpen = !tgAdvancedOpen },
-                    uiState = uiState,
-                    context = context,
-                    onRegenerateSecret = { viewModel.regenerateSecret() },
-                    onSaveFakeTls = { viewModel.setFakeTlsDomain(it) },
-                    onSaveCfDomain = { viewModel.setCfDomain(it) },
-                    onSaveCfWorkerDomain = { viewModel.setCfWorkerDomain(it) },
-                )
-            }
-
-            // ===== Логи =====
-            if (uiState.logs.isNotEmpty()) {
-                item(key = "logs-header") {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { logsExpanded = !logsExpanded }
-                            .padding(top = 4.dp, bottom = 4.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "Логи",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = TextSecondary
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = "${uiState.logs.size}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TextSecondary,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(SurfaceVariant)
-                                    .padding(horizontal = 8.dp, vertical = 2.dp)
-                            )
-                        }
-                        Icon(
-                            imageVector = if (logsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                            contentDescription = if (logsExpanded) "Скрыть логи" else "Показать логи",
-                            tint = TextSecondary
-                        )
-                    }
-                }
-
-                if (logsExpanded) {
-                    itemsIndexed(uiState.logs) { index, log ->
-                        LogItem(log)
-                    }
-                }
-            }
-
-            // ===== Разблокировка сайтов: дополнительный модуль =====
-            item(key = "unblock-section-label") {
-                Text(
-                    "Разблокировка сайтов",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = TextSecondary,
-                    modifier = Modifier.padding(top = 10.dp),
-                )
-            }
-
-            unblockSections(
-                vm = desyncVm,
-                onEnable = onEnableVpn,
-                onDisable = onDisableVpn,
-            )
-
-            item(key = "tg-channel") { TelegramChannelCard(context) }
-
-            item(key = "bottom-spacer") { Spacer(modifier = Modifier.height(24.dp)) }
         }
+    }
+}
+
+@Composable
+private fun MainTabRow(selected: MainTab, onSelect: (MainTab) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .shadow(12.dp, RoundedCornerShape(999.dp), ambientColor = GlassShadow, spotColor = GlassShadow)
+            .clip(RoundedCornerShape(999.dp))
+            .background(GlassSurfaceMuted)
+            .border(1.dp, GlassBorder, RoundedCornerShape(999.dp))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        MainTabChip(
+            label = "Telegram",
+            selected = selected == MainTab.Telegram,
+            onClick = { onSelect(MainTab.Telegram) },
+            modifier = Modifier.weight(1f),
+        )
+        MainTabChip(
+            label = "Сайты",
+            selected = selected == MainTab.Sites,
+            onClick = { onSelect(MainTab.Sites) },
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun MainTabChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (selected) Signal else Color.Transparent)
+            .border(
+                width = if (selected) 1.dp else 0.dp,
+                color = if (selected) GlassBorder else Color.Transparent,
+                shape = RoundedCornerShape(999.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(vertical = 11.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            color = TextPrimary,
+            fontWeight = FontWeight.Medium,
+            style = MaterialTheme.typography.bodyMedium,
+        )
     }
 }
 
 // ---------- Telegram: status / controls / advanced ----------
 
+/**
+ * Minimal Telegram hero: status (one line) → one full-width pill CTA → secondary.
+ * No circular power button, no card chrome.
+ */
 @Composable
-private fun HeroStatusCard(uiState: ProxyUiState) {
+private fun TelegramHero(
+    uiState: ProxyUiState,
+    onToggle: () -> Unit,
+    onOpenTelegram: () -> Unit,
+) {
     val running = uiState.isRunning
-
-    val reduce = reducedMotionEnabled()
-    val transition = rememberInfiniteTransition(label = "heroPulse")
-    val animatedPulse by transition.animateFloat(
-        initialValue = 0.10f,
-        targetValue = 0.28f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1300),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "heroPulseAlpha"
-    )
-    val badgeAlpha = if (!running) 0.15f else if (reduce) 0.20f else animatedPulse
+    val haptic = LocalHapticFeedback.current
 
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(running) {
@@ -388,235 +457,243 @@ private fun HeroStatusCard(uiState: ProxyUiState) {
         }
     }
 
-    Card(
+    JevioGlassPanel(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Surface),
-        border = BorderStroke(
-            1.dp,
-            if (running) Success.copy(alpha = 0.42f) else Border.copy(alpha = 0.85f)
-        )
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Column(
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Text(
+                    text = "Telegram",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = TextPrimary,
+                )
+                Text(
+                    text = "Локальный прокси",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary,
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(if (running) Signal else SurfaceVariant)
+                    .border(
+                        width = 1.dp,
+                        color = if (running) Signal else GlassBorder,
+                        shape = RoundedCornerShape(999.dp),
+                    )
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(if (running) Primary else TextMuted),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (running) "В СЕТИ" else "ГОТОВ",
+                    style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.8.sp),
+                    color = TextPrimary,
+                )
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+        JevioStateDial(active = running, busy = uiState.isLoading)
+        Spacer(Modifier.height(18.dp))
+
+        Text(
+            text = if (running) "Активен" else "Выключен",
+            color = if (running) Success else TextPrimary,
+            style = MaterialTheme.typography.displayMedium,
+            fontWeight = FontWeight.Light,
+            textAlign = TextAlign.Center,
             modifier = Modifier
                 .fillMaxWidth()
-                .background(
-                    Brush.verticalGradient(
-                        colors = if (running) {
-                            listOf(Color(0xFF3A2740), Surface)
-                        } else {
-                            listOf(Color(0xFF2A2233), Surface)
-                        }
-                    )
-                )
-                .padding(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape)
-                    .background((if (running) Success else TextMuted).copy(alpha = badgeAlpha)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = if (running) Icons.Default.CheckCircle else Icons.Default.PowerSettingsNew,
-                    contentDescription = null,
-                    tint = if (running) Success else TextMuted,
-                    modifier = Modifier.size(28.dp)
-                )
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(
-                text = "Статус прокси",
-                style = MaterialTheme.typography.labelMedium,
-                color = TextSecondary
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = if (running) "Активен" else "Остановлен",
-                style = MaterialTheme.typography.headlineSmall,
-                color = if (running) Success else TextPrimary,
-                fontWeight = FontWeight.Bold
-            )
-            if (running && uiState.route.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.CloudDone,
-                        contentDescription = null,
-                        tint = Mauve,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        text = "Маршрут: ${routeLabel(uiState.route)}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextSecondary
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = if (running) {
-                    "Трафик Telegram проходит через локальный прокси."
-                } else {
-                    "Запустите прокси, чтобы получить ссылку для подключения."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
-                textAlign = TextAlign.Center
-            )
+                .padding(horizontal = 8.dp),
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = when {
+                running && uiState.route.isNotEmpty() ->
+                    "Маршрут: ${routeLabel(uiState.route)}"
+                running -> "Локальный прокси для Telegram"
+                else -> "Один тап — и Telegram без блокировок"
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextSecondary,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+        )
 
-            AnimatedVisibility(visible = running) {
-                Column {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        StatChip(
-                            icon = Icons.Default.Timer,
-                            label = "Аптайм",
-                            value = formatUptime(uiState.startedAt, now)
-                        )
-                        StatChip(
-                            icon = Icons.Default.Link,
-                            label = "Подключения",
-                            value = uiState.connectionCount.toString()
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        StatChip(
-                            icon = Icons.Default.ArrowUpward,
-                            label = "Отправлено",
-                            value = formatBytes(uiState.bytesUp),
-                            tint = Mauve
-                        )
-                        StatChip(
-                            icon = Icons.Default.ArrowDownward,
-                            label = "Получено",
-                            value = formatBytes(uiState.bytesDown),
-                            tint = Primary
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
+        Spacer(Modifier.height(24.dp))
 
-@Composable
-private fun RowScope.StatChip(
-    icon: ImageVector,
-    label: String,
-    value: String,
-    tint: Color = Accent
-) {
-    Row(
-        modifier = Modifier
-            .weight(1f)
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color(0x40000000))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        Column {
-            // tnum = tabular figures: these values tick every second (uptime/bytes/connections),
-            // and proportional digits would shift width each update, jittering the layout.
-            Text(
-                value,
-                style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
-                color = TextPrimary,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(label, style = MaterialTheme.typography.labelSmall, color = TextSecondary)
-        }
-    }
-}
-
-@Composable
-private fun ControlButtons(
-    uiState: ProxyUiState,
-    onToggle: () -> Unit,
-    onOpenTelegram: () -> Unit
-) {
-    val haptic = LocalHapticFeedback.current
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Button(
+        // Full-width pill CTA (fully rounded corners — not a circle icon button)
+        PillButton(
+            label = when {
+                uiState.isLoading && running -> "Останавливаю…"
+                uiState.isLoading -> "Запускаю…"
+                running -> "Остановить"
+                else -> "Запустить"
+            },
+            loading = uiState.isLoading,
+            destructive = running && !uiState.isLoading,
+            enabled = !uiState.isLoading,
             onClick = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onToggle()
             },
-            enabled = !uiState.isLoading,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(58.dp)
-                .then(
-                    if (uiState.isRunning) Modifier
-                    else Modifier.background(AccentGradient, RoundedCornerShape(16.dp))
-                ),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color.Transparent,
-                contentColor = if (uiState.isRunning) Destructive else Background,
-                disabledContainerColor = Color.Transparent,
-                disabledContentColor = if (uiState.isRunning) {
-                    Destructive.copy(alpha = 0.65f)
-                } else {
-                    Background.copy(alpha = 0.7f)
-                },
-            ),
-            border = if (uiState.isRunning) BorderStroke(1.dp, Destructive) else null
-        ) {
-            if (uiState.isLoading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(20.dp),
-                    strokeWidth = 2.dp,
-                    color = if (uiState.isRunning) Destructive else Background,
-                )
-            } else {
-                Icon(
-                    imageVector = if (uiState.isRunning) Icons.Default.Stop else Icons.Default.PlayArrow,
-                    contentDescription = null
-                )
-            }
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = when {
-                    uiState.isLoading && uiState.isRunning -> "Останавливаю…"
-                    uiState.isLoading -> "Запускаю…"
-                    uiState.isRunning -> "Остановить прокси"
-                    else -> "Запустить прокси"
-                },
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Bold
-            )
-        }
+        )
 
-        if (uiState.isRunning && uiState.proxyLink.isNotEmpty()) {
-            Button(
+        if (running && uiState.proxyLink.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            PillButton(
+                label = "Подключить Telegram",
+                loading = false,
+                destructive = false,
+                enabled = true,
+                outlined = true,
                 onClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     onOpenTelegram()
                 },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .background(AccentGradient, RoundedCornerShape(14.dp)),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = Background)
-            ) {
-                Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    "Подключить Telegram",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1
-                )
+            )
+        }
+
+        AnimatedVisibility(visible = running) {
+            Column {
+                Spacer(Modifier.height(18.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(GlassSurfaceMuted)
+                        .border(1.dp, GlassBorder, RoundedCornerShape(20.dp))
+                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                ) {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        MiniStat(
+                            label = "Аптайм",
+                            value = formatUptime(uiState.startedAt, now),
+                            modifier = Modifier.weight(1f),
+                        )
+                        MiniStat(
+                            label = "Связи",
+                            value = uiState.connectionCount.toString(),
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        MiniStat(
+                            label = "Вверх",
+                            value = formatBytes(uiState.bytesUp),
+                            modifier = Modifier.weight(1f),
+                        )
+                        MiniStat(
+                            label = "Вниз",
+                            value = formatBytes(uiState.bytesDown),
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
             }
         }
+    }
+}
+
+/** Full-width fully-rounded (pill) primary/secondary button. */
+@Composable
+private fun PillButton(
+    label: String,
+    loading: Boolean,
+    destructive: Boolean,
+    enabled: Boolean,
+    outlined: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(999.dp)
+    val bg = when {
+        outlined -> GlassSurfaceMuted
+        destructive -> GlassSurfaceMuted
+        !enabled -> SurfaceVariant
+        else -> Accent
+    }
+    val fg = when {
+        destructive -> Destructive
+        outlined -> TextPrimary
+        else -> OnAccent
+    }
+    val border = when {
+        destructive -> BorderStroke(1.5.dp, Destructive)
+        outlined -> BorderStroke(1.dp, Primary.copy(alpha = 0.22f))
+        else -> null
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 58.dp)
+            .shadow(
+                elevation = if (!outlined && !destructive && enabled) 9.dp else 0.dp,
+                shape = shape,
+                ambientColor = GlassShadow,
+                spotColor = GlassShadow,
+            )
+            .clip(shape)
+            .background(bg)
+            .then(if (border != null) Modifier.border(border, shape) else Modifier)
+            .clickable(enabled = enabled && !loading, onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(22.dp),
+                strokeWidth = 2.dp,
+                color = fg,
+            )
+        } else {
+            Text(
+                text = label,
+                color = fg,
+                fontWeight = FontWeight.Medium,
+                fontSize = 16.sp,
+                letterSpacing = (-0.15).sp,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MiniStat(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            value,
+            style = MaterialTheme.typography.titleSmall.copy(fontFeatureSettings = "tnum"),
+            color = TextPrimary,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = TextSecondary,
+            maxLines = 1,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
@@ -648,9 +725,9 @@ private fun TgAdvancedCard(
             Icon(Icons.Default.Tune, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text("Продвинутые настройки Telegram", color = TextPrimary, fontWeight = FontWeight.Medium)
+                Text("Настройки", color = TextPrimary, fontWeight = FontWeight.Medium)
                 Text(
-                    "Сервер и секрет, Fake TLS, свой Cloudflare-домен",
+                    "Сервер, секрет, Fake TLS, Cloudflare",
                     color = TextSecondary, style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -885,10 +962,10 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
                             Text(
                                 text = p,
                                 style = MaterialTheme.typography.labelMedium,
-                                color = if (sel) Background else TextPrimary,
+                                color = if (sel) OnAccent else TextPrimary,
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(10.dp))
-                                    .background(if (sel) Primary else SurfaceVariant)
+                                    .background(if (sel) Accent else SurfaceVariant)
                                     .clickable { domainInput = p }
                                     .heightIn(min = 44.dp)
                                     .padding(horizontal = 12.dp, vertical = 8.dp)
@@ -920,9 +997,9 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
                         Button(
                             onClick = { onSave(domainInput.trim()) },
                             enabled = domainInput.trim() != uiState.fakeTlsDomain,
-                            modifier = Modifier.weight(1f).height(48.dp),
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
                             shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Primary, contentColor = Background)
+                            colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent)
                         ) {
                             Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
@@ -931,7 +1008,7 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
                         if (enabled) {
                             OutlinedButton(
                                 onClick = { domainInput = ""; onSave("") },
-                                modifier = Modifier.height(48.dp),
+                                modifier = Modifier.heightIn(min = 48.dp),
                                 shape = RoundedCornerShape(12.dp),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
                                 border = BorderStroke(1.dp, Border)
@@ -1019,9 +1096,9 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
             Button(
                 onClick = { onSaveCfDomain(domainInput.trim()) },
                 enabled = domainInput.trim() != uiState.cfDomain,
-                modifier = Modifier.fillMaxWidth().height(48.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Background)
+                colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent)
             ) {
                 Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
@@ -1065,9 +1142,9 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
             Button(
                 onClick = { onSaveCfWorkerDomain(workerInput.trim()) },
                 enabled = workerInput.trim() != uiState.cfWorkerDomain,
-                modifier = Modifier.fillMaxWidth().height(48.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Background)
+                colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent)
             ) {
                 Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
@@ -1242,11 +1319,14 @@ private fun BatteryOptimizationCard() {
                 },
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Warning),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Warning,
+                    contentColor = OnAccent,
+                ),
             ) {
                 Text(
                     text = stringResource(R.string.battery_warning_button),
-                    color = Background,
+                    color = OnAccent,
                     fontWeight = FontWeight.SemiBold,
                 )
             }
@@ -1278,6 +1358,7 @@ private fun OnboardingDialog(onDismiss: () -> Unit) {
                 .clip(RoundedCornerShape(20.dp))
                 .background(Surface)
                 .border(1.dp, Border, RoundedCornerShape(20.dp))
+                .verticalScroll(rememberScrollState())
                 .padding(24.dp)
         ) {
             Text(
@@ -1309,9 +1390,12 @@ private fun OnboardingDialog(onDismiss: () -> Unit) {
                 onClick = onDismiss,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Accent),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Accent,
+                    contentColor = OnAccent,
+                ),
             ) {
-                Text("Понятно, начать", color = Background, fontWeight = FontWeight.SemiBold)
+                Text("Понятно, начать", color = OnAccent, fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -1423,3 +1507,180 @@ private fun isTrustedGithubUrl(url: String): Boolean = try {
     u.scheme.equals("https", ignoreCase = true) &&
         u.host?.let { it.equals("github.com", true) || it.endsWith(".github.com", true) } == true
 } catch (e: Exception) { false }
+
+@Preview(
+    name = "Telegram — выключен",
+    widthDp = 390,
+    heightDp = 844,
+    showBackground = true,
+    backgroundColor = 0xFFF7F4EF,
+)
+@Composable
+private fun TelegramStoppedPreview() {
+    TelegramPreviewContent(
+        uiState = ProxyUiState(
+            isLoading = false,
+            isRunning = false,
+            secret = "dd0123456789abcdef",
+        )
+    )
+}
+
+@Preview(
+    name = "Telegram — работает",
+    widthDp = 390,
+    heightDp = 844,
+    showBackground = true,
+    backgroundColor = 0xFFF7F4EF,
+)
+@Composable
+private fun TelegramRunningPreview() {
+    TelegramPreviewContent(
+        uiState = ProxyUiState(
+            isLoading = false,
+            isRunning = true,
+            secret = "dd0123456789abcdef",
+            connectionCount = 2,
+            proxyLink = "tg://proxy?server=127.0.0.1&port=1443",
+            bytesUp = 2_450_000,
+            bytesDown = 18_760_000,
+            startedAt = System.currentTimeMillis() - 7 * 60 * 1000,
+            route = "direct",
+        )
+    )
+}
+
+@Composable
+private fun TelegramPreviewContent(uiState: ProxyUiState) {
+    TgWsProxyTheme {
+        JevioBackground(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 20.dp, vertical = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                PreviewBrandHeader()
+                MainTabRow(selected = MainTab.Telegram, onSelect = {})
+                TelegramHero(
+                    uiState = uiState,
+                    onToggle = {},
+                    onOpenTelegram = {},
+                )
+            }
+        }
+    }
+}
+
+@Preview(
+    name = "QA — Telegram — 320dp — шрифт 1.35×",
+    widthDp = 320,
+    heightDp = 900,
+    fontScale = 1.35f,
+    showBackground = true,
+    backgroundColor = 0xFFECE9E3,
+)
+@Composable
+private fun TelegramNarrowLargeTextPreview() {
+    TelegramPreviewContent(
+        uiState = ProxyUiState(
+            isLoading = false,
+            isRunning = true,
+            secret = "dd0123456789abcdef",
+            connectionCount = 128,
+            proxyLink = "tg://proxy?server=127.0.0.1&port=1443",
+            bytesUp = 987_654_321,
+            bytesDown = 9_876_543_210,
+            startedAt = System.currentTimeMillis() - 27 * 60 * 60 * 1000,
+            route = "cloudflare",
+        )
+    )
+}
+
+@Composable
+private fun PreviewBrandHeader() {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.heightIn(min = 38.dp),
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.ic_jevio_logo),
+            contentDescription = null,
+            modifier = Modifier.size(28.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Column {
+            Text(
+                "Jevio",
+                style = MaterialTheme.typography.titleLarge,
+                color = TextPrimary,
+                fontWeight = FontWeight.Light,
+                maxLines = 1,
+            )
+            Text(
+                "UNBLOCKER",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    letterSpacing = 1.5.sp,
+                    lineHeight = 12.sp,
+                ),
+                color = TextSecondary,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/**
+ * A scrollable Preview of the actual main composition in the latest app.
+ * Runtime state normally comes from two ViewModels, so Preview uses fixed sample states.
+ */
+@Preview(
+    name = "Полный экран — текущий интерфейс",
+    widthDp = 390,
+    heightDp = 844,
+    showBackground = true,
+    backgroundColor = 0xFFF7F4EF,
+)
+@Composable
+private fun FullMainScreenPreview() {
+    val proxyState = ProxyUiState(
+        isLoading = false,
+        secret = "dd0123456789abcdef",
+    )
+    TgWsProxyTheme {
+        JevioBackground(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                PreviewBrandHeader()
+                MainTabRow(selected = MainTab.Telegram, onSelect = {})
+                TelegramHero(
+                    uiState = proxyState,
+                    onToggle = {},
+                    onOpenTelegram = {},
+                )
+                TgAdvancedCard(
+                    expanded = false,
+                    onToggle = {},
+                    uiState = proxyState,
+                    context = LocalContext.current,
+                    onRegenerateSecret = {},
+                    onSaveFakeTls = {},
+                    onSaveCfDomain = {},
+                    onSaveCfWorkerDomain = {},
+                )
+                Text(
+                    "Разблокировка сайтов",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = TextSecondary,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+                FullUnblockPreviewContent()
+            }
+        }
+    }
+}
