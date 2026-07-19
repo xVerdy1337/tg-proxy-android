@@ -51,6 +51,15 @@ jobs:
       - name: Run proxy-service lifecycle regression test
         run: gradle testDebugUnitTest --tests com.tgwsproxy.service.ProxyServiceFailureTest
 
+      - name: Upload failed unit-test report
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
