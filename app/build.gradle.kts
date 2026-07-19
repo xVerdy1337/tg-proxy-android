@@ -113,5 +113,4 @@ dependencies {
     // Unit tests (pure-JVM proxy logic: crypto framing, TLS records, handshake)
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:1.9.22")
-    testImplementation("org.robolectric:robolectric:4.16.1")
 }
