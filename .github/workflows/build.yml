@@ -60,6 +60,28 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Publish failed test error
+        if: ${{ failure() }}
+        run: |
+          python3 - <<'PY'
+          from glob import glob
+          from xml.etree import ElementTree
+
+          for report in glob("app/build/test-results/testDebugUnitTest/*.xml"):
+              root = ElementTree.parse(report).getroot()
+              for case in root.findall(".//testcase"):
+                  failure = case.find("failure")
+                  if failure is None:
+                      failure = case.find("error")
+                  if failure is None:
+                      continue
+                  detail = (failure.get("message", "") + " " + (failure.text or "")).strip()
+                  detail = detail[:3000].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                  print(f"::error title={case.get('classname')}.{case.get('name')}::{detail}")
+                  raise SystemExit
+          print("::error title=ProxyServiceFailureTest::JUnit did not produce a failure detail")
+          PY
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
