@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Jevio "spark" mark for the Quick Settings tile.
      QS tile icons are tinted to a single color by the system, so this is a solid-white
-     monochrome version of ic_jevio_logo (the gradient can't be preserved on a tile).
+     system-tinted version of the same monochrome app mark.
      Slightly bolder stroke than the app logo so it stays legible at tile size. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"

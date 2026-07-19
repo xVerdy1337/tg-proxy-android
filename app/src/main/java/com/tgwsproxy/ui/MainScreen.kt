@@ -10,6 +10,8 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -24,6 +26,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -102,9 +105,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
@@ -275,17 +280,16 @@ fun MainScreen(
                     .padding(padding)
                     .padding(horizontal = 20.dp)
             ) {
-                Spacer(Modifier.height(4.dp))
-                MainTabRow(selected = tab, onSelect = { tab = it })
-                Spacer(Modifier.height(16.dp))
-
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
-                    contentPadding = PaddingValues(bottom = 32.dp)
+                    contentPadding = PaddingValues(top = 4.dp, bottom = 32.dp)
                 ) {
                     item(key = "update-banner") { UpdateBanner(context = context) }
+                    item(key = "main-tabs") {
+                        MainTabRow(selected = tab, onSelect = { tab = it })
+                    }
 
                     when (tab) {
                         MainTab.Telegram -> {
@@ -411,17 +415,43 @@ private fun MainTabChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val haptic = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberPressScale(interaction)
+    val reduceMotion = reducedMotionEnabled()
+    val background by animateColorAsState(
+        targetValue = if (selected) Signal else Color.Transparent,
+        animationSpec = tween(if (reduceMotion) 0 else 220, easing = JevioEaseOut),
+        label = "tabBackground",
+    )
+    val border by animateColorAsState(
+        targetValue = if (selected) GlassBorder else Color.Transparent,
+        animationSpec = tween(if (reduceMotion) 0 else 220, easing = JevioEaseOut),
+        label = "tabBorder",
+    )
     Box(
         modifier = modifier
             .heightIn(min = 48.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .clip(RoundedCornerShape(999.dp))
-            .background(if (selected) Signal else Color.Transparent)
+            .background(background)
             .border(
-                width = if (selected) 1.dp else 0.dp,
-                color = if (selected) GlassBorder else Color.Transparent,
+                width = 1.dp,
+                color = border,
                 shape = RoundedCornerShape(999.dp),
             )
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = interaction,
+                indication = androidx.compose.foundation.LocalIndication.current,
+            ) {
+                if (!selected) {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                }
+                onClick()
+            }
             .padding(vertical = 11.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -430,6 +460,8 @@ private fun MainTabChip(
             color = TextPrimary,
             fontWeight = FontWeight.Medium,
             style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            softWrap = false,
         )
     }
 }
@@ -437,8 +469,7 @@ private fun MainTabChip(
 // ---------- Telegram: status / controls / advanced ----------
 
 /**
- * Minimal Telegram hero: status (one line) → one full-width pill CTA → secondary.
- * No circular power button, no card chrome.
+ * Minimal Telegram hero: one state dial owns start/stop; secondary actions stay subordinate.
  */
 @Composable
 private fun TelegramHero(
@@ -447,7 +478,20 @@ private fun TelegramHero(
     onOpenTelegram: () -> Unit,
 ) {
     val running = uiState.isRunning
+    val busy = uiState.isLoading
     val haptic = LocalHapticFeedback.current
+    val reduceMotion = reducedMotionEnabled()
+    val stateLabelStyle = if (LocalDensity.current.fontScale >= 1.5f) {
+        MaterialTheme.typography.titleLarge
+    } else {
+        MaterialTheme.typography.headlineMedium
+    }
+    val stateLabel = when {
+        busy && running -> "Остановка…"
+        busy -> "Запуск…"
+        running -> "Активен"
+        else -> "Выключен"
+    }
 
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(running) {
@@ -466,59 +510,68 @@ private fun TelegramHero(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "Telegram",
                     style = MaterialTheme.typography.titleLarge,
                     color = TextPrimary,
+                    maxLines = 1,
                 )
                 Text(
                     text = "Локальный прокси",
                     style = MaterialTheme.typography.labelSmall,
                     color = TextSecondary,
+                    maxLines = 2,
                 )
             }
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(if (running) Signal else SurfaceVariant)
-                    .border(
-                        width = 1.dp,
-                        color = if (running) Signal else GlassBorder,
-                        shape = RoundedCornerShape(999.dp),
-                    )
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(if (running) Primary else TextMuted),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = if (running) "В СЕТИ" else "ГОТОВ",
-                    style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.8.sp),
-                    color = TextPrimary,
-                )
-            }
+            Spacer(Modifier.width(12.dp))
+            JevioStatusBadge(
+                text = when {
+                    busy && running -> "СТОП"
+                    busy -> "ЗАПУСК"
+                    running -> "В СЕТИ"
+                    else -> "ГОТОВ"
+                },
+                active = running && !busy,
+            )
         }
 
         Spacer(Modifier.height(24.dp))
-        JevioStateDial(active = running, busy = uiState.isLoading)
+        JevioStateDial(
+            active = running,
+            busy = busy,
+            onClick = onToggle,
+            accessibilityLabel = "Управление прокси Telegram",
+            onClickLabel = if (running) "Остановить прокси" else "Запустить прокси",
+            announcedState = when {
+                busy && running -> "Выключается"
+                busy -> "Включается"
+                running -> "Включено"
+                else -> "Выключено"
+            },
+        )
         Spacer(Modifier.height(18.dp))
 
-        Text(
-            text = if (running) "Активен" else "Выключен",
-            color = if (running) Success else TextPrimary,
-            style = MaterialTheme.typography.displayMedium,
-            fontWeight = FontWeight.Light,
-            textAlign = TextAlign.Center,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp),
-        )
+        Crossfade(
+            targetState = stateLabel,
+            animationSpec = tween(if (reduceMotion) 0 else 220, easing = JevioEaseOut),
+            label = "telegramStateLabel",
+            modifier = Modifier.fillMaxWidth(),
+        ) { label ->
+            Text(
+                text = label,
+                color = if (running && !busy) Success else TextPrimary,
+                style = stateLabelStyle,
+                fontWeight = FontWeight.Light,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                softWrap = true,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp),
+            )
+        }
         Spacer(Modifier.height(8.dp))
         Text(
             text = when {
@@ -533,27 +586,8 @@ private fun TelegramHero(
             maxLines = 2,
         )
 
-        Spacer(Modifier.height(24.dp))
-
-        // Full-width pill CTA (fully rounded corners — not a circle icon button)
-        PillButton(
-            label = when {
-                uiState.isLoading && running -> "Останавливаю…"
-                uiState.isLoading -> "Запускаю…"
-                running -> "Остановить"
-                else -> "Запустить"
-            },
-            loading = uiState.isLoading,
-            destructive = running && !uiState.isLoading,
-            enabled = !uiState.isLoading,
-            onClick = {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                onToggle()
-            },
-        )
-
         if (running && uiState.proxyLink.isNotEmpty()) {
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(20.dp))
             PillButton(
                 label = "Подключить Telegram",
                 loading = false,
@@ -567,7 +601,13 @@ private fun TelegramHero(
             )
         }
 
-        AnimatedVisibility(visible = running) {
+        AnimatedVisibility(
+            visible = running,
+            enter = fadeIn(tween(if (reduceMotion) 0 else 220, easing = JevioEaseOut)) +
+                expandVertically(tween(if (reduceMotion) 0 else 220, easing = JevioEaseOut)),
+            exit = fadeOut(tween(if (reduceMotion) 0 else 140)) +
+                shrinkVertically(tween(if (reduceMotion) 0 else 140)),
+        ) {
             Column {
                 Spacer(Modifier.height(18.dp))
                 Column(
@@ -620,6 +660,9 @@ private fun PillButton(
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(999.dp)
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberPressScale(interaction)
+    val reduceMotion = reducedMotionEnabled()
     val bg = when {
         outlined -> GlassSurfaceMuted
         destructive -> GlassSurfaceMuted
@@ -629,6 +672,7 @@ private fun PillButton(
     val fg = when {
         destructive -> Destructive
         outlined -> TextPrimary
+        !enabled || loading -> TextMuted
         else -> OnAccent
     }
     val border = when {
@@ -647,28 +691,36 @@ private fun PillButton(
                 ambientColor = GlassShadow,
                 spotColor = GlassShadow,
             )
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .clip(shape)
             .background(bg)
             .then(if (border != null) Modifier.border(border, shape) else Modifier)
-            .clickable(enabled = enabled && !loading, onClick = onClick)
-            .padding(horizontal = 18.dp, vertical = 12.dp),
+            .clickable(
+                interactionSource = interaction,
+                indication = androidx.compose.foundation.LocalIndication.current,
+                enabled = enabled && !loading,
+                onClick = onClick,
+            )
+            .padding(horizontal = 24.dp, vertical = 12.dp),
         contentAlignment = Alignment.Center,
     ) {
-        if (loading) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(22.dp),
-                strokeWidth = 2.dp,
-                color = fg,
-            )
-        } else {
-            Text(
-                text = label,
-                color = fg,
-                fontWeight = FontWeight.Medium,
-                fontSize = 16.sp,
-                letterSpacing = (-0.15).sp,
-                textAlign = TextAlign.Center,
-            )
+        Crossfade(
+            targetState = loading,
+            animationSpec = tween(if (reduceMotion) 0 else 180, easing = JevioEaseOut),
+            label = "telegramButtonContent",
+        ) { showingProgress ->
+            if (showingProgress) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    strokeWidth = 2.dp,
+                    color = fg,
+                )
+            } else {
+                JevioButtonLabel(text = label, color = fg)
+            }
         }
     }
 }
@@ -915,17 +967,22 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.Shield, contentDescription = null, tint = if (enabled) Primary else TextSecondary, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(10.dp))
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "Fake TLS маскировка",
                             style = MaterialTheme.typography.titleMedium,
                             color = TextPrimary,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
                         )
                         Text(
                             text = if (enabled) "Вкл · ${uiState.fakeTlsDomain}" else "Выкл",
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (enabled) Primary else TextSecondary
+                            color = if (enabled) Primary else TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth(),
                         )
                     }
                 }
@@ -993,27 +1050,27 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
                     )
 
                     Spacer(Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = { onSave(domainInput.trim()) },
                             enabled = domainInput.trim() != uiState.fakeTlsDomain,
-                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent)
                         ) {
                             Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Включить", fontWeight = FontWeight.SemiBold)
+                            Text("Включить", fontWeight = FontWeight.SemiBold, maxLines = 1)
                         }
                         if (enabled) {
                             OutlinedButton(
                                 onClick = { domainInput = ""; onSave("") },
-                                modifier = Modifier.heightIn(min = 48.dp),
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                                 shape = RoundedCornerShape(12.dp),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
                                 border = BorderStroke(1.dp, Border)
                             ) {
-                                Text("Выключить", color = TextSecondary)
+                                Text("Выключить", color = TextSecondary, maxLines = 1)
                             }
                         }
                     }

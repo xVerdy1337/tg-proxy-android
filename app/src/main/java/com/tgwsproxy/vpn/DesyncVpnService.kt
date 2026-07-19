@@ -56,6 +56,8 @@ class DesyncVpnService : VpnService(), Tunnel {
         val isRunning: Boolean = false,
         /** True while byedpi + TUN are still coming up after the user pressed enable. */
         val isStarting: Boolean = false,
+        /** True while sockets, native byedpi and the TUN interface are being closed. */
+        val isStopping: Boolean = false,
         val preset: String = PRESET_TLSREC,
         val blockQuic: Boolean = true,
         val scopeAllApps: Boolean = true,
@@ -298,7 +300,16 @@ class DesyncVpnService : VpnService(), Tunnel {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> { stopEverything(); return START_NOT_STICKY }
+            ACTION_STOP -> {
+                val current = _state.value
+                if ((current.isRunning || current.isStarting) && !current.isStopping) {
+                    _state.value = current.copy(isStarting = false, isStopping = true)
+                }
+                // Native shutdown can wait for relay threads. Keep it off the service main thread
+                // so Compose can render the stopping state instead of freezing for a few seconds.
+                scope.launch { stopEverything() }
+                return START_NOT_STICKY
+            }
             else -> {
                 // Off the main thread so isStarting can paint immediately and byedpi's bind-wait
                 // doesn't freeze the UI (or risk an ANR) for up to a few seconds.

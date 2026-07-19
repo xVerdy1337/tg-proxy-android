@@ -120,16 +120,25 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleProxy() {
         val context = getApplication<Application>()
-        if (_uiState.value.isRunning) {
-            val intent = Intent(context, ProxyService::class.java).apply {
-                action = ProxyService.ACTION_STOP
+        val current = _uiState.value
+        if (current.isLoading) return
+        _uiState.value = current.copy(isLoading = true)
+
+        try {
+            if (current.isRunning) {
+                val intent = Intent(context, ProxyService::class.java).apply {
+                    action = ProxyService.ACTION_STOP
+                }
+                context.startService(intent)
+            } else {
+                val intent = Intent(context, ProxyService::class.java).apply {
+                    action = ProxyService.ACTION_START
+                }
+                context.startForegroundService(intent)
             }
-            context.startService(intent)
-        } else {
-            val intent = Intent(context, ProxyService::class.java).apply {
-                action = ProxyService.ACTION_START
-            }
-            context.startForegroundService(intent)
+        } catch (error: RuntimeException) {
+            _uiState.value = _uiState.value.copy(isLoading = false)
+            throw error
         }
     }
 

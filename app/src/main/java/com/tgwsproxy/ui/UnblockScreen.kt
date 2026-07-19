@@ -1,11 +1,10 @@
 package com.tgwsproxy.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -18,9 +17,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -82,6 +81,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -118,42 +118,6 @@ import java.util.Locale
 private val OkGreen = Success
 
 /**
- * Strong ease-out curve (Emil Kowalski / animations.dev). The built-in CSS/Compose easings
- * are too weak to feel intentional; this is the design-eng standard UI ease-out.
- */
-private val EmilEaseOut = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
-
-/**
- * Reduced-motion (accessibility): true when the OS animator duration scale is 0
- * (Developer options / a11y "remove animations"). We keep opacity/level cues but drop
- * continuous movement, per the design-eng reduced-motion guidance.
- */
-@Composable
-internal fun reducedMotionEnabled(): Boolean {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    return remember {
-        android.provider.Settings.Global.getFloat(
-            context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f
-        ) == 0f
-    }
-}
-
-/**
- * Snappy, custom-curve press feedback (Emil: ~140ms, strong ease-out, interruptible).
- * Never go below 0.95 — it starts to feel exaggerated.
- */
-@Composable
-private fun rememberPressScale(interaction: MutableInteractionSource): Float {
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        if (pressed) 0.96f else 1f,
-        animationSpec = tween(durationMillis = 140, easing = EmilEaseOut),
-        label = "pressScale"
-    )
-    return scale
-}
-
-/**
  * Inline all «Разблокировка» sections into the caller's LazyColumn — single-screen layout,
  * no separate tab/scroll container. Caller owns spacing + bottom padding.
  *
@@ -186,7 +150,7 @@ fun LazyListScope.unblockSections(
         val state by vm.vpnState.collectAsState()
         AnimatedVisibility(
             visible = state.isRunning,
-            enter = fadeIn(tween(220, easing = EmilEaseOut)) + expandVertically(tween(220, easing = EmilEaseOut)),
+            enter = fadeIn(tween(220, easing = JevioEaseOut)) + expandVertically(tween(220, easing = JevioEaseOut)),
             exit = fadeOut(tween(140)) + shrinkVertically(tween(140)),
         ) { LiveStatsCard(state) }
     }
@@ -242,8 +206,21 @@ private fun HeroUnblockCard(
 ) {
     val running = state.isRunning
     val starting = state.isStarting
-    val busy = starting || testing
-    val haptic = LocalHapticFeedback.current
+    val stopping = state.isStopping
+    val busy = starting || stopping || testing
+    val reduceMotion = reducedMotionEnabled()
+    val stateLabelStyle = if (LocalDensity.current.fontScale >= 1.5f) {
+        MaterialTheme.typography.titleLarge
+    } else {
+        MaterialTheme.typography.headlineMedium
+    }
+    val stateLabel = when {
+        testing -> "Подбор…"
+        stopping -> "Остановка…"
+        starting -> "Запуск…"
+        running -> "Включено"
+        else -> "Выключено"
+    }
 
     JevioGlassPanel(
         modifier = Modifier.fillMaxWidth(),
@@ -254,72 +231,76 @@ private fun HeroUnblockCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "Сайты",
                     style = MaterialTheme.typography.titleLarge,
                     color = TextPrimary,
+                    maxLines = 1,
                 )
                 Text(
                     text = "Локальный обход",
                     style = MaterialTheme.typography.labelSmall,
                     color = TextSecondary,
+                    maxLines = 2,
                 )
             }
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(if (running && !busy) Signal else SurfaceVariant)
-                    .border(
-                        width = 1.dp,
-                        color = if (running && !busy) Signal else GlassBorder,
-                        shape = RoundedCornerShape(999.dp),
-                    )
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(if (running && !busy) Primary else TextMuted),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = if (running && !busy) "В СЕТИ" else if (busy) "ЗАПУСК" else "ГОТОВ",
-                    style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.8.sp),
-                    color = TextPrimary,
-                )
-            }
+            Spacer(Modifier.width(12.dp))
+            JevioStatusBadge(
+                text = when {
+                    stopping -> "СТОП"
+                    testing -> "ПОДБОР"
+                    starting -> "ЗАПУСК"
+                    running -> "В СЕТИ"
+                    else -> "ГОТОВ"
+                },
+                active = running && !busy,
+            )
         }
 
         Spacer(Modifier.height(24.dp))
         JevioStateDial(
             active = running,
             busy = busy,
+            onClick = { if (running) onDisable() else onEnable() },
+            accessibilityLabel = "Управление обходом сайтов",
+            onClickLabel = if (running) "Выключить обход" else "Включить обход",
+            announcedState = when {
+                testing -> "Подбор метода"
+                stopping -> "Выключается"
+                starting -> "Включается"
+                running -> "Включено"
+                else -> "Выключено"
+            },
             icon = Icons.Default.Bolt,
         )
         Spacer(Modifier.height(18.dp))
 
-        Text(
-            text = when {
-                testing -> "Подбор…"
-                starting -> "Запуск…"
-                running -> "Включено"
-                else -> "Выключено"
-            },
-            color = if (running && !busy) OkGreen else TextPrimary,
-            style = MaterialTheme.typography.displayMedium,
-            fontWeight = FontWeight.Light,
-            textAlign = TextAlign.Center,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp),
-        )
+        Crossfade(
+            targetState = stateLabel,
+            animationSpec = tween(if (reduceMotion) 0 else 220, easing = JevioEaseOut),
+            label = "sitesStateLabel",
+            modifier = Modifier.fillMaxWidth(),
+        ) { label ->
+            Text(
+                text = label,
+                color = if (running && !busy) OkGreen else TextPrimary,
+                style = stateLabelStyle,
+                fontWeight = FontWeight.Light,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                softWrap = true,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp),
+            )
+        }
         Spacer(Modifier.height(8.dp))
         Text(
             when {
                 testing -> "Тестируем методы, не закрывайте приложение"
+                stopping -> "Завершаем соединения"
                 starting -> "Поднимаем локальный обход"
                 running -> "YouTube и Instagram без блокировок"
                 else -> "Локальный обход без внешнего VPN"
@@ -340,81 +321,6 @@ private fun HeroUnblockCard(
             )
         }
 
-        Spacer(Modifier.height(24.dp))
-
-        SitesPillButton(
-            label = when {
-                testing -> "Тестирование…"
-                starting -> "Запуск…"
-                running -> "Выключить"
-                else -> "Включить"
-            },
-            loading = busy,
-            destructive = running && !busy,
-            enabled = !busy,
-            onClick = {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                when {
-                    starting -> Unit
-                    running -> onDisable()
-                    else -> onEnable()
-                }
-            },
-        )
-    }
-}
-
-/** Full-width fully-rounded pill CTA (not a circular icon). */
-@Composable
-private fun SitesPillButton(
-    label: String,
-    loading: Boolean,
-    destructive: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
-    val shape = RoundedCornerShape(999.dp)
-    val bg = when {
-        destructive -> GlassSurfaceMuted
-        !enabled || loading -> SurfaceVariant
-        else -> Accent
-    }
-    val fg = if (destructive) Destructive else OnAccent
-    val border = if (destructive) BorderStroke(1.5.dp, Destructive) else null
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 58.dp)
-            .shadow(
-                elevation = if (!destructive && enabled && !loading) 9.dp else 0.dp,
-                shape = shape,
-                ambientColor = GlassShadow,
-                spotColor = GlassShadow,
-            )
-            .clip(shape)
-            .background(bg)
-            .then(if (border != null) Modifier.border(border, shape) else Modifier)
-            .clickable(enabled = enabled && !loading, onClick = onClick)
-            .padding(horizontal = 18.dp, vertical = 12.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (loading) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(22.dp),
-                strokeWidth = 2.dp,
-                color = fg,
-            )
-        } else {
-            Text(
-                text = label,
-                color = fg,
-                fontWeight = FontWeight.Medium,
-                fontSize = 16.sp,
-                letterSpacing = (-0.15).sp,
-                textAlign = TextAlign.Center,
-            )
-        }
     }
 }
 
@@ -464,7 +370,7 @@ private fun AutoTuneCard(
                 Spacer(Modifier.height(10.dp))
                 PrimaryButton("Включить", onClick = onEnable)
                 Spacer(Modifier.height(8.dp))
-                SecondaryButton("Подобрать заново", onReset)
+                SecondaryButton("Подобрать заново", onReset, hapticFeedback = true)
             }
         }
 
@@ -482,58 +388,84 @@ private fun AutoTuneCard(
 
         else -> {
             SecondaryButton(
-                if (vpnRunning) "Автоподбор (сначала выключи VPN)" else "Подобрать метод автоматически",
-                onClick = { if (!vpnRunning) onRun() },
+                label = if (vpnRunning) "Сначала выключите VPN" else "Подобрать метод автоматически",
+                onClick = onRun,
+                enabled = !vpnRunning,
+                hapticFeedback = true,
             )
         }
     }
 }
 
 @Composable
-private fun PrimaryButton(label: String, enabled: Boolean = true, onClick: () -> Unit) {
+private fun PrimaryButton(
+    label: String,
+    enabled: Boolean = true,
+    hapticFeedback: Boolean = true,
+    onClick: () -> Unit,
+) {
     val haptic = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
     val scale = rememberPressScale(interaction)
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
+            .heightIn(min = 58.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(999.dp))
             .background(if (enabled) Accent else SurfaceVariant)
             .clickable(interactionSource = interaction, indication = androidx.compose.foundation.LocalIndication.current, enabled = enabled) {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                if (hapticFeedback) {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                }
                 onClick()
             }
-            .padding(vertical = 14.dp),
+            .padding(horizontal = 24.dp, vertical = 12.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            label,
+        JevioButtonLabel(
+            text = label,
             color = if (enabled) OnAccent else TextMuted,
-            fontWeight = FontWeight.Medium,
-            fontSize = 15.sp
         )
     }
 }
 
 @Composable
-private fun SecondaryButton(label: String, onClick: () -> Unit) {
+private fun SecondaryButton(
+    label: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    hapticFeedback: Boolean = false,
+) {
+    val haptic = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
     val scale = rememberPressScale(interaction)
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
+            .heightIn(min = 58.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(999.dp))
-            .background(GlassSurfaceMuted)
-            .border(1.dp, Primary.copy(alpha = 0.20f), RoundedCornerShape(999.dp))
-            .clickable(interactionSource = interaction, indication = androidx.compose.foundation.LocalIndication.current) { onClick() }
-            .padding(vertical = 12.dp),
+            .background(if (enabled) GlassSurfaceMuted else SurfaceVariant)
+            .border(
+                1.dp,
+                Primary.copy(alpha = if (enabled) 0.20f else 0.10f),
+                RoundedCornerShape(999.dp),
+            )
+            .clickable(
+                interactionSource = interaction,
+                indication = androidx.compose.foundation.LocalIndication.current,
+                enabled = enabled,
+            ) {
+                if (hapticFeedback) {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                }
+                onClick()
+            }
+            .padding(horizontal = 24.dp, vertical = 12.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(label, color = TextPrimary, fontWeight = FontWeight.Medium)
+        JevioButtonLabel(text = label, color = if (enabled) TextPrimary else TextMuted)
     }
 }
 
@@ -606,15 +538,18 @@ private fun ServiceRow(
             name,
             color = TextPrimary,
             style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 8.dp),
         )
         Text(
             statusText,
             color = statusColor,
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
+            softWrap = false,
         )
     }
 }
@@ -622,20 +557,39 @@ private fun ServiceRow(
 @Composable
 private fun LiveStatsCard(state: DesyncVpnService.VpnState) {
     PanelCard {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            StatItem("Соединения", "${state.activeTcp}", Modifier.weight(1f))
-            StatItem("Отправлено", formatBytesShort(state.bytesUp), Modifier.weight(1f))
-            StatItem("Получено", formatBytesShort(state.bytesDown), Modifier.weight(1f))
-        }
-        Spacer(Modifier.height(12.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            StatItem("Подключено", "${state.connOk}", Modifier.weight(1f))
-            StatItem("Не дошло", "${state.connFail}", Modifier.weight(1f))
-            Spacer(Modifier.weight(1f))
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            if (maxWidth < 300.dp) {
+                Column(Modifier.fillMaxWidth()) {
+                    Row(Modifier.fillMaxWidth()) {
+                        StatItem("Соединения", "${state.activeTcp}", Modifier.weight(1f))
+                        StatItem("Отправлено", formatBytesShort(state.bytesUp), Modifier.weight(1f))
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth()) {
+                        StatItem("Получено", formatBytesShort(state.bytesDown), Modifier.weight(1f))
+                        StatItem("Подключено", "${state.connOk}", Modifier.weight(1f))
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth()) {
+                        StatItem("Не дошло", "${state.connFail}", Modifier.weight(1f))
+                        Spacer(Modifier.weight(1f))
+                    }
+                }
+            } else {
+                Column(Modifier.fillMaxWidth()) {
+                    Row(Modifier.fillMaxWidth()) {
+                        StatItem("Соединения", "${state.activeTcp}", Modifier.weight(1f))
+                        StatItem("Отправлено", formatBytesShort(state.bytesUp), Modifier.weight(1f))
+                        StatItem("Получено", formatBytesShort(state.bytesDown), Modifier.weight(1f))
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth()) {
+                        StatItem("Подключено", "${state.connOk}", Modifier.weight(1f))
+                        StatItem("Не дошло", "${state.connFail}", Modifier.weight(1f))
+                        Spacer(Modifier.weight(1f))
+                    }
+                }
+            }
         }
         val err = state.error
         if (!err.isNullOrBlank()) {
@@ -659,6 +613,7 @@ private fun StatItem(label: String, value: String, modifier: Modifier = Modifier
             fontSize = 18.sp,
             style = LocalTextStyle.current.copy(fontFeatureSettings = "tnum"),
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -688,12 +643,12 @@ private fun presetDescription(preset: String, command: String): String {
 @Composable
 private fun PresetCard(
     current: String,
-    running: Boolean,
     activeLabel: String?,
     command: String,
     onSelect: (String) -> Unit,
 ) {
     var catalogExpanded by remember { mutableStateOf(false) }
+    var expandedPresetId by remember { mutableStateOf<String?>(null) }
     val coreIds = setOf(
         DesyncVpnService.PRESET_AUTO,
         DesyncVpnService.PRESET_TLSREC,
@@ -713,8 +668,8 @@ private fun PresetCard(
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             PresetChip("Авто", DesyncVpnService.PRESET_AUTO, current, Modifier.weight(1f), onSelect)
-            PresetChip("Метод A", DesyncVpnService.PRESET_TLSREC, current, Modifier.weight(1f), onSelect)
-            PresetChip("Метод B", DesyncVpnService.PRESET_SPLIT, current, Modifier.weight(1f), onSelect)
+            PresetChip("TLS-record", DesyncVpnService.PRESET_TLSREC, current, Modifier.weight(1f), onSelect)
+            PresetChip("SNI split", DesyncVpnService.PRESET_SPLIT, current, Modifier.weight(1f), onSelect)
         }
         Spacer(Modifier.height(8.dp))
         SecondaryButton(
@@ -745,7 +700,11 @@ private fun PresetCard(
                             preset = preset,
                             selected = command.trim() == preset.command ||
                                 (command.isBlank() && current == preset.id),
-                            onClick = { onSelect(preset.id) },
+                            expanded = expandedPresetId == preset.id,
+                            onClick = {
+                                onSelect(preset.id)
+                                expandedPresetId = if (expandedPresetId == preset.id) null else preset.id
+                            },
                         )
                         Spacer(Modifier.height(6.dp))
                     }
@@ -788,44 +747,58 @@ private fun PresetCard(
 private fun StrategyPresetRow(
     preset: ByedpiPreset,
     selected: Boolean,
+    expanded: Boolean,
     onClick: () -> Unit,
 ) {
-    Row(
+    val reduceMotion = reducedMotionEnabled()
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(if (selected) Accent.copy(alpha = 0.16f) else SurfaceVariant)
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.Top,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Icon(
-            imageVector = if (selected) Icons.Default.Check else Icons.Default.Tune,
-            contentDescription = if (selected) "Выбрано" else null,
-            tint = if (selected) Accent else TextSecondary,
-            modifier = Modifier.size(18.dp),
-        )
-        Column(Modifier.weight(1f)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 30.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                imageVector = if (selected) Icons.Default.Check else Icons.Default.Tune,
+                contentDescription = if (selected) "Выбрано" else null,
+                tint = if (selected) Accent else TextSecondary,
+                modifier = Modifier.size(18.dp),
+            )
             Text(
-                preset.label,
+                text = preset.label,
                 color = TextPrimary,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
             )
+            Icon(
+                imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                contentDescription = if (expanded) "Скрыть описание" else "Показать описание",
+                tint = TextSecondary,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        AnimatedVisibility(
+            visible = expanded,
+            enter = fadeIn(tween(if (reduceMotion) 0 else 220, easing = JevioEaseOut)) +
+                expandVertically(tween(if (reduceMotion) 0 else 220, easing = JevioEaseOut)),
+            exit = fadeOut(tween(if (reduceMotion) 0 else 140)) +
+                shrinkVertically(tween(if (reduceMotion) 0 else 140)),
+        ) {
             Text(
-                preset.description,
+                text = preset.description,
                 color = TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
-            )
-            Text(
-                preset.command,
-                color = TextMuted,
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 10.sp,
-                ),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 28.dp, top = 8.dp, end = 4.dp),
             )
         }
     }
@@ -844,19 +817,23 @@ private fun PresetChip(
     val scale = rememberPressScale(interaction)
     Box(
         modifier = modifier
-            .heightIn(min = 48.dp)
+            .heightIn(min = 52.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(10.dp))
             .background(if (selected) Accent else SurfaceVariant)
             .clickable(interactionSource = interaction, indication = androidx.compose.foundation.LocalIndication.current) { onSelect(value) }
-            .padding(vertical = 10.dp),
+            .padding(horizontal = 6.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             label,
             color = if (selected) OnAccent else TextPrimary,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-            style = MaterialTheme.typography.labelLarge
+            style = MaterialTheme.typography.labelLarge,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth(),
         )
     }
 }
@@ -908,13 +885,12 @@ private fun UnblockSettingsCard(
 
         AnimatedVisibility(
             visible = open,
-            enter = fadeIn(tween(220, easing = EmilEaseOut)) + expandVertically(tween(220, easing = EmilEaseOut)),
+            enter = fadeIn(tween(220, easing = JevioEaseOut)) + expandVertically(tween(220, easing = JevioEaseOut)),
             exit = fadeOut(tween(140)) + shrinkVertically(tween(140)),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 PresetCard(
                     current = settings.preset,
-                    running = false,
                     activeLabel = if (settings.byedpiCmd.isBlank()) null
                     else com.tgwsproxy.net.StrategyTester.labelForCommand(settings.byedpiCmd) ?: "своя команда",
                     command = settings.byedpiCmd,
@@ -1053,12 +1029,17 @@ private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
 
 @Composable
 private fun ProbeResultRow(r: ServiceProbe) {
-    Row(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(r.display, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            text = r.display,
+            color = TextPrimary,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(5.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             MethodPill("Без обхода", r.plain)
             MethodPill("A", r.tlsrec)
@@ -1079,6 +1060,8 @@ private fun MethodPill(label: String, outcome: com.tgwsproxy.net.HelloProbe.Outc
         label,
         color = color,
         style = MaterialTheme.typography.labelSmall,
+        maxLines = 1,
+        softWrap = false,
         modifier = Modifier
             .clip(RoundedCornerShape(6.dp))
             .background(color.copy(alpha = 0.16f))
@@ -1268,7 +1251,7 @@ private fun ExclusionDialog(
                 }
             }
             Spacer(Modifier.height(12.dp))
-            PrimaryButton("Готово", onClick = onClose)
+            PrimaryButton("Готово", hapticFeedback = false, onClick = onClose)
         }
     }
 }
@@ -1401,6 +1384,33 @@ private fun UnblockNarrowLargeTextPreview() {
         ),
         autoTune = AutoTuneUiState(),
     )
+}
+
+@Preview(
+    name = "QA — метод обхода — 320dp — шрифт 1.5×",
+    widthDp = 320,
+    heightDp = 420,
+    fontScale = 1.5f,
+    showBackground = true,
+    backgroundColor = 0xFFF7F4EF,
+)
+@Composable
+private fun StrategyPresetNarrowLargeTextPreview() {
+    val preset = ByedpiPresetCatalog.presets.first { it.id == "fake-ttl8" }
+    TgWsProxyTheme {
+        JevioBackground(modifier = Modifier.fillMaxSize()) {
+            Column(Modifier.padding(20.dp)) {
+                PanelCard {
+                    StrategyPresetRow(
+                        preset = preset,
+                        selected = true,
+                        expanded = true,
+                        onClick = {},
+                    )
+                }
+            }
+        }
+    }
 }
 
 /** The unblock part of [FullMainScreenPreview], kept here so it uses the real private components. */
