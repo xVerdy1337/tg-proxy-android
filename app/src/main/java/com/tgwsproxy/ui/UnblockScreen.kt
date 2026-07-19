@@ -56,6 +56,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -159,25 +160,34 @@ fun LazyListScope.unblockSections(
             testing = autoTune.running,
             onEnable = onEnable,
             onDisable = onDisable,
-        )
-    }
-
-    item(key = "auto-tune") {
-        val autoTune by vm.autoTune.collectAsState()
-        val state by vm.vpnState.collectAsState()
-        AutoTuneCard(
-            autoTune = autoTune,
-            vpnRunning = state.isRunning,
-            onRun = { vm.runAutoTune() },
-            onReset = { vm.dismissAutoTune() },
-            onEnable = onEnable,
+            onCheck = { vm.runProbe() },
         )
     }
 
     item(key = "services") {
         val probe by vm.probe.collectAsState()
         val autoTune by vm.autoTune.collectAsState()
-        ServicesCard(probe, autoTune)
+        val state by vm.vpnState.collectAsState()
+        ServicesCard(
+            probe = probe,
+            autoTune = autoTune,
+            vpnRunning = state.isRunning,
+            onRunAutoTune = { vm.runAutoTune() },
+        )
+    }
+
+    item(key = "auto-tune") {
+        val autoTune by vm.autoTune.collectAsState()
+        val state by vm.vpnState.collectAsState()
+        if (autoTune.running || autoTune.finished) {
+            AutoTuneCard(
+                autoTune = autoTune,
+                vpnRunning = state.isRunning,
+                onRun = { vm.runAutoTune() },
+                onReset = { vm.dismissAutoTune() },
+                onEnable = onEnable,
+            )
+        }
     }
 
     item(key = "unblock-live-stats") {
@@ -189,33 +199,12 @@ fun LazyListScope.unblockSections(
         ) { LiveStatsCard(state) }
     }
 
-    item(key = "method-label") {
-        Text(
-            "Метод обхода",
-            style = MaterialTheme.typography.labelLarge,
-            color = TextSecondary,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-    }
-
-    item(key = "preset") {
-        val settings by vm.settings.collectAsState()
-        PresetCard(
-            current = settings.preset,
-            running = false,
-            activeLabel = if (settings.byedpiCmd.isBlank()) null
-                else com.tgwsproxy.net.StrategyTester.labelForCommand(settings.byedpiCmd) ?: "своя команда",
-            command = settings.byedpiCmd,
-            onSelect = { vm.setPreset(it) },
-        )
-    }
-
     item(key = "toggle-quic") {
         val settings by vm.settings.collectAsState()
         ToggleCard(
             icon = Icons.Default.Bolt,
-            title = "Блокировать QUIC",
-            subtitle = "Ускоряет обход для YouTube: заставляет приложение использовать обычный TLS вместо QUIC",
+            title = "Отключать QUIC для YouTube",
+            subtitle = "Может помочь, если видео долго загружается или не запускается.",
             checked = settings.blockQuic,
             onChange = { vm.setBlockQuic(it) }
         )
@@ -242,6 +231,8 @@ fun LazyListScope.unblockSections(
             onCheck = { vm.runProbe() },
             command = settings.byedpiCmd,
             presetDefault = vm.defaultCmdForPreset(settings.preset),
+            activeLabel = if (settings.byedpiCmd.isBlank()) null
+                else com.tgwsproxy.net.StrategyTester.labelForCommand(settings.byedpiCmd) ?: "своя команда",
             onApplyCmd = { vm.setByedpiCmd(it) },
             preset = settings.preset,
             onSelectPreset = { vm.setPreset(it) },
@@ -259,9 +250,13 @@ private fun HeroUnblockCard(
     testing: Boolean,
     onEnable: () -> Unit,
     onDisable: () -> Unit,
+    onCheck: () -> Unit,
 ) {
     val running = state.isRunning
     val starting = state.isStarting
+    LaunchedEffect(running) {
+        if (running) onCheck()
+    }
     val accent = when {
         testing || starting -> Info
         running -> Success
@@ -284,7 +279,7 @@ private fun HeroUnblockCard(
     ) {
         Box(
             modifier = Modifier
-                .size(52.dp)
+                .size(40.dp)
                 .clip(CircleShape)
                 .background(accent.copy(alpha = badgeAlpha)),
             contentAlignment = Alignment.Center
@@ -304,20 +299,25 @@ private fun HeroUnblockCard(
                     imageVector = Icons.Default.Check,
                     contentDescription = null,
                     tint = accent,
-                    modifier = Modifier.size(28.dp),
+                    modifier = Modifier.size(22.dp),
                 )
                 else -> Icon(
                     imageVector = Icons.Default.PlayArrow,
                     contentDescription = null,
                     tint = accent,
                     // Optical centering: play triangle's visual weight sits left of geometric center.
-                    modifier = Modifier.size(28.dp).offset(x = 1.dp),
+                    modifier = Modifier.size(22.dp).offset(x = 1.dp),
                 )
             }
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(8.dp))
         Text(
-            "Разблокировка YouTube и Instagram",
+            when {
+                testing -> "Подбираем способ разблокировки"
+                running -> "Разблокировка активна"
+                starting -> "Запускаем разблокировку"
+                else -> "Разблокировка выключена"
+            },
             style = MaterialTheme.typography.titleMedium,
             color = TextPrimary,
             fontWeight = FontWeight.SemiBold
@@ -325,7 +325,7 @@ private fun HeroUnblockCard(
         Spacer(Modifier.height(4.dp))
         when {
             testing -> Text(
-                "Тестирование методов обхода…",
+                "Проверяем доступные способы подключения…",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
             )
@@ -335,18 +335,18 @@ private fun HeroUnblockCard(
             ) {
                 Box(Modifier.size(8.dp).clip(CircleShape).background(OkGreen))
                 Text(
-                    "Включено — обходим блокировку провайдера",
+                    "YouTube и Instagram работают через выбранный способ.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary,
                 )
             }
             starting -> Text(
-                "Запуск… поднимаем обход (SOCKS + VPN)",
+                "Подготавливаем защищённое подключение.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Info,
             )
             else -> Text(
-                "Локальная обработка трафика без внешнего VPN-сервера",
+                "YouTube и Instagram сейчас используют обычное подключение.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
             )
@@ -360,7 +360,7 @@ private fun HeroUnblockCard(
                 fontWeight = FontWeight.Medium,
             )
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(14.dp))
         BigToggleButton(
             running = running,
             testing = testing,
@@ -406,7 +406,7 @@ private fun BigToggleButton(running: Boolean, starting: Boolean, testing: Boolea
                     onClick()
                 }
             )
-            .padding(vertical = 15.dp),
+            .padding(vertical = 12.dp),
         contentAlignment = Alignment.Center
     ) {
         if (busy) {
@@ -423,7 +423,7 @@ private fun BigToggleButton(running: Boolean, starting: Boolean, testing: Boolea
             }
         } else {
             Text(
-                if (running) "Выключить" else "Включить разблокировку",
+                if (running) "Остановить" else "Запустить",
                 color = OnAccent,
                 fontWeight = FontWeight.Bold,
                 fontSize = 16.sp,
@@ -445,9 +445,9 @@ private fun AutoTuneCard(
             Icon(Icons.Default.AutoFixHigh, null, tint = Accent, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(10.dp))
             Column {
-                Text("Автоподбор метода", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                Text("Подобрать другой способ", color = TextPrimary, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Сами переберём ${com.tgwsproxy.net.StrategyTester.STRATEGIES.size} методов и оставим рабочий",
+                    "Проверим доступные способы и сохраним рабочий.",
                     color = TextSecondary, style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -484,12 +484,12 @@ private fun AutoTuneCard(
                 Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Default.Check, null, tint = OkGreen, modifier = Modifier.size(18.dp))
                     Text(
-                        "Готово: «${autoTune.foundLabel}» подобран и сохранён. Нажмите «Включить» — и готово.",
+                        "Готово: «${autoTune.foundLabel}» выбран и сохранён. Нажмите «Запустить».",
                         color = OkGreen, style = MaterialTheme.typography.bodySmall
                     )
                 }
                 Spacer(Modifier.height(10.dp))
-                PrimaryButton("Включить с этим методом", onClick = onEnable)
+                PrimaryButton("Запустить с этим способом", onClick = onEnable)
                 Spacer(Modifier.height(8.dp))
                 SecondaryButton("Подобрать заново", onReset)
             }
@@ -497,19 +497,19 @@ private fun AutoTuneCard(
             autoTune.finished && autoTune.error != null -> {
                 Text(autoTune.error, color = Warning, style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(10.dp))
-                PrimaryButton(if (vpnRunning) "Сначала выключи VPN" else "Попробовать снова", enabled = !vpnRunning, onClick = onRun)
+                PrimaryButton(if (vpnRunning) "Сначала остановите разблокировку" else "Попробовать снова", enabled = !vpnRunning, onClick = onRun)
             }
 
             else -> {
                 if (vpnRunning) {
                     Text(
-                        "Подбор работает только при выключенном VPN — он монопольно использует движок обхода.",
+                        "Остановите разблокировку, чтобы проверить другой способ.",
                         color = TextSecondary, style = MaterialTheme.typography.labelSmall
                     )
                     Spacer(Modifier.height(10.dp))
                 }
                 PrimaryButton(
-                    if (vpnRunning) "Сначала выключи VPN" else "Подобрать автоматически",
+                    if (vpnRunning) "Сначала остановите разблокировку" else "Подобрать автоматически",
                     enabled = !vpnRunning,
                     onClick = onRun
                 )
@@ -566,17 +566,37 @@ private fun SecondaryButton(label: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ServicesCard(probe: ProbeUiState, autoTune: AutoTuneUiState) {
+private fun ServicesCard(
+    probe: ProbeUiState,
+    autoTune: AutoTuneUiState,
+    vpnRunning: Boolean,
+    onRunAutoTune: () -> Unit,
+) {
     val yt = probe.results.firstOrNull { it.display == "YouTube" }
     val ytv = probe.results.firstOrNull { it.display == "YouTube (видео)" }
     val ig = probe.results.firstOrNull { it.display == "Instagram" }
     val busy = probe.checking || autoTune.running
-    PanelCard {
+    val needsAnotherMethod = probe.results.isNotEmpty() && probe.results.any { !it.anyPass }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text("Статус сервисов", color = TextSecondary, style = MaterialTheme.typography.labelLarge)
+        Spacer(Modifier.height(4.dp))
         ServiceRow("YouTube", yt, busy, autoTune.hostOk["YouTube"])
         HorizontalDivider(color = Border.copy(alpha = 0.5f), modifier = Modifier.padding(vertical = 2.dp))
-        ServiceRow("YouTube (видео)", ytv, busy, autoTune.hostOk["YouTube (видео)"])
+        ServiceRow("Воспроизведение видео", ytv, busy, autoTune.hostOk["YouTube (видео)"])
         HorizontalDivider(color = Border.copy(alpha = 0.5f), modifier = Modifier.padding(vertical = 2.dp))
         ServiceRow("Instagram", ig, busy, autoTune.hostOk["Instagram"])
+        if (needsAnotherMethod && !busy) {
+            Spacer(Modifier.height(8.dp))
+            if (vpnRunning) {
+                Text(
+                    "Остановите разблокировку, чтобы подобрать другой способ.",
+                    color = TextSecondary,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            } else {
+                SecondaryButton("Подобрать другой способ", onRunAutoTune)
+            }
+        }
     }
 }
 
@@ -588,10 +608,10 @@ private fun ServiceRow(
     forced: Boolean?,
 ) {
     val (dotColor, statusText, working) = when {
-        checking -> Triple(SurfaceVariant, "проверка…", false)
+        checking -> Triple(Warning, "Проверяем", false)
         forced == true -> Triple(OkGreen, "работает", true)
         forced == false -> Triple(Destructive, "заблокировано", false)
-        result == null -> Triple(SurfaceVariant, "не проверено", false)
+        result == null -> Triple(SurfaceVariant, "Проверим после запуска", false)
         result.anyPass -> Triple(OkGreen, "работает", true)
         result.plain == com.tgwsproxy.net.HelloProbe.Outcome.BLOCKED -> Triple(Destructive, "заблокировано", false)
         else -> Triple(Warning, "не удалось", false)
@@ -720,28 +740,28 @@ private fun PresetCard(
     }
 
     PanelCard {
-        Text("Метод обхода", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+        Text("Другой способ", color = TextPrimary, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         Text(
-            "Если что-то не открывается — переключите метод или нажмите «Автоподбор».",
+            "Выберите способ вручную, если автоматический не подошёл.",
             color = TextSecondary, style = MaterialTheme.typography.bodySmall
         )
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            PresetChip("Авто", DesyncVpnService.PRESET_AUTO, current, Modifier.weight(1f), onSelect)
-            PresetChip("Метод A", DesyncVpnService.PRESET_TLSREC, current, Modifier.weight(1f), onSelect)
-            PresetChip("Метод B", DesyncVpnService.PRESET_SPLIT, current, Modifier.weight(1f), onSelect)
+            PresetChip("Автоматически", DesyncVpnService.PRESET_AUTO, current, Modifier.weight(1f), onSelect)
+            PresetChip("Стандартный", DesyncVpnService.PRESET_TLSREC, current, Modifier.weight(1f), onSelect)
+            PresetChip("Строгие сети", DesyncVpnService.PRESET_SPLIT, current, Modifier.weight(1f), onSelect)
         }
         Spacer(Modifier.height(8.dp))
         SecondaryButton(
-            if (catalogExpanded) "Скрыть каталог" else "Ещё конфиги (${extraPresets.size})",
+            if (catalogExpanded) "Скрыть другие способы" else "Другие способы (${extraPresets.size})",
             onClick = { catalogExpanded = !catalogExpanded },
         )
 
         if (catalogExpanded) {
             Spacer(Modifier.height(4.dp))
             Text(
-                "Каталог ByeDPI",
+                "Дополнительные способы",
                 color = TextPrimary,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -794,7 +814,7 @@ private fun PresetCard(
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            "После смены метода выключи и включи VPN.",
+            "После смены способа перезапустите подключение.",
             color = TextSecondary, style = MaterialTheme.typography.labelSmall
         )
     }
@@ -888,6 +908,7 @@ private fun UnblockAdvancedCard(
     onCheck: () -> Unit,
     command: String,
     presetDefault: String,
+    activeLabel: String?,
     onApplyCmd: (String) -> Unit,
     preset: String,
     onSelectPreset: (String) -> Unit,
@@ -930,6 +951,13 @@ private fun UnblockAdvancedCard(
             exit = fadeOut(tween(140)) + shrinkVertically(tween(140)),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                PresetCard(
+                    current = preset,
+                    running = false,
+                    activeLabel = activeLabel,
+                    command = command,
+                    onSelect = onSelectPreset,
+                )
                 DiagnosticPresetCard(preset, onSelectPreset)
                 ProbeCard(probe, onCheck)
                 ByedpiCommandCard(
@@ -1167,27 +1195,37 @@ private fun ToggleCard(
     checked: Boolean,
     onChange: (Boolean) -> Unit,
 ) {
-    PanelCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, null, tint = Mauve, modifier = Modifier.size(22.dp))
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(title, color = TextPrimary, fontWeight = FontWeight.Medium)
-                Spacer(Modifier.height(2.dp))
-                Text(subtitle, color = TextSecondary, style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.width(8.dp))
-            Switch(
-                checked = checked,
-                onCheckedChange = onChange,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Background,
-                    checkedTrackColor = Accent,
-                    uncheckedThumbColor = TextSecondary,
-                    uncheckedTrackColor = SurfaceVariant
-                )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(SurfaceVariant)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = Mauve, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = TextPrimary, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(2.dp))
+            Text(subtitle, color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+            Text(
+                if (checked) "Включено" else "Выключено",
+                color = if (checked) Accent else TextSecondary,
+                style = MaterialTheme.typography.labelSmall,
             )
         }
+        Spacer(Modifier.width(8.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = TextPrimary,
+                checkedTrackColor = Accent,
+                uncheckedThumbColor = TextSecondary,
+                uncheckedTrackColor = Background,
+            )
+        )
     }
 }
 
