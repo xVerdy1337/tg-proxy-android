@@ -314,6 +314,7 @@ class ProxyService : Service() {
                 persistRunning(false)
                 releaseWakeLocks()
                 stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
             }
         }
     }
