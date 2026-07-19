@@ -10,6 +10,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -21,10 +22,17 @@ import com.tgwsproxy.vpn.DesyncVpnService
 
 class MainActivity : ComponentActivity() {
 
+    private val desyncVm: com.tgwsproxy.ui.DesyncViewModel by viewModels()
+
     // Result is ignored: if the user denies, the proxy still runs as a foreground service,
     // just without a visible status notification. We don't block on the grant.
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    private val autoTuneLocationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            desyncVm.runAutoTune()
+        }
 
     // System VPN consent dialog ("Разрешить Jevio создать VPN-подключение?"). On approval we
     // actually start the desync VPN service.
@@ -43,6 +51,8 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     MainScreen(
+                        desyncVm = desyncVm,
+                        onRunAutoTune = { runAutoTuneWithNetworkCache() },
                         onEnableVpn = { requestVpnConsent() },
                         onDisableVpn = { stopDesyncVpn() }
                     )
@@ -73,6 +83,15 @@ class MainActivity : ComponentActivity() {
             action = DesyncVpnService.ACTION_STOP
         }
         startService(intent)
+    }
+
+    private fun runAutoTuneWithNetworkCache() {
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) desyncVm.runAutoTune()
+        else autoTuneLocationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
     }
 
     /**

@@ -126,6 +126,7 @@ private val OkGreen = Success
  */
 fun LazyListScope.unblockSections(
     vm: DesyncViewModel,
+    onRunAutoTune: () -> Unit,
     onEnable: () -> Unit,
     onDisable: () -> Unit,
 ) {
@@ -146,7 +147,7 @@ fun LazyListScope.unblockSections(
         AutoTuneCard(
             autoTune = autoTune,
             vpnRunning = state.isRunning,
-            onRun = { vm.runAutoTune() },
+            onRun = onRunAutoTune,
             onReset = { vm.dismissAutoTune() },
             onEnable = onEnable,
         )

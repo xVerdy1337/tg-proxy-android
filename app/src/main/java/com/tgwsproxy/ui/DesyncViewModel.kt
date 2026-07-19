@@ -1,9 +1,14 @@
 package com.tgwsproxy.ui
 
+import android.Manifest
 import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tgwsproxy.net.HelloProbe
@@ -16,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.security.MessageDigest
 
 data class DesyncSettings(
     val preset: String = DesyncVpnService.PRESET_AUTO,
@@ -75,6 +81,10 @@ data class AppInfo(
  * survive restarts. Starting the VPN itself is driven from the Activity (needs system consent).
  */
 class DesyncViewModel(application: Application) : AndroidViewModel(application) {
+
+    private companion object {
+        const val AUTO_TUNE_CACHE_PREFIX = "auto_tune_cache_"
+    }
 
     val vpnState: StateFlow<DesyncVpnService.VpnState> = DesyncVpnService.state
 
@@ -143,13 +153,18 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         val hosts = targets.map { it.first }
+        val networkCacheKey = autoTuneNetworkCacheKey()
+        val cached = networkCacheKey?.let { prefs().getString(AUTO_TUNE_CACHE_PREFIX + it, null) }
         // Test the currently-saved command first (instant if it still works), then the curated list.
         val saved = _settings.value.byedpiCmd.trim()
         val strategies = buildList {
-            if (saved.isNotEmpty()) {
+            if (!cached.isNullOrEmpty()) {
+                add(StrategyTester.Strategy(cached, StrategyTester.labelForCommand(cached) ?: "cached"))
+            }
+            if (saved.isNotEmpty() && saved != cached) {
                 add(StrategyTester.Strategy(saved, StrategyTester.labelForCommand(saved) ?: "текущая команда"))
             }
-            addAll(StrategyTester.STRATEGIES.filter { it.command != saved })
+            addAll(StrategyTester.STRATEGIES.filter { it.command != saved && it.command != cached })
         }
         _autoTune.value = AutoTuneUiState(running = true, total = strategies.size)
         viewModelScope.launch {
@@ -181,6 +196,7 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
             }
             if (found != null) {
                 setByedpiCmd(found.command)
+                networkCacheKey?.let { prefs().edit().putString(AUTO_TUNE_CACHE_PREFIX + it, found.command).apply() }
                 _autoTune.value = AutoTuneUiState(
                     finished = true,
                     foundLabel = found.label,
@@ -241,6 +257,31 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun loadExcluded(): Set<String> =
         prefs().getStringSet(DesyncVpnService.KEY_EXCLUDED_USER, emptySet())?.toSet() ?: emptySet()
+
+    /** Stable, privacy-preserving key for the active network; never stores the Wi-Fi name itself. */
+    private fun autoTuneNetworkCacheKey(): String? {
+        val app = getApplication<Application>()
+        val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return null
+        return when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "mobile"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> {
+                val locationGranted = ContextCompat.checkSelfPermission(
+                    app,
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                ) == PackageManager.PERMISSION_GRANTED
+                if (!locationGranted) return null
+                val wifi = app.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                val ssid = wifi.connectionInfo?.ssid?.trim('"')
+                if (ssid.isNullOrBlank() || ssid == WifiManager.UNKNOWN_SSID) return null
+                val digest = MessageDigest.getInstance("SHA-256")
+                    .digest(ssid.toByteArray())
+                    .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+                "wifi_${digest.take(16)}"
+            }
+            else -> null
+        }
+    }
 
     private fun load(): DesyncSettings {
         val p = prefs()

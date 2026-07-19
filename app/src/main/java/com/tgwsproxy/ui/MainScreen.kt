@@ -200,6 +200,7 @@ private enum class MainTab { Telegram, Sites }
 fun MainScreen(
     viewModel: ProxyViewModel = viewModel(),
     desyncVm: DesyncViewModel = viewModel(),
+    onRunAutoTune: () -> Unit = { desyncVm.runAutoTune() },
     onEnableVpn: () -> Unit = {},
     onDisableVpn: () -> Unit = {},
 ) {
@@ -379,6 +380,7 @@ fun MainScreen(
                         MainTab.Sites -> {
                             unblockSections(
                                 vm = desyncVm,
+                                onRunAutoTune = onRunAutoTune,
                                 onEnable = onEnableVpn,
                                 onDisable = onDisableVpn,
                             )
