@@ -1,0 +1,20 @@
+{
+  "status": "FIX_PROVEN",
+  "reason": "The focused regression test failed before the production change and passed after it. The same GitHub Actions run also built debug and release APKs successfully.",
+  "same_command": true,
+  "full_suite": "passed: debug and release APK builds",
+  "before": {
+    "command": "gradle testDebugUnitTest --tests com.tgwsproxy.vpn.TcpConnectionTest",
+    "exit_code": 1,
+    "timed_out": false,
+    "duration_ms": 126000,
+    "stderr": "GitHub Actions run 29685831258: the focused SOCKS5 regression-test step completed with exit code 1."
+  },
+  "after": {
+    "command": "gradle testDebugUnitTest --tests com.tgwsproxy.vpn.TcpConnectionTest",
+    "exit_code": 0,
+    "timed_out": false,
+    "duration_ms": 131000,
+    "stdout": "GitHub Actions run 29686145588: the focused SOCKS5 regression-test step completed successfully; debug and release APK builds also succeeded."
+  }
+}
