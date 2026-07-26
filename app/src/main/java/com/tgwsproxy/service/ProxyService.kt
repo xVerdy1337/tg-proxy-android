@@ -33,9 +33,36 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.net.BindException
 import java.security.SecureRandom
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * Colour role of a log line, decided once — when the line is created. The log pane draws the whole
+ * (200-line capped) log as a single list item, so deriving this in composition meant re-scanning
+ * every line for seven keywords on every arriving line.
+ */
+enum class LogKind { ERROR, WARNING, HANDSHAKE, FAKE_TLS, CLOUDFLARE, WS, PLAIN }
+
+/**
+ * One log line plus what the UI needs to draw and track it. [seq] never repeats, which is the only
+ * thing that still changes once the log sits at its cap and the list stops growing.
+ */
+data class LogLine(val seq: Long, val text: String, val kind: LogKind)
+
+/** Keyword order matters: "handshake failed" is a warning, not a handshake. */
+private fun classifyLog(text: String): LogKind = when {
+    text.contains("ERROR", ignoreCase = true) -> LogKind.ERROR
+    text.contains("failed", ignoreCase = true) -> LogKind.WARNING
+    text.contains("WARN", ignoreCase = true) -> LogKind.WARNING
+    text.contains("handshake ok", ignoreCase = true) -> LogKind.HANDSHAKE
+    text.contains("Fake TLS", ignoreCase = true) -> LogKind.FAKE_TLS
+    text.contains("Cloudflare", ignoreCase = true) -> LogKind.CLOUDFLARE
+    text.contains("WS connected", ignoreCase = true) -> LogKind.WS
+    else -> LogKind.PLAIN
+}
 
 class ProxyService : Service() {
 
@@ -76,7 +103,7 @@ class ProxyService : Service() {
         val port: Int = 1443,
         val secret: String = "",
         val connectionCount: Int = 0,
-        val logs: List<String> = emptyList(),
+        val logs: List<LogLine> = emptyList(),
         val proxyLink: String = "",
         val cfDomain: String = "",
         val cfWorkerDomain: String = "",
@@ -85,7 +112,14 @@ class ProxyService : Service() {
         val bytesUp: Long = 0,
         val bytesDown: Long = 0,
         val startedAt: Long = 0,      // epoch millis when the proxy started (0 = stopped)
-        val route: String = ""        // active upstream: cloudflare / direct / tcp
+        val route: String = "",       // active upstream: cloudflare / direct / tcp
+        /**
+         * Why the last start attempt failed — already localized and actionable, null when there is
+         * nothing to report. Same shape as DesyncVpnService.VpnState.error so both tabs explain a
+         * refusal identically; without it a busy port only ever reached the log pane while the hero
+         * flipped back to "off", which is pixel-identical to never having pressed the button.
+         */
+        val error: String? = null
     )
 
     private val _serviceState = MutableStateFlow(ServiceState())
@@ -95,6 +129,24 @@ class ProxyService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var proxyServer: MtProtoProxyServer? = null
     private var statsJob: Job? = null
+
+    /**
+     * The teardown launched by the last [stopProxy], or null. [startProxy] waits it out before it
+     * binds: stopping flips the state to "off" at once but closes the listener on a coroutine, so a
+     * stop-then-start quicker than that close used to bind against our own dying socket and blame
+     * the resulting BindException on some other app. Touched only from onStartCommand (main thread).
+     */
+    private var stopJob: Job? = null
+
+    /**
+     * Bumped by every start and every stop. A start coroutine that had to wait out a teardown
+     * re-checks it before binding: if anything asked us to start or stop in the meantime, the socket
+     * it was about to open would belong to nobody and would hold the port against the real one.
+     */
+    private val proxyGeneration = AtomicLong(0)
+
+    /** Only ever increases; see [LogLine.seq]. */
+    private val logSeq = AtomicLong(0)
 
     // True while the UI is bound to us. The 1s stats pump is only useful when someone is
     // actually watching the screen; when the app is closed we poll far less often to avoid
@@ -191,7 +243,15 @@ class ProxyService : Service() {
         val port = _serviceState.value.port
         val ftls = _serviceState.value.fakeTlsDomain
         _serviceState.update {
-            it.copy(secret = secret, proxyLink = buildProxyLink(host, port, secret, ftls))
+            it.copy(
+                secret = secret,
+                proxyLink = buildProxyLink(host, port, secret, ftls),
+                // proxy_error_bad_secret asks for exactly this rotation, so doing it has to retire
+                // the message — otherwise obeying the instruction leaves it under the dial still
+                // claiming the secret is broken. Any other pending failure judged the attempt that
+                // used the key we just replaced, so it is equally spent.
+                error = null
+            )
         }
     }
 
@@ -257,8 +317,10 @@ class ProxyService : Service() {
         if (_serviceState.value.isRunning) return
 
         val secret = getOrCreateSecret()
-        val host = "127.0.0.1"
-        val port = 1443
+        // Same constants the link builder and the UI seed themselves from; a literal here could
+        // drift from them silently.
+        val host = DEFAULT_HOST
+        val port = DEFAULT_PORT
         val fakeTlsDomain = _serviceState.value.fakeTlsDomain
         val proxyLink = buildProxyLink(host, port, secret, fakeTlsDomain)
 
@@ -274,7 +336,10 @@ class ProxyService : Service() {
                 bytesDown = 0,
                 startedAt = System.currentTimeMillis(),
                 route = "",
-                logs = listOf(getString(R.string.proxy_starting))
+                // A fresh attempt retires the previous verdict: whatever last time failed with is
+                // no longer what the screen is showing.
+                error = null,
+                logs = listOf(newLogLine(getString(R.string.proxy_starting)))
             )
         }
         persistRunning(true)
@@ -291,7 +356,14 @@ class ProxyService : Service() {
             startForeground(NOTIFICATION_ID, buildNotification())
         }
 
+        val pendingStop = stopJob
+        val generation = proxyGeneration.incrementAndGet()
         serviceScope.launch {
+            // Deliberately outside the try: this only orders our own socket close before our own
+            // open (the teardown never waits on us, so it cannot deadlock), and being cancelled
+            // while waiting means the service is going away — not a start failure to report.
+            pendingStop?.join()
+            if (proxyGeneration.get() != generation) return@launch
             try {
                 proxyServer = MtProtoProxyServer(
                     appContext = applicationContext,
@@ -308,14 +380,32 @@ class ProxyService : Service() {
                 )
                 proxyServer?.start()
             } catch (e: Exception) {
+                // The raw exception text stays in the log for support; the state carries the
+                // version the user can act on.
                 addLog(getString(R.string.error_with_message, e.message))
-                _serviceState.update { it.copy(isRunning = false) }
+                _serviceState.update { it.copy(isRunning = false, error = startFailureMessage(e, port)) }
                 persistRunning(false)
                 releaseWakeLocks()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
         }
+    }
+
+    /**
+     * Turn a start failure into an instruction. Worth distinguishing at all because the fixes are
+     * unrelated: a busy port is somebody else's process and the user closes it, a malformed secret
+     * is ours and the user rotates it, and everything else is a "try again" that must still carry
+     * the underlying reason so a support log is not the only place it exists.
+     */
+    private fun startFailureMessage(e: Exception, port: Int): String = when (e) {
+        // Bind refused. Covers both "Address already in use" and the EACCES spelling — either way
+        // this port is not ours to listen on.
+        is BindException -> getString(R.string.proxy_error_port_busy, port)
+        // parseSecret's require(): the persisted secret is not even-length hex, so no client could
+        // ever authenticate against it even if the socket did come up.
+        is IllegalArgumentException -> getString(R.string.proxy_error_bad_secret)
+        else -> getString(R.string.proxy_error_start_failed, e.message ?: e.javaClass.simpleName)
     }
 
     /**
@@ -364,6 +454,8 @@ class ProxyService : Service() {
         statsJob?.cancel()
         statsJob = null
         unregisterNetworkCallback()
+        // Invalidates any start still queued behind an earlier teardown: it must not bind now.
+        proxyGeneration.incrementAndGet()
 
         // Detach the server reference and flip state to stopped immediately so the UI
         // and Quick Settings tile update without waiting on socket teardown.
@@ -375,7 +467,10 @@ class ProxyService : Service() {
                 isRunning = false,
                 connectionCount = 0,
                 startedAt = 0,
-                route = ""
+                route = "",
+                // Off is now the state the user asked for, so an old failure has nothing left to
+                // explain — leaving it would park a stale complaint under a correct "off" hero.
+                error = null
             )
         }
         persistRunning(false)
@@ -384,10 +479,23 @@ class ProxyService : Service() {
         // Stop the server off the main thread (stop() may block on socket/coroutine
         // shutdown), then drop the foreground service. Replaces the old
         // runBlocking(...) on the main thread, which was a classic ANR source.
-        serviceScope.launch {
+        // Kept as stopJob so the next start can wait for the listener to actually be gone.
+        //
+        // Chained onto the previous teardown rather than replacing it. A stop that lands while a
+        // start is still parked on the earlier job sees proxyServer already null, so replacing
+        // would install a trivial no-op job — and the waiting start would join THAT and bind while
+        // the real socket is still closing, which is the exact race the join was added to remove.
+        val previous = stopJob
+        stopJob = serviceScope.launch {
+            previous?.join()
             try { server?.stop() } catch (_: Exception) {}
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            // A start that raced in already owns the foreground service and is waiting on this very
+            // job; tearing the notification down and stopping ourselves here would kill the run the
+            // user just asked for.
+            if (!_serviceState.value.isRunning) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
         }
     }
 
@@ -478,11 +586,18 @@ class ProxyService : Service() {
 
     private val logTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
+    /**
+     * Stamp a line with its sequence number and colour role. Called outside the state update on
+     * purpose — update() re-runs its lambda under contention, and a line has to be stamped exactly
+     * once rather than renumbered and re-classified per retry.
+     */
+    private fun newLogLine(text: String) = LogLine(logSeq.incrementAndGet(), text, classifyLog(text))
+
     private fun addLog(line: String) {
         val timestamp = LocalTime.now().format(logTimeFormatter)
+        val entry = newLogLine("[$timestamp] $line")
         _serviceState.update { state ->
-            val newLogs = (state.logs + "[$timestamp] $line").takeLast(200)
-            state.copy(logs = newLogs)
+            state.copy(logs = (state.logs + entry).takeLast(200))
         }
     }
 

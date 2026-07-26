@@ -78,7 +78,20 @@ object StrategyTester {
         labelResForCommand(command)?.let { context.getString(it) }
 
     data class HostResult(val host: String, val ok: Boolean, val detail: String)
-    data class StrategyResult(val strategy: Strategy, val hosts: List<HostResult>) {
+    data class StrategyResult(
+        val strategy: Strategy,
+        val hosts: List<HostResult>,
+        /**
+         * Did the native run actually end, or did teardown give up on it?
+         *
+         * Not a detail: the engine is a process-wide singleton whose busy flag is lowered only by
+         * jniStartProxy's epilogue — jniStopProxy and jniForceClose deliberately leave it raised.
+         * So a loop thread that outlives both joins below holds the engine for the life of the
+         * process, and every later VPN start is refused. The sweep needs to know that rather than
+         * assume it, which is why this is reported instead of inferred from the coroutine finishing.
+         */
+        val engineReleased: Boolean = true,
+    ) {
         val allOk: Boolean get() = hosts.isNotEmpty() && hosts.all { it.ok }
     }
 
@@ -113,7 +126,9 @@ object StrategyTester {
         var loop: Thread? = null
         // Written by the loop thread, read by the finally below, so it has to publish safely.
         val returned = AtomicBoolean(false)
-        try {
+        // Built inside the try, returned AFTER the finally: whether the engine is free is only
+        // knowable once teardown has run, so the result cannot be handed back from inside the try.
+        val result: StrategyResult = try {
             val args = DesyncVpnService.buildByedpiArgs(strategy.command, "127.0.0.1", port)
             loop = thread(name = "byedpi-test", isDaemon = true) {
                 // Any return means this run is done with the engine — refused by the singleton
@@ -135,27 +150,28 @@ object StrategyTester {
                 loop?.isAlive == true
             }
             if (!ready) {
-                return StrategyResult(
+                StrategyResult(
                     strategy,
                     hosts.map { HostResult(it, false, context.getString(R.string.byedpi_bad_command)) },
                 )
-            }
-            // Test all hosts in parallel so a strategy's cost is max(host) instead of sum(host).
-            val results = arrayOfNulls<HostResult>(hosts.size)
-            val workers = hosts.mapIndexed { idx, host ->
-                thread(name = "probe-$host", isDaemon = true) {
-                    results[idx] = testHostThroughSocks(context, host, 443, port)
+            } else {
+                // Test all hosts in parallel so a strategy's cost is max(host), not sum(host).
+                val results = arrayOfNulls<HostResult>(hosts.size)
+                val workers = hosts.mapIndexed { idx, host ->
+                    thread(name = "probe-$host", isDaemon = true) {
+                        results[idx] = testHostThroughSocks(context, host, 443, port)
+                    }
                 }
+                // Derived from the two socket deadlines on purpose: a worker that is legitimately
+                // sitting through a -T detect and the replayed handshake that follows must not be
+                // abandoned one join short of the read it is about to complete — that scores the
+                // strategy dead for the same reason a too-short soTimeout does.
+                val budget = (SOCKS_CONNECT_TIMEOUT_MS + TLS_TIMEOUT_MS + 1000).toLong()
+                workers.forEach { try { it.join(budget) } catch (_: InterruptedException) {} }
+                StrategyResult(strategy, hosts.mapIndexed { idx, host ->
+                    results[idx] ?: HostResult(host, false, context.getString(R.string.timeout))
+                })
             }
-            // Derived from the two socket deadlines on purpose: a worker that is legitimately
-            // sitting through a -T detect and the replayed handshake that follows must not be
-            // abandoned one join short of the read it is about to complete — that scores the
-            // strategy dead for the same reason a too-short soTimeout does.
-            val budget = (SOCKS_CONNECT_TIMEOUT_MS + TLS_TIMEOUT_MS + 1000).toLong()
-            workers.forEach { try { it.join(budget) } catch (_: InterruptedException) {} }
-            return StrategyResult(strategy, hosts.mapIndexed { idx, host ->
-                results[idx] ?: HostResult(host, false, context.getString(R.string.timeout))
-            })
         } finally {
             // Teardown does not act on `proxy` — stopProxy/forceClose reach the process-wide native
             // globals, i.e. whichever run holds them right now. A refused start never held them, so
@@ -178,5 +194,10 @@ object StrategyTester {
                 }
             }
         }
+        // Read only now, after teardown: `returned` still false here means the loop thread outlived
+        // both joins AND the force-close, i.e. it is still inside main() and the native busy flag is
+        // still raised — nothing else lowers it. The sweep has to see that, because the next start
+        // of anything (the VPN included) will be refused for the life of the process.
+        return result.copy(engineReleased = returned.get())
     }
 }

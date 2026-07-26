@@ -1,24 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Jevio Unblocker</string>
-    <string name="app_tagline">Telegram without blocks</string>
     <string name="proxy_running">Proxy running</string>
     <string name="proxy_stopped">Proxy stopped</string>
     <string name="proxy_notification_title">Jevio Unblocker is on</string>
     <string name="proxy_notification_text">Telegram unblocked — tap to open</string>
-    <string name="proxy_notification_connections">Active connections: %1$d</string>
     <string name="proxy_notification_channel_desc">Jevio Unblocker proxy status</string>
     <string name="notification_disable">Disable</string>
     <string name="connect_telegram">Connect Telegram</string>
-    <string name="start_proxy">Start proxy</string>
-    <string name="stop_proxy">Stop proxy</string>
-    <string name="status">Status</string>
-    <string name="address">Address</string>
-    <string name="port">Port</string>
     <string name="secret">Secret</string>
     <string name="logs">Logs</string>
-    <string name="copy_link">Copy link</string>
-    <string name="link_copied">Link copied</string>
     <string name="tile_label">Jevio Unblocker</string>
     <string name="battery_warning_title">Proxy may disconnect</string>
     <string name="battery_warning_text">Battery optimization can kill Jevio Unblocker in the background — then Telegram stops working until you reopen the app. Disable battery optimization so the proxy always stays on.</string>
@@ -41,7 +32,6 @@
     <string name="enable">Enable</string>
     <string name="disable">Disable</string>
     <string name="settings">Settings</string>
-    <string name="on">On</string>
     <string name="off">Off</string>
     <string name="on_with_value">On · %1$s</string>
     <string name="selected">Selected</string>
@@ -131,7 +121,9 @@
     <string name="sites_running_hint">YouTube and Instagram without blocks</string>
     <string name="sites_idle_hint">Local bypass with no external VPN</string>
     <string name="auto_tune_title">Method tuning</string>
-    <string name="auto_tune_progress">Checking %1$d/%2$d</string>
+    <!-- %1$d counts candidates already FINISHED, never the one under test — the same number drives
+         the progress bar, which has to start empty and fill only as work completes. -->
+    <string name="auto_tune_progress">Checked %1$d of %2$d</string>
     <string name="auto_tune_keep_open">Keep the app open during the check.</string>
     <string name="auto_tune_found">Selected: «%1$s»</string>
     <!-- Shown next to a finished sweep that left some targets out. %1$s is a list of service names.
@@ -140,6 +132,8 @@
          same from here, and either way no bypass method changes the outcome. -->
     <string name="auto_tune_dns_skipped">Skipped: %1$s — the address didn\'t resolve, so there was nothing to test. Switching bypass method won\'t change that.</string>
     <string name="auto_tune_again">Tune again</string>
+    <!-- Way out of a sweep that runs for minutes with the VPN held off. -->
+    <string name="auto_tune_cancel">Stop tuning</string>
     <string name="turn_off_vpn_first">Turn off VPN first</string>
     <string name="turn_off_vpn_first_long">Turn off VPN first</string>
     <!-- Replaces both "turn off VPN first" labels once the shutdown is already running; states the
@@ -171,6 +165,9 @@
     <string name="byedpi_catalog_hint">All options are verified by auto-tune first. The selected config is kept after VPN restart.</string>
     <string name="active_strategy">Active strategy: %1$s</string>
     <string name="restart_vpn_after_method">After changing method, turn VPN off and on.</string>
+    <!-- Same promise for the toggles the service only reads at start-up (QUIC, all apps). Worded
+         without naming a setting so one key covers both. -->
+    <string name="restart_vpn_after_change">Applies after you turn VPN off and on.</string>
     <string name="hide_description">Hide description</string>
     <string name="show_description">Show description</string>
     <string name="unblock_settings_subtitle">Method, QUIC, apps, byedpi</string>
@@ -190,6 +187,11 @@
     <string name="probe_simple_ok">A simple method worked. But «Auto-tune» is more reliable — it also checks FAKE/TTL.</string>
     <string name="probe_simple_fail">Simple probe failed — cascade methods may still work. Run «Auto-tune» above.</string>
     <string name="method_plain">No bypass</string>
+    <!-- The two desync methods, named identically wherever they appear: the bypass-method chips and
+         the probe result pills. Kept in Latin in every locale — they are the byedpi option names
+         (-r = TLS-record, -s = split) users meet in the command field and in support chats. -->
+    <string name="method_tlsrec">TLS-record</string>
+    <string name="method_split">SNI split</string>
     <string name="byedpi_cmd_title">byedpi command (advanced)</string>
     <string name="byedpi_cmd_desc">Fine-tune the bypass engine. Empty = selected method strategy. Active now: %1$s</string>
     <string name="no_desync">(no desync)</string>
@@ -203,6 +205,13 @@
     <string name="auto_tune_vpn_running">Turn off VPN first — tuning needs the engine exclusively.</string>
     <string name="current_command">current command</string>
     <string name="auto_tune_none_worked">No method broke the block. Try manually in advanced settings.</string>
+    <string name="auto_tune_engine_stuck">The bypass engine did not shut down and is still holding the device. Restart the app, then run auto-tune again.</string>
+    <!-- Between the tap on «Stop tuning» and the sweep actually ending: the method under test owns
+         the engine until it finishes, and a progress line frozen mid-count would read as a hang. -->
+    <string name="auto_tune_cancelling">Stopping — waiting for the current check to finish…</string>
+    <!-- Outcome of a stopped sweep. Says the method was left alone, because a sweep cut short has
+         tested some strategies and applied none of them. -->
+    <string name="auto_tune_cancelled">Tuning stopped — the method was left as it was.</string>
     <!-- Replaces the sweep entirely: with nothing resolvable there is nothing to test, and pointing
          the user at bypass methods would send them after the wrong problem. -->
     <string name="auto_tune_dns_failed">None of the sites resolve on this network — that\'s DNS, not a block, and no bypass method can fix it. Change the network\'s DNS or switch networks.</string>
@@ -210,6 +219,12 @@
     <string name="error_with_message">Error: %1$s</string>
     <string name="proxy_listening">Proxy listening on %1$s:%2$d</string>
     <string name="proxy_stopped_log">Proxy stopped</string>
+    <string name="proxy_error_port_busy">Port %1$d is busy — another app is holding it. Close other proxy/VPN apps (or reboot the phone) and start again.</string>
+    <!-- Names the route, not just the control: rotating the secret is an icon-only ↻ next to the
+         secret, inside the «Settings» block that starts collapsed — quoting a button label the user
+         cannot see anywhere on screen sent them looking for one that does not exist. -->
+    <string name="proxy_error_bad_secret">The saved secret is broken, so the proxy cannot start. Open «Settings» below, tap ↻ next to the secret, then add the link in Telegram again.</string>
+    <string name="proxy_error_start_failed">The proxy could not start: %1$s. Try again; if it keeps failing, reboot the phone.</string>
     <string name="network_changed">Network changed — reconnecting (%1$d)</string>
     <string name="tile_unblock">Unlock</string>
     <string name="tile_on">On</string>
@@ -218,6 +233,8 @@
     <string name="desync_channel_desc">YouTube / Instagram bypass status</string>
     <string name="desync_notification_title">Unlock is on</string>
     <string name="desync_notification_text">YouTube and Instagram bypass the block</string>
+    <!-- The two stage keys are substituted as %1$s into vpn_fail_format, so they have to complete
+         that sentence: a noun phrase after "Could not complete", an infinitive after "Не удалось". -->
     <string name="vpn_fail_start_stage">VPN start</string>
     <string name="vpn_fail_establish_stage">VPN establish</string>
     <string name="vpn_fail_format">Could not complete %1$s: %2$s: %3$s</string>

@@ -1,27 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Jevio Unblocker</string>
-    <string name="app_tagline">Telegram без блокировок</string>
     <string name="proxy_running">Прокси запущен</string>
     <string name="proxy_stopped">Прокси остановлен</string>
     <string name="proxy_notification_title">Jevio Unblocker включён</string>
-    <string name="proxy_notification_text">Telegram разблокирован — нажмите, чтобы открыть</string>
-    <string name="proxy_notification_connections">Активных подключений: %1$d</string>
+    <string name="proxy_notification_text">Telegram разблокирован — нажми, чтобы открыть</string>
     <string name="proxy_notification_channel_desc">Статус работы прокси Jevio Unblocker</string>
     <string name="notification_disable">Отключить</string>
     <string name="connect_telegram">Подключить Telegram</string>
-    <string name="start_proxy">Запустить прокси</string>
-    <string name="stop_proxy">Остановить прокси</string>
-    <string name="status">Статус</string>
-    <string name="address">Адрес</string>
-    <string name="port">Порт</string>
     <string name="secret">Секрет</string>
     <string name="logs">Логи</string>
-    <string name="copy_link">Копировать ссылку</string>
-    <string name="link_copied">Ссылка скопирована</string>
     <string name="tile_label">Jevio Unblocker</string>
     <string name="battery_warning_title">Прокси может отключаться</string>
-    <string name="battery_warning_text">Система экономии батареи может выгружать Jevio Unblocker в фоне — тогда Telegram перестаёт работать, пока вы не откроете приложение. Отключите оптимизацию батареи, чтобы прокси работал всегда.</string>
+    <string name="battery_warning_text">Система экономии батареи может выгружать Jevio Unblocker в фоне — тогда Telegram перестаёт работать, пока ты не откроешь приложение. Отключи оптимизацию батареи, чтобы прокси работал всегда.</string>
     <string name="battery_warning_button">Отключить оптимизацию</string>
 
     <string name="unit_b">%1$d Б</string>
@@ -40,7 +31,6 @@
     <string name="enable">Включить</string>
     <string name="disable">Выключить</string>
     <string name="settings">Настройки</string>
-    <string name="on">Вкл</string>
     <string name="off">Выкл</string>
     <string name="on_with_value">Вкл · %1$s</string>
     <string name="selected">Выбрано</string>
@@ -57,7 +47,7 @@
     <string name="state_starting">Запуск…</string>
     <string name="state_active">Активен</string>
     <string name="state_off">Выключен</string>
-    <string name="state_on">Включено</string>
+    <string name="state_on">Включён</string>
     <string name="state_tuning">Подбор…</string>
     <string name="local_proxy">Локальный прокси</string>
     <string name="a11y_telegram_proxy">Управление прокси Telegram</string>
@@ -81,21 +71,21 @@
     <string name="regenerate_secret">Сменить секрет</string>
     <string name="secret_fake_tls_mode">Режим Fake TLS (ee-секрет) под домен %1$s.</string>
     <string name="secret_persistent">Секрет постоянный — ссылку в Telegram повторно добавлять не нужно.</string>
-    <string name="secret_saved_hint">Секрет сохраняется между запусками. Нажмите ↻, чтобы сгенерировать новый.</string>
+    <string name="secret_saved_hint">Секрет сохраняется между запусками. Нажми ↻, чтобы сгенерировать новый.</string>
 
     <string name="fake_tls_title">Fake TLS маскировка</string>
-    <string name="fake_tls_desc">Маскирует прокси под HTTPS к настоящему сайту — самый надёжный обход DPI. Укажите домен, и ссылка станет ee-секретом.</string>
+    <string name="fake_tls_desc">Маскирует прокси под HTTPS к настоящему сайту — самый надёжный обход DPI. Укажи домен, и ссылка станет ee-секретом.</string>
     <string name="fake_tls_quick_pick">Быстрый выбор домена:</string>
     <string name="fake_tls_domain_label">Домен маскировки</string>
-    <string name="fake_tls_relink_hint">После изменения добавьте новую ссылку в Telegram заново.</string>
+    <string name="fake_tls_relink_hint">После изменения добавь новую ссылку в Telegram заново.</string>
 
     <string name="cf_title">Свой Cloudflare</string>
     <string name="cf_desc">Если сеть блокирует Telegram, прокси автоматически идёт через Cloudflare. Можно указать свой домен (надёжнее, чем общие).</string>
     <string name="cf_domains_label">Свои Cloudflare-домены</string>
-    <string name="cf_domains_hint">Несколько доменов — через запятую. Оставьте пустым, чтобы использовать встроенные домены.</string>
-    <string name="cf_worker_desc">Cloudflare Worker — бесплатно, без покупки домена. Разверните воркер по инструкции (docs/CfWorker.md) и вставьте его адрес *.workers.dev.</string>
+    <string name="cf_domains_hint">Несколько доменов — через запятую. Оставь пустым, чтобы использовать встроенные домены.</string>
+    <string name="cf_worker_desc">Cloudflare Worker — бесплатно, без покупки домена. Разверни воркер по инструкции (docs/CfWorker.md) и вставь его адрес *.workers.dev.</string>
     <string name="cf_worker_label">Cloudflare Worker домен</string>
-    <string name="cf_worker_hint">Несколько воркеров — через запятую. Оставьте пустым, чтобы не использовать.</string>
+    <string name="cf_worker_hint">Несколько воркеров — через запятую. Оставь пустым, чтобы не использовать.</string>
     <string name="save_worker">Сохранить Worker</string>
     <string name="restart_proxy_hint">Изменения применятся после перезапуска прокси.</string>
 
@@ -103,14 +93,14 @@
     <string name="tg_channel_subtitle">\@jevio_dev — новости и обновления</string>
     <string name="onboarding_welcome">Добро пожаловать в Jevio Unblocker</string>
     <string name="onboarding_proxy_title">Telegram-прокси</string>
-    <string name="onboarding_proxy_body">Запустите прокси и подключите Telegram по готовой ссылке.</string>
+    <string name="onboarding_proxy_body">Запусти прокси и подключи Telegram по готовой ссылке.</string>
     <string name="onboarding_sites_title">Разблокировка сайтов</string>
     <string name="onboarding_sites_body">Дополнительно можно подобрать метод и включить локальный VPN без внешнего сервера.</string>
     <string name="onboarding_control_title">Всё под контролем</string>
     <string name="onboarding_control_body">Продвинутые параметры свёрнуты, а банки и системные сервисы можно исключить из обхода.</string>
     <string name="onboarding_cta">Понятно, начать</string>
     <string name="update_available">Доступна новая версия</string>
-    <string name="update_tap_download">Нажмите, чтобы скачать обновление</string>
+    <string name="update_tap_download">Нажми, чтобы скачать обновление</string>
     <string name="sites_unlock_heading">Разблокировка сайтов</string>
 
     <string name="local_bypass">Локальный обход</string>
@@ -118,19 +108,20 @@
     <string name="a11y_disable_bypass">Выключить обход</string>
     <string name="a11y_enable_bypass">Включить обход</string>
     <string name="a11y_tuning_method">Подбор метода</string>
-    <string name="sites_testing_hint">Тестируем методы, не закрывайте приложение</string>
+    <string name="sites_testing_hint">Тестируем методы, не закрывай приложение</string>
     <string name="sites_stopping_hint">Завершаем соединения</string>
     <string name="sites_starting_hint">Поднимаем локальный обход</string>
     <string name="sites_running_hint">YouTube и Instagram без блокировок</string>
     <string name="sites_idle_hint">Локальный обход без внешнего VPN</string>
     <string name="auto_tune_title">Подбор метода</string>
-    <string name="auto_tune_progress">Проверяю %1$d/%2$d</string>
-    <string name="auto_tune_keep_open">Не закрывайте приложение во время проверки.</string>
+    <string name="auto_tune_progress">Проверено %1$d из %2$d</string>
+    <string name="auto_tune_keep_open">Не закрывай приложение во время проверки.</string>
     <string name="auto_tune_found">Подобран: «%1$s»</string>
     <string name="auto_tune_dns_skipped">Пропущено: %1$s — адрес не разрешился, проверять было нечего. Смена метода обхода это не изменит.</string>
     <string name="auto_tune_again">Подобрать заново</string>
+    <string name="auto_tune_cancel">Остановить подбор</string>
     <string name="turn_off_vpn_first">Сначала выключи VPN</string>
-    <string name="turn_off_vpn_first_long">Сначала выключите VPN</string>
+    <string name="turn_off_vpn_first_long">Сначала выключи VPN</string>
     <string name="auto_tune_vpn_stopping">VPN выключается…</string>
     <string name="try_again">Попробовать снова</string>
     <string name="auto_tune_button">Подобрать метод автоматически</string>
@@ -150,13 +141,14 @@
     <string name="diagnostics">Диагностика</string>
     <string name="custom_byedpi_cmd">Своя команда byedpi. Проверь её на своей сети перед постоянным использованием.</string>
     <string name="bypass_method">Метод обхода</string>
-    <string name="bypass_method_hint">Если что-то не открывается — переключите метод или нажмите «Автоподбор».</string>
+    <string name="bypass_method_hint">Если что-то не открывается — переключи метод или нажми «Автоподбор».</string>
     <string name="hide_catalog">Скрыть каталог</string>
     <string name="more_configs">Ещё конфиги (%1$d)</string>
     <string name="byedpi_catalog">Каталог ByeDPI</string>
     <string name="byedpi_catalog_hint">Все варианты сначала проверяются автоподбором. Выбранный конфиг сохранится после перезапуска VPN.</string>
     <string name="active_strategy">Активная стратегия: %1$s</string>
     <string name="restart_vpn_after_method">После смены метода выключи и включи VPN.</string>
+    <string name="restart_vpn_after_change">Применится после того, как выключишь и включишь VPN.</string>
     <string name="hide_description">Скрыть описание</string>
     <string name="show_description">Показать описание</string>
     <string name="unblock_settings_subtitle">Метод, QUIC, приложения, byedpi</string>
@@ -176,6 +168,8 @@
     <string name="probe_simple_ok">Нашёлся рабочий простой метод. Но «Автоподбор» надёжнее — он проверяет и FAKE/TTL.</string>
     <string name="probe_simple_fail">Простая проба не пробила — это не значит, что не работают каскадные методы. Запусти «Автоподбор» выше.</string>
     <string name="method_plain">Без обхода</string>
+    <string name="method_tlsrec">TLS-record</string>
+    <string name="method_split">SNI split</string>
     <string name="byedpi_cmd_title">Команда byedpi (для продвинутых)</string>
     <string name="byedpi_cmd_desc">Тонкая настройка движка обхода. Пусто = стратегия выбранного метода. Сейчас активно: %1$s</string>
     <string name="no_desync">(без десинка)</string>
@@ -188,11 +182,17 @@
     <string name="auto_tune_vpn_running">Сначала выключи VPN — подбор использует движок монопольно.</string>
     <string name="current_command">текущая команда</string>
     <string name="auto_tune_none_worked">Ни один метод не пробил блокировку. Попробуй вручную в продвинутых настройках.</string>
+    <string name="auto_tune_engine_stuck">Движок обхода не завершился и держит устройство. Перезапусти приложение и запусти автоподбор заново.</string>
+    <string name="auto_tune_cancelling">Останавливаю — жду, пока закончится текущая проверка…</string>
+    <string name="auto_tune_cancelled">Подбор остановлен — метод остался прежним.</string>
     <string name="auto_tune_dns_failed">Ни один адрес не разрешается в этой сети — это DNS, а не блокировка, и обходом это не лечится. Смени DNS сети или саму сеть.</string>
-    <string name="proxy_starting">Прокси запускается...</string>
+    <string name="proxy_starting">Прокси запускается…</string>
     <string name="error_with_message">Ошибка: %1$s</string>
     <string name="proxy_listening">Прокси слушает на %1$s:%2$d</string>
     <string name="proxy_stopped_log">Прокси остановлен</string>
+    <string name="proxy_error_port_busy">Порт %1$d занят — его держит другое приложение. Закрой другие прокси/VPN (или перезагрузи телефон) и запусти снова.</string>
+    <string name="proxy_error_bad_secret">Сохранённый секрет повреждён, прокси не запустится. Открой «Настройки» ниже, нажми ↻ рядом с секретом и добавь ссылку в Telegram заново.</string>
+    <string name="proxy_error_start_failed">Прокси не запустился: %1$s. Попробуй ещё раз; если повторяется — перезагрузи телефон.</string>
     <string name="network_changed">Сеть изменилась — переподключаю (%1$d)</string>
     <string name="tile_unblock">Разблокировка</string>
     <string name="tile_on">Включена</string>
@@ -201,8 +201,8 @@
     <string name="desync_channel_desc">Статус обхода блокировок YouTube / Instagram</string>
     <string name="desync_notification_title">Разблокировка включена</string>
     <string name="desync_notification_text">YouTube и Instagram обходят блокировку</string>
-    <string name="vpn_fail_start_stage">запуска VPN</string>
-    <string name="vpn_fail_establish_stage">поднятия VPN</string>
+    <string name="vpn_fail_start_stage">запустить VPN</string>
+    <string name="vpn_fail_establish_stage">поднять VPN</string>
     <string name="vpn_fail_format">Не удалось %1$s: %2$s: %3$s</string>
     <string name="vpn_fail_no_details">без подробностей</string>
     <string name="byedpi_port_busy">byedpi не запустился (порт %1$d занят или движок уже работает). Закрой ByeByeDPI/другие SOCKS и попробуй снова</string>
