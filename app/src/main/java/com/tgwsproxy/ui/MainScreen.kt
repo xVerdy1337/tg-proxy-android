@@ -37,7 +37,6 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -247,7 +246,12 @@ fun MainScreen(
             modifier = Modifier.fillMaxSize(),
             topBar = {
                 TopAppBar(
-                windowInsets = WindowInsets(0, 0, 0, 0),
+                // Was WindowInsets(0,0,0,0), which stripped the status-bar inset the bar exists to
+                // apply — under the edge-to-edge Android 15 enforces, the mark and the wordmark
+                // rendered underneath the clock. Scaffold hands the body a top padding equal to
+                // this bar's height, so the inset has to be consumed here or the whole screen
+                // shifts up by it.
+                windowInsets = TopAppBarDefaults.windowInsets,
                 title = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -485,7 +489,11 @@ private fun MainTabButton(
     ) {
         Text(
             text = label,
-            color = TextPrimary,
+            // The selected tab sits on the accent-filled indicator, so its label has to flip to
+            // OnAccent like every other filled surface in the app. Left as TextPrimary it was cream
+            // on peach — 1.6:1, and 1.0:1 back when the accent was lime, i.e. the label of whichever
+            // tab you were on was the least readable text on screen.
+            color = if (selected) OnAccent else TextPrimary,
             fontWeight = FontWeight.Medium,
             style = MaterialTheme.typography.bodyMedium,
             maxLines = 1,

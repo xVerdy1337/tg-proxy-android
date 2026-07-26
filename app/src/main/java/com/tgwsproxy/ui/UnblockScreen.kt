@@ -1129,9 +1129,14 @@ private fun MethodPill(label: String, outcome: com.tgwsproxy.net.HelloProbe.Outc
         com.tgwsproxy.net.HelloProbe.Outcome.ERROR -> Warning
         null -> SurfaceVariant
     }
+    // The untested pill can't draw its label in its own fill colour like the other three:
+    // SurfaceVariant on SurfaceVariant-at-16% is 1.2:1, so the chips a probe skipped rendered as
+    // blank grey lozenges. The tested states have enough separation from their own tint to stay
+    // legible, so only this branch needs a distinct ink.
+    val labelColor = if (outcome == null) TextMuted else color
     Text(
         label,
-        color = color,
+        color = labelColor,
         style = MaterialTheme.typography.labelSmall,
         maxLines = 1,
         softWrap = false,

@@ -4,11 +4,14 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
@@ -43,6 +46,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Opt in explicitly rather than inheriting it. Android 15 forces edge-to-edge on anything
+        // targeting SDK 35, so the choice is only whether we lay out for it — and until now we did
+        // not: the app drew under the status bar with nothing accounting for the inset. Declaring
+        // it here also makes 14-and-below behave the same as 15, so there is one layout to reason
+        // about instead of two. Both bars are asked for dark scrims because the canvas behind them
+        // is #11120F and the icons must stay light.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+        )
         ensureNotificationPermission()
         setContent {
             TgWsProxyTheme {
