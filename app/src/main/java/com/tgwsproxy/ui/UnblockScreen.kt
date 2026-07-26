@@ -80,8 +80,10 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -90,6 +92,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.tgwsproxy.R
 import com.tgwsproxy.ui.theme.Accent
 import com.tgwsproxy.ui.theme.Background
 import com.tgwsproxy.ui.theme.Border
@@ -113,9 +116,19 @@ import com.tgwsproxy.vpn.ByedpiPreset
 import com.tgwsproxy.vpn.ByedpiPresetCatalog
 import com.tgwsproxy.vpn.ByedpiPresetGroup
 import com.tgwsproxy.vpn.DesyncVpnService
-import java.util.Locale
-
 private val OkGreen = Success
+
+/**
+ * Identity of a probed service is its RAW HOSTNAME — never the label we draw next to it.
+ * `ServiceProbe.host` and the keys of `AutoTuneUiState.hostOk` come from the ViewModel, whose only
+ * context is the Application one, while the labels here resolve against the composition's context;
+ * under a per-app language override the two pick different locales, every lookup by translated text
+ * missed, and all three rows silently rendered «not checked» over a probe that had actually
+ * succeeded. Keep these byte-identical to the hosts in DesyncViewModel.targets().
+ */
+private const val HOST_YOUTUBE = "www.youtube.com"
+private const val HOST_YOUTUBE_VIDEO = "redirector.googlevideo.com"
+private const val HOST_INSTAGRAM = "www.instagram.com"
 
 /**
  * Inline all «Разблокировка» sections into the caller's LazyColumn — single-screen layout,
@@ -146,7 +159,15 @@ fun LazyListScope.unblockSections(
         val state by vm.vpnState.collectAsState()
         AutoTuneCard(
             autoTune = autoTune,
-            vpnRunning = state.isRunning,
+            // Busy spans every state in which the one-instance byedpi engine is claimed, not just
+            // isRunning: startup takes it seconds before isRunning flips, and teardown holds it until
+            // the native thread is joined. Stopping matters on its own because a stop arriving during
+            // startup clears isStarting while isRunning was never set — gating on the other two left
+            // the button live for the seconds that window lasts, and a sweep there is refused.
+            vpnBusy = state.isRunning || state.isStarting || state.isStopping,
+            // Mid-shutdown "turn the VPN off first" asks for something already in flight, right under
+            // a dial showing state_stopping — state what is happening instead of demanding an action.
+            vpnStopping = state.isStopping,
             onRun = onRunAutoTune,
             onReset = { vm.dismissAutoTune() },
             onEnable = onEnable,
@@ -216,11 +237,11 @@ private fun HeroUnblockCard(
         MaterialTheme.typography.headlineMedium
     }
     val stateLabel = when {
-        testing -> "Подбор…"
-        stopping -> "Остановка…"
-        starting -> "Запуск…"
-        running -> "Включено"
-        else -> "Выключено"
+        testing -> stringResource(R.string.state_tuning)
+        stopping -> stringResource(R.string.state_stopping)
+        starting -> stringResource(R.string.state_starting)
+        running -> stringResource(R.string.state_on)
+        else -> stringResource(R.string.state_off)
     }
 
     JevioGlassPanel(
@@ -234,13 +255,13 @@ private fun HeroUnblockCard(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Сайты",
+                    text = stringResource(R.string.tab_sites),
                     style = MaterialTheme.typography.titleLarge,
                     color = TextPrimary,
                     maxLines = 1,
                 )
                 Text(
-                    text = "Локальный обход",
+                    text = stringResource(R.string.local_bypass),
                     style = MaterialTheme.typography.labelSmall,
                     color = TextSecondary,
                     maxLines = 2,
@@ -253,14 +274,14 @@ private fun HeroUnblockCard(
             active = running,
             busy = busy,
             onClick = { if (running) onDisable() else onEnable() },
-            accessibilityLabel = "Управление обходом сайтов",
-            onClickLabel = if (running) "Выключить обход" else "Включить обход",
+            accessibilityLabel = stringResource(R.string.a11y_sites_bypass),
+            onClickLabel = if (running) stringResource(R.string.a11y_disable_bypass) else stringResource(R.string.a11y_enable_bypass),
             announcedState = when {
-                testing -> "Подбор метода"
-                stopping -> "Выключается"
-                starting -> "Включается"
-                running -> "Включено"
-                else -> "Выключено"
+                testing -> stringResource(R.string.a11y_tuning_method)
+                stopping -> stringResource(R.string.a11y_turning_off)
+                starting -> stringResource(R.string.a11y_turning_on)
+                running -> stringResource(R.string.state_on)
+                else -> stringResource(R.string.state_off)
             },
             icon = Icons.Default.Bolt,
         )
@@ -289,11 +310,11 @@ private fun HeroUnblockCard(
         Spacer(Modifier.height(8.dp))
         Text(
             when {
-                testing -> "Тестируем методы, не закрывайте приложение"
-                stopping -> "Завершаем соединения"
-                starting -> "Поднимаем локальный обход"
-                running -> "YouTube и Instagram без блокировок"
-                else -> "Локальный обход без внешнего VPN"
+                testing -> stringResource(R.string.sites_testing_hint)
+                stopping -> stringResource(R.string.sites_stopping_hint)
+                starting -> stringResource(R.string.sites_starting_hint)
+                running -> stringResource(R.string.sites_running_hint)
+                else -> stringResource(R.string.sites_idle_hint)
             },
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary,
@@ -317,7 +338,10 @@ private fun HeroUnblockCard(
 @Composable
 private fun AutoTuneCard(
     autoTune: AutoTuneUiState,
-    vpnRunning: Boolean,
+    /** VPN running, starting *or* stopping — the byedpi engine is taken throughout, so tuning is off. */
+    vpnBusy: Boolean,
+    /** Strict subset of [vpnBusy]: the shutdown is already running, so only the label changes. */
+    vpnStopping: Boolean,
     onRun: () -> Unit,
     onReset: () -> Unit,
     onEnable: () -> Unit,
@@ -325,12 +349,12 @@ private fun AutoTuneCard(
     when {
         autoTune.running -> {
             PanelCard {
-                Text("Подбор метода", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.auto_tune_title), color = TextPrimary, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
                     Text(
-                        "Проверяю ${autoTune.index}/${autoTune.total}",
+                        stringResource(R.string.auto_tune_progress, autoTune.index, autoTune.total),
                         color = TextPrimary,
                         style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum")
                     )
@@ -345,7 +369,7 @@ private fun AutoTuneCard(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Не закрывайте приложение во время проверки.",
+                    stringResource(R.string.auto_tune_keep_open),
                     color = TextSecondary, style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -354,13 +378,13 @@ private fun AutoTuneCard(
         autoTune.finished && autoTune.foundLabel != null -> {
             PanelCard {
                 Text(
-                    "Подобран: «${autoTune.foundLabel}»",
+                    stringResource(R.string.auto_tune_found, autoTune.foundLabel ?: ""),
                     color = OkGreen, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold
                 )
                 Spacer(Modifier.height(10.dp))
-                PrimaryButton("Включить", onClick = onEnable)
+                PrimaryButton(stringResource(R.string.enable), onClick = onEnable)
                 Spacer(Modifier.height(8.dp))
-                SecondaryButton("Подобрать заново", onReset, hapticFeedback = true)
+                SecondaryButton(stringResource(R.string.auto_tune_again), onReset, hapticFeedback = true)
             }
         }
 
@@ -369,8 +393,12 @@ private fun AutoTuneCard(
                 Text(autoTune.error, color = Warning, style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(10.dp))
                 PrimaryButton(
-                    if (vpnRunning) "Сначала выключи VPN" else "Попробовать снова",
-                    enabled = !vpnRunning,
+                    when {
+                        vpnStopping -> stringResource(R.string.auto_tune_vpn_stopping)
+                        vpnBusy -> stringResource(R.string.turn_off_vpn_first)
+                        else -> stringResource(R.string.try_again)
+                    },
+                    enabled = !vpnBusy,
                     onClick = onRun,
                 )
             }
@@ -378,9 +406,13 @@ private fun AutoTuneCard(
 
         else -> {
             SecondaryButton(
-                label = if (vpnRunning) "Сначала выключите VPN" else "Подобрать метод автоматически",
+                label = when {
+                    vpnStopping -> stringResource(R.string.auto_tune_vpn_stopping)
+                    vpnBusy -> stringResource(R.string.turn_off_vpn_first_long)
+                    else -> stringResource(R.string.auto_tune_button)
+                },
                 onClick = onRun,
-                enabled = !vpnRunning,
+                enabled = !vpnBusy,
                 hapticFeedback = true,
             )
         }
@@ -461,16 +493,20 @@ private fun SecondaryButton(
 
 @Composable
 private fun ServicesCard(probe: ProbeUiState, autoTune: AutoTuneUiState) {
-    val yt = probe.results.firstOrNull { it.display == "YouTube" }
-    val ytv = probe.results.firstOrNull { it.display == "YouTube (видео)" }
-    val ig = probe.results.firstOrNull { it.display == "Instagram" }
+    val ytLabel = stringResource(R.string.service_youtube)
+    val ytvLabel = stringResource(R.string.service_youtube_video)
+    val igLabel = stringResource(R.string.service_instagram)
+    // Labels are for display only; both lookups key off the hostname (see HOST_* above).
+    val yt = probe.results.firstOrNull { it.host == HOST_YOUTUBE }
+    val ytv = probe.results.firstOrNull { it.host == HOST_YOUTUBE_VIDEO }
+    val ig = probe.results.firstOrNull { it.host == HOST_INSTAGRAM }
     val busy = probe.checking || autoTune.running
     PanelCard {
-        ServiceRow("YouTube", yt, busy, autoTune.hostOk["YouTube"])
+        ServiceRow(ytLabel, yt, busy, autoTune.hostOk[HOST_YOUTUBE])
         HorizontalDivider(color = Border.copy(alpha = 0.5f), modifier = Modifier.padding(vertical = 2.dp))
-        ServiceRow("YouTube (видео)", ytv, busy, autoTune.hostOk["YouTube (видео)"])
+        ServiceRow(ytvLabel, ytv, busy, autoTune.hostOk[HOST_YOUTUBE_VIDEO])
         HorizontalDivider(color = Border.copy(alpha = 0.5f), modifier = Modifier.padding(vertical = 2.dp))
-        ServiceRow("Instagram", ig, busy, autoTune.hostOk["Instagram"])
+        ServiceRow(igLabel, ig, busy, autoTune.hostOk[HOST_INSTAGRAM])
     }
 }
 
@@ -482,13 +518,13 @@ private fun ServiceRow(
     forced: Boolean?,
 ) {
     val (dotColor, statusText, working) = when {
-        checking -> Triple(SurfaceVariant, "проверка…", false)
-        forced == true -> Triple(OkGreen, "работает", true)
-        forced == false -> Triple(Destructive, "заблокировано", false)
-        result == null -> Triple(SurfaceVariant, "не проверено", false)
-        result.anyPass -> Triple(OkGreen, "работает", true)
-        result.plain == com.tgwsproxy.net.HelloProbe.Outcome.BLOCKED -> Triple(Destructive, "заблокировано", false)
-        else -> Triple(Warning, "не удалось", false)
+        checking -> Triple(SurfaceVariant, stringResource(R.string.probe_checking), false)
+        forced == true -> Triple(OkGreen, stringResource(R.string.probe_works), true)
+        forced == false -> Triple(Destructive, stringResource(R.string.probe_blocked), false)
+        result == null -> Triple(SurfaceVariant, stringResource(R.string.probe_not_checked), false)
+        result.anyPass -> Triple(OkGreen, stringResource(R.string.probe_works), true)
+        result.plain == com.tgwsproxy.net.HelloProbe.Outcome.BLOCKED -> Triple(Destructive, stringResource(R.string.probe_blocked), false)
+        else -> Triple(Warning, stringResource(R.string.probe_failed), false)
     }
     val animatedDot by animateColorAsState(targetValue = dotColor, animationSpec = tween(250), label = "serviceDot")
     val statusColor = when {
@@ -546,36 +582,37 @@ private fun ServiceRow(
 
 @Composable
 private fun LiveStatsCard(state: DesyncVpnService.VpnState) {
+    val context = LocalContext.current
     PanelCard {
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             if (maxWidth < 300.dp) {
                 Column(Modifier.fillMaxWidth()) {
                     Row(Modifier.fillMaxWidth()) {
-                        StatItem("Соединения", "${state.activeTcp}", Modifier.weight(1f))
-                        StatItem("Отправлено", formatBytesShort(state.bytesUp), Modifier.weight(1f))
+                        StatItem(stringResource(R.string.stat_conns), "${state.activeTcp}", Modifier.weight(1f))
+                        StatItem(stringResource(R.string.stat_sent), formatBytesShort(context, state.bytesUp), Modifier.weight(1f))
                     }
                     Spacer(Modifier.height(12.dp))
                     Row(Modifier.fillMaxWidth()) {
-                        StatItem("Получено", formatBytesShort(state.bytesDown), Modifier.weight(1f))
-                        StatItem("Подключено", "${state.connOk}", Modifier.weight(1f))
+                        StatItem(stringResource(R.string.stat_received), formatBytesShort(context, state.bytesDown), Modifier.weight(1f))
+                        StatItem(stringResource(R.string.stat_connected), "${state.connOk}", Modifier.weight(1f))
                     }
                     Spacer(Modifier.height(12.dp))
                     Row(Modifier.fillMaxWidth()) {
-                        StatItem("Не дошло", "${state.connFail}", Modifier.weight(1f))
+                        StatItem(stringResource(R.string.stat_failed), "${state.connFail}", Modifier.weight(1f))
                         Spacer(Modifier.weight(1f))
                     }
                 }
             } else {
                 Column(Modifier.fillMaxWidth()) {
                     Row(Modifier.fillMaxWidth()) {
-                        StatItem("Соединения", "${state.activeTcp}", Modifier.weight(1f))
-                        StatItem("Отправлено", formatBytesShort(state.bytesUp), Modifier.weight(1f))
-                        StatItem("Получено", formatBytesShort(state.bytesDown), Modifier.weight(1f))
+                        StatItem(stringResource(R.string.stat_conns), "${state.activeTcp}", Modifier.weight(1f))
+                        StatItem(stringResource(R.string.stat_sent), formatBytesShort(context, state.bytesUp), Modifier.weight(1f))
+                        StatItem(stringResource(R.string.stat_received), formatBytesShort(context, state.bytesDown), Modifier.weight(1f))
                     }
                     Spacer(Modifier.height(12.dp))
                     Row(Modifier.fillMaxWidth()) {
-                        StatItem("Подключено", "${state.connOk}", Modifier.weight(1f))
-                        StatItem("Не дошло", "${state.connFail}", Modifier.weight(1f))
+                        StatItem(stringResource(R.string.stat_connected), "${state.connOk}", Modifier.weight(1f))
+                        StatItem(stringResource(R.string.stat_failed), "${state.connFail}", Modifier.weight(1f))
                         Spacer(Modifier.weight(1f))
                     }
                 }
@@ -584,7 +621,7 @@ private fun LiveStatsCard(state: DesyncVpnService.VpnState) {
         val err = state.error
         if (!err.isNullOrBlank()) {
             Spacer(Modifier.height(10.dp))
-            Text("Диагностика", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+            Text(stringResource(R.string.diagnostics), color = TextSecondary, style = MaterialTheme.typography.labelSmall)
             Spacer(Modifier.height(2.dp))
             Text(err, color = Destructive, style = MaterialTheme.typography.bodySmall)
         }
@@ -620,14 +657,15 @@ private fun StatItem(label: String, value: String, modifier: Modifier = Modifier
 }
 
 /** Human description of what each preset actually does — shown under the chips. */
+@Composable
 private fun presetDescription(preset: String, command: String): String {
     val selected = if (command.isBlank()) {
         ByedpiPresetCatalog.byId(preset)
     } else {
         ByedpiPresetCatalog.byCommand(command)
     }
-    return selected?.description
-        ?: "Своя команда byedpi. Проверь её на своей сети перед постоянным использованием."
+    return selected?.let { stringResource(it.descriptionRes) }
+        ?: stringResource(R.string.custom_byedpi_cmd)
 }
 
 @Composable
@@ -649,33 +687,33 @@ private fun PresetCard(
     }
 
     PanelCard {
-        Text("Метод обхода", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+        Text(stringResource(R.string.bypass_method), color = TextPrimary, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         Text(
-            "Если что-то не открывается — переключите метод или нажмите «Автоподбор».",
+            stringResource(R.string.bypass_method_hint),
             color = TextSecondary, style = MaterialTheme.typography.bodySmall
         )
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            PresetChip("Авто", DesyncVpnService.PRESET_AUTO, current, Modifier.weight(1f), onSelect)
+            PresetChip(stringResource(R.string.auto), DesyncVpnService.PRESET_AUTO, current, Modifier.weight(1f), onSelect)
             PresetChip("TLS-record", DesyncVpnService.PRESET_TLSREC, current, Modifier.weight(1f), onSelect)
             PresetChip("SNI split", DesyncVpnService.PRESET_SPLIT, current, Modifier.weight(1f), onSelect)
         }
         Spacer(Modifier.height(8.dp))
         SecondaryButton(
-            if (catalogExpanded) "Скрыть каталог" else "Ещё конфиги (${extraPresets.size})",
+            if (catalogExpanded) stringResource(R.string.hide_catalog) else stringResource(R.string.more_configs, extraPresets.size),
             onClick = { catalogExpanded = !catalogExpanded },
         )
 
         if (catalogExpanded) {
             Spacer(Modifier.height(4.dp))
             Text(
-                "Каталог ByeDPI",
+                stringResource(R.string.byedpi_catalog),
                 color = TextPrimary,
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                "Все варианты сначала проверяются автоподбором. Выбранный конфиг сохранится после перезапуска VPN.",
+                stringResource(R.string.byedpi_catalog_hint),
                 color = TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )
@@ -683,7 +721,7 @@ private fun PresetCard(
                 val groupPresets = extraPresets.filter { it.group == group }
                 if (groupPresets.isNotEmpty()) {
                     Spacer(Modifier.height(10.dp))
-                    Text(group.title, color = Accent, style = MaterialTheme.typography.labelMedium)
+                    Text(stringResource(group.titleRes), color = Accent, style = MaterialTheme.typography.labelMedium)
                     Spacer(Modifier.height(4.dp))
                     groupPresets.forEach { preset ->
                         StrategyPresetRow(
@@ -721,13 +759,13 @@ private fun PresetCard(
         if (activeLabel != null) {
             Spacer(Modifier.height(8.dp))
             Text(
-                "Активная стратегия: $activeLabel",
+                stringResource(R.string.active_strategy, activeLabel),
                 color = OkGreen, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium
             )
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            "После смены метода выключи и включи VPN.",
+            stringResource(R.string.restart_vpn_after_method),
             color = TextSecondary, style = MaterialTheme.typography.labelSmall
         )
     }
@@ -758,12 +796,12 @@ private fun StrategyPresetRow(
         ) {
             Icon(
                 imageVector = if (selected) Icons.Default.Check else Icons.Default.Tune,
-                contentDescription = if (selected) "Выбрано" else null,
+                contentDescription = if (selected) stringResource(R.string.selected) else null,
                 tint = if (selected) Accent else TextSecondary,
                 modifier = Modifier.size(18.dp),
             )
             Text(
-                text = preset.label,
+                text = stringResource(preset.labelRes),
                 color = TextPrimary,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 2,
@@ -772,7 +810,7 @@ private fun StrategyPresetRow(
             )
             Icon(
                 imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                contentDescription = if (expanded) "Скрыть описание" else "Показать описание",
+                contentDescription = if (expanded) stringResource(R.string.hide_description) else stringResource(R.string.show_description),
                 tint = TextSecondary,
                 modifier = Modifier.size(20.dp),
             )
@@ -785,7 +823,7 @@ private fun StrategyPresetRow(
                 shrinkVertically(tween(if (reduceMotion) 0 else 140)),
         ) {
             Text(
-                text = preset.description,
+                text = stringResource(preset.descriptionRes),
                 color = TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(start = 28.dp, top = 8.dp, end = 4.dp),
@@ -860,10 +898,10 @@ private fun UnblockSettingsCard(
             Icon(Icons.Default.Tune, null, tint = TextSecondary, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text("Настройки", color = TextPrimary, fontWeight = FontWeight.Medium)
+                Text(stringResource(R.string.settings), color = TextPrimary, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "Метод, QUIC, приложения, byedpi",
+                    stringResource(R.string.unblock_settings_subtitle),
                     color = TextSecondary, style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -882,14 +920,17 @@ private fun UnblockSettingsCard(
                 PresetCard(
                     current = settings.preset,
                     activeLabel = if (settings.byedpiCmd.isBlank()) null
-                    else com.tgwsproxy.net.StrategyTester.labelForCommand(settings.byedpiCmd) ?: "своя команда",
+                    else com.tgwsproxy.net.StrategyTester.labelForCommand(
+                        LocalContext.current,
+                        settings.byedpiCmd,
+                    ) ?: stringResource(R.string.custom_command),
                     command = settings.byedpiCmd,
                     onSelect = onSelectPreset,
                 )
                 ToggleCard(
                     icon = Icons.Default.Bolt,
-                    title = "Блокировать QUIC",
-                    subtitle = "Ускоряет обход для YouTube: обычный TLS вместо QUIC",
+                    title = stringResource(R.string.block_quic),
+                    subtitle = stringResource(R.string.block_quic_subtitle),
                     checked = settings.blockQuic,
                     onChange = onBlockQuic,
                 )
@@ -902,11 +943,11 @@ private fun UnblockSettingsCard(
                 )
                 ToggleCard(
                     icon = Icons.Default.Lock,
-                    title = "Все приложения",
+                    title = stringResource(R.string.all_apps),
                     subtitle = if (settings.allApps)
-                        "Обход для всех приложений (рекомендуется)"
+                        stringResource(R.string.all_apps_on_subtitle)
                     else
-                        "Только YouTube и Instagram — включи «все», если не работает",
+                        stringResource(R.string.all_apps_off_subtitle),
                     checked = settings.allApps,
                     onChange = onAllApps
                 )
@@ -923,10 +964,10 @@ private fun UnblockSettingsCard(
                     Icon(Icons.Default.Block, null, tint = TextSecondary, modifier = Modifier.size(22.dp))
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("Не использовать обход для…", color = TextPrimary, fontWeight = FontWeight.Medium)
+                        Text(stringResource(R.string.exclusions_title), color = TextPrimary, fontWeight = FontWeight.Medium)
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            "$excludedCount исключено (банки, Госуслуги…)",
+                            stringResource(R.string.exclusions_count, excludedCount),
                             color = TextSecondary, style = MaterialTheme.typography.labelSmall
                         )
                     }
@@ -943,16 +984,16 @@ private fun DiagnosticPresetCard(
     onSelect: (String) -> Unit,
 ) {
     PanelCard {
-        Text("Диагностика трубы", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+        Text(stringResource(R.string.pipe_diagnostics), color = TextPrimary, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         Text(
-            "Проверяет обычное подключение без desync. Нужен только чтобы понять, где проблема: в сети или в методе обхода.",
+            stringResource(R.string.pipe_diagnostics_desc),
             color = TextSecondary,
             style = MaterialTheme.typography.bodySmall,
         )
         Spacer(Modifier.height(10.dp))
         PresetChip(
-            "Проверить без обхода",
+            stringResource(R.string.check_without_bypass),
             DesyncVpnService.PRESET_OFF,
             current,
             Modifier.fillMaxWidth(),
@@ -970,10 +1011,10 @@ private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("Ручная проверка методов", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.manual_method_check), color = TextPrimary, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "Быстрая прямая проба split/tlsrec (без FAKE). Для полного подбора используй «Автоподбор» выше.",
+                    stringResource(R.string.manual_method_check_desc),
                     color = TextSecondary,
                     style = MaterialTheme.typography.labelSmall
                 )
@@ -993,7 +1034,7 @@ private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
                         modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = TextSecondary
                     )
                 } else {
-                    Text("Проверить", color = OnAccent, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.check), color = OnAccent, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -1007,9 +1048,9 @@ private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
             Spacer(Modifier.height(2.dp))
             Text(
                 if (anyWorks)
-                    "Нашёлся рабочий простой метод. Но «Автоподбор» надёжнее — он проверяет и FAKE/TTL."
+                    stringResource(R.string.probe_simple_ok)
                 else
-                    "Простая проба не пробила — это не значит, что не работают каскадные методы. Запусти «Автоподбор» выше.",
+                    stringResource(R.string.probe_simple_fail),
                 color = if (anyWorks) OkGreen else Warning,
                 style = MaterialTheme.typography.labelSmall
             )
@@ -1019,11 +1060,20 @@ private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
 
 @Composable
 private fun ProbeResultRow(r: ServiceProbe) {
+    // Resolve the label from the host: the ViewModel hands us raw hostnames only, so this name comes
+    // from the composition's locale — the same one ServicesCard uses for the very same service. A
+    // label carried over from the ViewModel would have been built in the Application locale instead.
+    val name = when (r.host) {
+        HOST_YOUTUBE -> stringResource(R.string.service_youtube)
+        HOST_YOUTUBE_VIDEO -> stringResource(R.string.service_youtube_video)
+        HOST_INSTAGRAM -> stringResource(R.string.service_instagram)
+        else -> r.host
+    }
     Column(
         modifier = Modifier.fillMaxWidth(),
     ) {
         Text(
-            text = r.display,
+            text = name,
             color = TextPrimary,
             style = MaterialTheme.typography.bodyMedium,
             maxLines = 2,
@@ -1031,7 +1081,7 @@ private fun ProbeResultRow(r: ServiceProbe) {
         )
         Spacer(Modifier.height(5.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            MethodPill("Без обхода", r.plain)
+            MethodPill(stringResource(R.string.method_plain), r.plain)
             MethodPill("A", r.tlsrec)
             MethodPill("B", r.split)
         }
@@ -1067,11 +1117,13 @@ private fun ByedpiCommandCard(
 ) {
     var text by remember(command) { mutableStateOf(command) }
     PanelCard {
-        Text("Команда byedpi (для продвинутых)", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+        Text(stringResource(R.string.byedpi_cmd_title), color = TextPrimary, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
+        val activeCmd = command.ifBlank {
+            presetDefault.ifBlank { stringResource(R.string.no_desync) }
+        }
         Text(
-            "Тонкая настройка движка обхода. Пусто = стратегия выбранного метода. " +
-                "Сейчас активно: ${command.ifBlank { presetDefault.ifBlank { "(без десинка)" } }}",
+            stringResource(R.string.byedpi_cmd_desc, activeCmd),
             color = TextSecondary, style = MaterialTheme.typography.bodySmall
         )
         Spacer(Modifier.height(10.dp))
@@ -1103,7 +1155,7 @@ private fun ByedpiCommandCard(
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text("Применить", color = OnAccent, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.apply), color = OnAccent, fontWeight = FontWeight.SemiBold)
             }
             Box(
                 modifier = Modifier
@@ -1115,15 +1167,12 @@ private fun ByedpiCommandCard(
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text("Сброс", color = TextPrimary)
+                Text(stringResource(R.string.reset), color = TextPrimary)
             }
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            "Движок — byedpi v0.17.3 (как в ByeByeDPI), поэтому команды из чатов BBD вставляются " +
-                "как есть: -H:\"домены\"(хостлист) -An/-L(авто-секции) -Kt(TLS) -f1+s(fake у SNI) " +
-                "-t8(TTL) -s1+s(сплит) -d1+s(disorder) -r1+s(TLS-record) -M(mod-http) -Q(fake-tls). " +
-                "ip/порт прокси добавляются автоматически. После «Применить» выключи и включи VPN.",
+            stringResource(R.string.byedpi_cmd_help),
             color = TextSecondary, style = MaterialTheme.typography.labelSmall
         )
     }
@@ -1179,10 +1228,10 @@ private fun ExclusionDialog(
                 .border(1.dp, Border, RoundedCornerShape(20.dp))
                 .padding(16.dp)
         ) {
-            Text("Не использовать обход для…", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.exclusions_title), color = TextPrimary, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(4.dp))
             Text(
-                "Отмеченные приложения идут мимо обхода (для банков и приложений, что ловят VPN). Действует в режиме «все приложения». После изменений перезапусти VPN.",
+                stringResource(R.string.exclusions_dialog_desc),
                 color = TextSecondary, style = MaterialTheme.typography.labelSmall
             )
             Spacer(Modifier.height(10.dp))
@@ -1190,7 +1239,7 @@ private fun ExclusionDialog(
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Поиск приложения", color = TextMuted) },
+                placeholder = { Text(stringResource(R.string.search_app), color = TextMuted) },
                 singleLine = true,
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = SurfaceVariant,
@@ -1206,7 +1255,7 @@ private fun ExclusionDialog(
             if (apps.isEmpty()) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
-                    Text("Загружаю список приложений…", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(R.string.loading_apps), color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                 }
             } else {
                 val filtered = apps.filter {
@@ -1232,7 +1281,7 @@ private fun ExclusionDialog(
                             Column(Modifier.weight(1f)) {
                                 Text(app.label, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
                                 Text(
-                                    if (app.builtIn) "встроенное исключение" else app.pkg,
+                                    if (app.builtIn) stringResource(R.string.built_in_exclusion) else app.pkg,
                                     color = TextSecondary, style = MaterialTheme.typography.labelSmall
                                 )
                             }
@@ -1241,7 +1290,7 @@ private fun ExclusionDialog(
                 }
             }
             Spacer(Modifier.height(12.dp))
-            PrimaryButton("Готово", hapticFeedback = false, onClick = onClose)
+            PrimaryButton(stringResource(R.string.done), hapticFeedback = false, onClick = onClose)
         }
     }
 }
@@ -1257,13 +1306,13 @@ private fun PanelCard(content: @Composable ColumnScope.() -> Unit) {
     )
 }
 
-private fun formatBytesShort(b: Long): String {
-    if (b < 1024) return "$b Б"
+private fun formatBytesShort(context: android.content.Context, b: Long): String {
+    if (b < 1024) return context.getString(R.string.unit_b, b)
     val kb = b / 1024.0
-    if (kb < 1024) return String.format(Locale.US, "%.0f КБ", kb)
+    if (kb < 1024) return context.getString(R.string.unit_kb_short, kb)
     val mb = kb / 1024.0
-    if (mb < 1024) return String.format(Locale.US, "%.1f МБ", mb)
-    return String.format(Locale.US, "%.2f ГБ", mb / 1024.0)
+    if (mb < 1024) return context.getString(R.string.unit_mb, mb)
+    return context.getString(R.string.unit_gb, mb / 1024.0)
 }
 
 @Preview(
@@ -1303,11 +1352,11 @@ private fun UnblockRunningPreview() {
         ),
         autoTune = AutoTuneUiState(
             finished = true,
-            foundLabel = "Авто",
+            foundLabel = stringResource(R.string.auto),
             hostOk = mapOf(
-                "YouTube" to true,
-                "YouTube (видео)" to true,
-                "Instagram" to true,
+                HOST_YOUTUBE to true,
+                HOST_YOUTUBE_VIDEO to true,
+                HOST_INSTAGRAM to true,
             ),
         ),
     )
@@ -1345,7 +1394,11 @@ private fun UnblockPreviewContent(
                     item {
                         AutoTuneCard(
                             autoTune = autoTune,
-                            vpnRunning = false,
+                            // Mirrors the real gate (isRunning is already false in this branch) so
+                            // the starting-state preview shows the long disabled label it actually
+                            // renders — that is the one at risk of overflowing at 320dp / 1.35×.
+                            vpnBusy = state.isStarting || state.isStopping,
+                            vpnStopping = state.isStopping,
                             onRun = {},
                             onReset = {},
                             onEnable = {},
@@ -1419,7 +1472,8 @@ internal fun FullUnblockPreviewContent() {
         ServicesCard(probe = ProbeUiState(), autoTune = autoTune)
         AutoTuneCard(
             autoTune = autoTune,
-            vpnRunning = false,
+            vpnBusy = false,
+            vpnStopping = false,
             onRun = {},
             onReset = {},
             onEnable = {},

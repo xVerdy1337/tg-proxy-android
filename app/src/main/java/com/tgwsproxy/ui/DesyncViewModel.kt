@@ -11,6 +11,7 @@ import android.net.wifi.WifiManager
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.tgwsproxy.R
 import com.tgwsproxy.net.HelloProbe
 import com.tgwsproxy.net.StrategyTester
 import com.tgwsproxy.vpn.ByedpiPresetCatalog
@@ -21,6 +22,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.net.InetAddress
+import java.net.ServerSocket
 import java.security.MessageDigest
 
 data class DesyncSettings(
@@ -34,7 +37,6 @@ data class DesyncSettings(
 /** One service's probe results across the methods we test directly. */
 data class ServiceProbe(
     val host: String,
-    val display: String,
     val plain: HelloProbe.Outcome? = null,
     val tlsrec: HelloProbe.Outcome? = null,
     val split: HelloProbe.Outcome? = null,
@@ -84,6 +86,12 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
 
     private companion object {
         const val AUTO_TUNE_CACHE_PREFIX = "auto_tune_cache_"
+
+        /**
+         * Loopback ports the tuner rotates through. Deliberately disjoint from the VPN's own SOCKS
+         * candidates so a probe run can never be handed the port a live VPN session is using.
+         */
+        val AUTO_TUNE_PORTS = intArrayOf(1081, 1082, 1083, 1084)
     }
 
     val vpnState: StateFlow<DesyncVpnService.VpnState> = DesyncVpnService.state
@@ -105,10 +113,16 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
 
     val builtInExcluded: Set<String> = DesyncVpnService.EXCLUDED_APPS.toSet()
 
-    private val targets = listOf(
-        "www.youtube.com" to "YouTube",
-        "redirector.googlevideo.com" to "YouTube (видео)",
-        "www.instagram.com" to "Instagram",
+    /**
+     * Hosts we probe and tune against — raw hostnames only. The ViewModel deliberately carries no
+     * display names: its only Context is the Application one, whose locale can differ from the
+     * composition's under a per-app language override, so any label built here would print
+     * differently than the same service's label on screen. The UI resolves names from these hosts.
+     */
+    private fun targets(): List<String> = listOf(
+        "www.youtube.com",
+        "redirector.googlevideo.com",
+        "www.instagram.com",
     )
 
     /**
@@ -117,16 +131,17 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
      */
     fun runProbe() {
         if (_probe.value.checking) return
+        val app = getApplication<Application>()
         _probe.value = ProbeUiState(checking = true)
         viewModelScope.launch {
+            val targets = targets()
             val results = withContext(Dispatchers.IO) {
-                targets.map { (host, display) ->
+                targets.map { host ->
                     ServiceProbe(
                         host = host,
-                        display = display,
-                        plain = HelloProbe.probe(host, method = HelloProbe.Method.PLAIN).outcome,
-                        tlsrec = HelloProbe.probe(host, method = HelloProbe.Method.TLSREC).outcome,
-                        split = HelloProbe.probe(host, method = HelloProbe.Method.SPLIT).outcome,
+                        plain = HelloProbe.probe(app, host, method = HelloProbe.Method.PLAIN).outcome,
+                        tlsrec = HelloProbe.probe(app, host, method = HelloProbe.Method.TLSREC).outcome,
+                        split = HelloProbe.probe(app, host, method = HelloProbe.Method.SPLIT).outcome,
                     )
                 }
             }
@@ -145,24 +160,43 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
      */
     fun runAutoTune() {
         if (_autoTune.value.running) return
-        if (vpnState.value.isRunning) {
+        val app = getApplication<Application>()
+        val vpn = vpnState.value
+        // All three flags block: the VPN claims the process-wide byedpi engine at the top of startup
+        // (isStarting), flips isRunning seconds later, and still owns it all through teardown
+        // (isStopping) until stopByedpi's 2s+1.5s joins return. Stop-during-startup is why isStopping
+        // is load-bearing rather than redundant — it clears isStarting without isRunning ever having
+        // been set, so for those seconds the other two read false over a live engine. A sweep started
+        // there gets its first candidate (the cached/saved command — the one most likely to be right)
+        // refused by the native single-instance check, scores it as a failure, and caches a worse one.
+        if (vpn.isRunning || vpn.isStarting || vpn.isStopping) {
             _autoTune.value = AutoTuneUiState(
                 finished = true,
-                error = "Сначала выключи VPN — подбор использует движок монопольно."
+                error = app.getString(R.string.auto_tune_vpn_running),
             )
             return
         }
-        val hosts = targets.map { it.first }
+        val hosts = targets()
         val networkCacheKey = autoTuneNetworkCacheKey()
         val cached = networkCacheKey?.let { prefs().getString(AUTO_TUNE_CACHE_PREFIX + it, null) }
         // Test the currently-saved command first (instant if it still works), then the curated list.
         val saved = _settings.value.byedpiCmd.trim()
         val strategies = buildList {
             if (!cached.isNullOrEmpty()) {
-                add(StrategyTester.Strategy(cached, StrategyTester.labelForCommand(cached) ?: "cached"))
+                add(
+                    StrategyTester.Strategy(
+                        cached,
+                        StrategyTester.labelResForCommand(cached) ?: R.string.custom_command,
+                    )
+                )
             }
             if (saved.isNotEmpty() && saved != cached) {
-                add(StrategyTester.Strategy(saved, StrategyTester.labelForCommand(saved) ?: "текущая команда"))
+                add(
+                    StrategyTester.Strategy(
+                        saved,
+                        StrategyTester.labelResForCommand(saved) ?: R.string.current_command,
+                    )
+                )
             }
             addAll(StrategyTester.STRATEGIES.filter { it.command != saved && it.command != cached })
         }
@@ -173,12 +207,20 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
             val found = withContext(Dispatchers.IO) {
                 var hit: StrategyTester.Strategy? = null
                 var bestOkCount = 0
+                var lastPort = 0
                 for ((i, s) in strategies.withIndex()) {
-                    _autoTune.value = _autoTune.value.copy(index = i + 1, currentLabel = s.label)
-                    val res = StrategyTester.testStrategy(s, hosts, port = 1081 + (i % 4))
-                    val hostMap = res.hosts.associate { hr ->
-                        (targets.firstOrNull { it.first == hr.host }?.second ?: hr.host) to hr.ok
-                    }
+                    _autoTune.value = _autoTune.value.copy(
+                        index = i + 1,
+                        currentLabel = app.getString(s.labelRes),
+                    )
+                    val port = freeAutoTunePort(avoid = lastPort)
+                    lastPort = port
+                    val res = StrategyTester.testStrategy(app, s, hosts, port = port)
+                    // Key by the RAW hostname. Keying by the localized label used to work only
+                    // because the reader resolved the same resource in the same locale; a per-app
+                    // language or an Activity-level config override yields a different string there
+                    // and every service row silently degrades to "not checked".
+                    val hostMap = res.hosts.associate { hr -> hr.host to hr.ok }
                     lastHosts = hostMap
                     // Keep the strategy that unblocks the MOST hosts (>=1). Requiring every host to
                     // pass in one shot was too strict: a strategy that opens YouTube but not
@@ -199,14 +241,14 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                 networkCacheKey?.let { prefs().edit().putString(AUTO_TUNE_CACHE_PREFIX + it, found.command).apply() }
                 _autoTune.value = AutoTuneUiState(
                     finished = true,
-                    foundLabel = found.label,
+                    foundLabel = app.getString(found.labelRes),
                     foundCommand = found.command,
                     hostOk = bestHosts,
                 )
             } else {
                 _autoTune.value = AutoTuneUiState(
                     finished = true,
-                    error = "Ни один метод не пробил блокировку. Попробуй вручную в продвинутых настройках.",
+                    error = app.getString(R.string.auto_tune_none_worked),
                     hostOk = lastHosts,
                 )
             }
@@ -257,6 +299,37 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun loadExcluded(): Set<String> =
         prefs().getStringSet(DesyncVpnService.KEY_EXCLUDED_USER, emptySet())?.toSet() ?: emptySet()
+
+    /**
+     * Pick a loopback port the next byedpi test instance can actually bind. The old fixed rotation
+     * assumed 1081..1084 were ours: if any local process (another proxy app, a debug tool) squats on
+     * one, every candidate landing there fails to bind and the tuner blames the *strategy* for a
+     * port problem. Same probe-then-take approach as DesyncVpnService.selectSocksPort, reimplemented
+     * here because that one is private and owns the VPN's separate port set.
+     *
+     * [avoid] is the port the previous candidate just used. byedpi's listener can still be unwinding
+     * when the next strategy starts, so we never hand back the port we just released even if the
+     * probe below says it is free again — a bind that races the dying instance would misreport as a
+     * failed strategy, which is exactly the confusion this function exists to remove.
+     */
+    private fun freeAutoTunePort(avoid: Int): Int {
+        val loopback = InetAddress.getByName("127.0.0.1")
+        for (candidate in AUTO_TUNE_PORTS) {
+            if (candidate == avoid) continue
+            try {
+                ServerSocket(candidate, 1, loopback).use { return candidate }
+            } catch (_: Exception) {
+                // Something local owns this port; try the next candidate.
+            }
+        }
+        // All fixed candidates busy — let the OS hand out an ephemeral port instead of forcing a
+        // bind failure that would be attributed to the strategy under test.
+        return try {
+            ServerSocket(0, 1, loopback).use { it.localPort }
+        } catch (_: Exception) {
+            AUTO_TUNE_PORTS.firstOrNull { it != avoid } ?: AUTO_TUNE_PORTS[0]
+        }
+    }
 
     /** Stable, privacy-preserving key for the active network; never stores the Wi-Fi name itself. */
     private fun autoTuneNetworkCacheKey(): String? {

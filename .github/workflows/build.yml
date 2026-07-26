@@ -45,11 +45,11 @@ jobs:
         run: |
           sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
 
-      - name: Run focused SOCKS5 regression test
-        run: gradle testDebugUnitTest --tests com.tgwsproxy.vpn.TcpConnectionTest
-
-      - name: Run proxy-service lifecycle regression test
-        run: gradle testDebugUnitTest --tests com.tgwsproxy.service.ProxyServiceFailureTest
+      # The whole suite, not a hand-picked subset: naming individual classes here meant every test
+      # that was not on the list (packet parsing, desync engine, MTProto framing, byedpi argument
+      # sanitising) could be broken and still merge behind a green check.
+      - name: Run unit tests
+        run: gradle testDebugUnitTest
 
       - name: Upload failed unit-test report
         if: ${{ failure() }}
@@ -67,7 +67,9 @@ jobs:
           from glob import glob
           from xml.etree import ElementTree
 
-          for report in glob("app/build/test-results/testDebugUnitTest/*.xml"):
+          # sorted() so the surfaced failure is the same one on every re-run: glob() returns
+          # directory order, which was harmless with two report files and is not with eight.
+          for report in sorted(glob("app/build/test-results/testDebugUnitTest/*.xml")):
               root = ElementTree.parse(report).getroot()
               for case in root.findall(".//testcase"):
                   failure = case.find("failure")
@@ -79,7 +81,7 @@ jobs:
                   detail = detail[:3000].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
                   print(f"::error title={case.get('classname')}.{case.get('name')}::{detail}")
                   raise SystemExit
-          print("::error title=ProxyServiceFailureTest::JUnit did not produce a failure detail")
+          print("::error title=testDebugUnitTest::JUnit did not produce a failure detail")
           PY
 
       - name: Grant execute permission for gradlew

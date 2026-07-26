@@ -274,7 +274,7 @@ class ProxyService : Service() {
                 bytesDown = 0,
                 startedAt = System.currentTimeMillis(),
                 route = "",
-                logs = listOf("Прокси запускается...")
+                logs = listOf(getString(R.string.proxy_starting))
             )
         }
         persistRunning(true)
@@ -294,6 +294,7 @@ class ProxyService : Service() {
         serviceScope.launch {
             try {
                 proxyServer = MtProtoProxyServer(
+                    appContext = applicationContext,
                     host = host,
                     port = port,
                     secret = secret,
@@ -307,7 +308,7 @@ class ProxyService : Service() {
                 )
                 proxyServer?.start()
             } catch (e: Exception) {
-                addLog("Ошибка: ${e.message}")
+                addLog(getString(R.string.error_with_message, e.message))
                 _serviceState.update { it.copy(isRunning = false) }
                 persistRunning(false)
                 releaseWakeLocks()
@@ -498,7 +499,7 @@ class ProxyService : Service() {
                 "Jevio Unblocker",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Статус работы прокси Jevio Unblocker"
+                description = getString(R.string.proxy_notification_channel_desc)
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
