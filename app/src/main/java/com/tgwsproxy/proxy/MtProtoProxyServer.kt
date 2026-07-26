@@ -40,6 +40,18 @@ class MtProtoProxyServer(
     @Volatile private var running = false
     private val activeConnections = ConcurrentHashMap.newKeySet<Socket>()
     private val connectionCount = AtomicInteger(0)
+
+    /**
+     * Live client count, readable at any moment from any thread.
+     *
+     * The number delivered to `onConnectionChange` is a SNAPSHOT taken by whichever thread did the
+     * increment or decrement, and the atomic update and the callback are two separate steps — so two
+     * callbacks racing from different threads arrive in an order unrelated to the order the counter
+     * actually moved, in BOTH directions. A consumer that latches the delivered value can therefore
+     * end up believing there are no clients while one is relaying. Anything making a decision on the
+     * count must read this instead of trusting the payload.
+     */
+    val connections: Int get() = connectionCount.get()
     private val serverScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val secretBytes = parseSecret(secret)
 

@@ -83,6 +83,16 @@ class ProxyService : Service() {
         const val DEFAULT_PORT = 1443
 
         /**
+         * How long the wake locks outlive the last client. Not zero, because Telegram drops and
+         * redials constantly — on its own backoff ladder, and on every network switch — and each
+         * toggle of WIFI_MODE_FULL_HIGH_PERF drags the radio out of and back into power save, which
+         * costs more than simply holding it across the gap. 30s clears every redial we can provoke
+         * (our own 700ms settle plus the reconnect, seconds at worst) by an order of magnitude,
+         * while still handing an idle proxy back to Doze within half a minute instead of never.
+         */
+        private const val WAKE_LOCK_LINGER_MS = 30_000L
+
+        /**
          * Build the tg:// proxy link. Pure helper so the UI can render the link
          * immediately from persisted prefs without waiting for the service to bind.
          */
@@ -127,7 +137,9 @@ class ProxyService : Service() {
 
     private val binder = ProxyBinder()
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var proxyServer: MtProtoProxyServer? = null
+    // @Volatile: written by the start coroutine on IO, read from the accept thread and from each
+    // client's thread inside the wake-lock gate to get the authoritative connection count.
+    @Volatile private var proxyServer: MtProtoProxyServer? = null
     private var statsJob: Job? = null
 
     /**
@@ -139,9 +151,11 @@ class ProxyService : Service() {
     private var stopJob: Job? = null
 
     /**
-     * Bumped by every start and every stop. A start coroutine that had to wait out a teardown
-     * re-checks it before binding: if anything asked us to start or stop in the meantime, the socket
-     * it was about to open would belong to nobody and would hold the port against the real one.
+     * Bumped by every start, every stop and by destroy. A start coroutine that had to wait out a
+     * teardown re-checks it before binding: if anything asked us to start or stop in the meantime,
+     * the socket it was about to open would belong to nobody and would hold the port against the
+     * real one. [onConnectionsChanged] carries its own run's value for the same reason — a count
+     * from a run that is already over must not resurrect the wake locks.
      */
     private val proxyGeneration = AtomicLong(0)
 
@@ -159,10 +173,39 @@ class ProxyService : Service() {
     @Volatile private var lastNetworkId: String? = null
     @Volatile private var lastNetworkChangeAt: Long = 0
 
-    // Wake locks keep the CPU and Wi-Fi radio alive while the proxy is running,
-    // so the local relay survives screen-off / Doze instead of silently dying.
+    // Wake locks keep the CPU and Wi-Fi radio alive for a LIVE relay, so it survives screen-off /
+    // Doze instead of silently dying. Held only while at least one client is connected (plus
+    // [WAKE_LOCK_LINGER_MS]) — see [acquireWakeLocks] for why a merely listening proxy needs
+    // neither, which is what makes running all day nearly free.
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+
+    /**
+     * Serialises every wake-lock transition. Connection counts arrive from the accept thread and
+     * from each client's own coroutine while stop/destroy run on the main thread; neither lock is
+     * thread-safe against a concurrent acquire/release and, being setReferenceCounted(false), a
+     * release that interleaves with an acquire strands them in the wrong state permanently. A
+     * monitor rather than a single-threaded dispatcher because stop and destroy must be *done*
+     * releasing by the time they return — a transition merely queued on a scope would die with it.
+     */
+    private val wakeLockGate = Any()
+
+    /** Guarded by [wakeLockGate]: the armed linger, cancelled when a client arrives before it. */
+    private var pendingRelease: Job? = null
+
+    /**
+     * Guarded by [wakeLockGate]: the live client count, re-read from the server rather than taken
+     * from the callback payload.
+     *
+     * That distinction is the whole correctness of this: the delivered number is a snapshot from
+     * whichever thread moved the counter, and the atomic update and the callback are separate steps,
+     * so two callbacks racing arrive in an order unrelated to the order the count actually moved.
+     * Latching the payload goes wrong in both directions — a stale zero applied after a live accept
+     * releases the locks under a running relay (the exact failure these locks exist to prevent), and
+     * a stale non-zero left after the last client never self-corrects, because there is no further
+     * disconnect to fix it, quietly restoring the 24/7 hold this gating removes.
+     */
+    private var liveConnections = 0
 
     inner class ProxyBinder : Binder() {
         fun getService(): ProxyService = this@ProxyService
@@ -189,6 +232,7 @@ class ProxyService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        createWakeLocks()
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         // Restore the saved Cloudflare-proxy domain so the UI reflects it on launch.
         val savedDomain = prefs.getString(KEY_CF_DOMAIN, "") ?: ""
@@ -343,7 +387,9 @@ class ProxyService : Service() {
             )
         }
         persistRunning(true)
-        acquireWakeLocks()
+        // Deliberately no wake lock here: a started-but-idle proxy must hold nothing. The callback
+        // wired below takes them on the first accept, and it is handed to the server at
+        // construction — before start() can accept anything — so no relay can ever run unlocked.
         registerNetworkCallback()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -371,9 +417,7 @@ class ProxyService : Service() {
                     port = port,
                     secret = secret,
                     onLog = { logLine -> addLog(logLine) },
-                    onConnectionChange = { count ->
-                        _serviceState.update { it.copy(connectionCount = count) }
-                    },
+                    onConnectionChange = { count -> onConnectionsChanged(generation, count) },
                     cfDomain = _serviceState.value.cfDomain,
                     cfWorkerDomain = _serviceState.value.cfWorkerDomain,
                     fakeTlsDomain = fakeTlsDomain
@@ -409,39 +453,125 @@ class ProxyService : Service() {
     }
 
     /**
-     * Hold a partial CPU wake lock plus a high-performance Wi-Fi lock while the
-     * proxy runs. Without these the system can park the CPU / Wi-Fi radio on
-     * screen-off, which drops the relay until the user reopens the app.
+     * The only driver of the wake locks: they follow the client count, not the run.
+     *
+     * [generation] is the run the reporting server belongs to. A stopped server's clients keep
+     * reporting their own unwind for as long as their sockets take to close — stopProxy bumps the
+     * generation before it releases, so those counts neither put the locks back nor overwrite a
+     * "stopped" UI with two connections. The check sits inside the gate because it and the acquire
+     * have to be one indivisible step; outside it, a callback could clear the check, block on the
+     * monitor while stopProxy released, and then acquire into a service that is already gone.
+     *
+     * Must not release the instant the count hits zero: Telegram redials within seconds and
+     * thrashing the locks costs more than holding them — hence [WAKE_LOCK_LINGER_MS].
+     */
+    private fun onConnectionsChanged(generation: Long, count: Int) {
+        synchronized(wakeLockGate) {
+            if (proxyGeneration.get() != generation) return
+            // The server's atomic, not `count` — see [liveConnections]. Falling back to the payload
+            // only matters if the server reference is already gone, and then there is nothing left
+            // to relay anyway.
+            liveConnections = proxyServer?.connections ?: count
+            // Cancel first in both branches: at most one linger may ever be armed, and an arriving
+            // client must disarm the one already ticking.
+            pendingRelease?.cancel()
+            pendingRelease = null
+            if (liveConnections > 0) {
+                acquireWakeLocks()
+            } else {
+                pendingRelease = serviceScope.launch {
+                    // delay() measures uptime, which is exactly the right clock here: we are still
+                    // holding the CPU awake while it runs, so it cannot be stretched by a suspend.
+                    delay(WAKE_LOCK_LINGER_MS)
+                    // Re-checked under the gate because cancel() cannot stop a timer that has
+                    // already cleared the delay and is queued on the monitor — a client that
+                    // arrived in that window has taken the locks and this expiry must not undo it.
+                    // Straight from the server again, not from the cached field: this is the last
+                    // check before the locks go, so it should depend on nothing but the counter.
+                    synchronized(wakeLockGate) {
+                        val live = proxyServer?.connections ?: 0
+                        liveConnections = live
+                        if (live == 0) dropWakeLocks()
+                    }
+                }
+            }
+        }
+        // Also the authoritative count, for the same reason the gate uses it: two callbacks that
+        // cross would otherwise leave the badge showing whichever one lost the race.
+        val shown = proxyServer?.connections ?: count
+        _serviceState.update { it.copy(connectionCount = shown) }
+    }
+
+    /**
+     * Take a partial CPU wake lock plus a high-performance Wi-Fi lock for a live relay. Without
+     * them the system can park the CPU / Wi-Fi radio on screen-off, which drops the relay until the
+     * user reopens the app. Must hold [wakeLockGate].
+     *
+     * Not taken for a merely listening proxy, which is the whole point of gating: the client is
+     * Telegram, an app on this same device, and a local app cannot dial 127.0.0.1 while the CPU is
+     * suspended — the accept that would need servicing implies the CPU is already awake, so the
+     * listener needs no help to survive. Only bytes in flight do, and a non-zero connection count
+     * is exactly that. Being a foreground service is what keeps us alive in between.
      */
     private fun acquireWakeLocks() {
         try {
-            if (wakeLock == null) {
-                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-                wakeLock = pm.newWakeLock(
-                    PowerManager.PARTIAL_WAKE_LOCK,
-                    "Jevio:ProxyWakeLock"
-                ).apply { setReferenceCounted(false) }
-            }
             if (wakeLock?.isHeld == false) wakeLock?.acquire()
-
-            if (wifiLock == null) {
-                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                // FULL_HIGH_PERF keeps Wi-Fi awake for the relay without the extra power draw of
-                // FULL_LOW_LATENCY (that mode is meant for gaming/voice and pins the radio in a
-                // high-power, low-latency state — overkill for a mostly-idle proxy).
-                @Suppress("DEPRECATION")
-                val mode = WifiManager.WIFI_MODE_FULL_HIGH_PERF
-                wifiLock = wm.createWifiLock(mode, "Jevio:ProxyWifiLock").apply {
-                    setReferenceCounted(false)
-                }
-            }
             if (wifiLock?.isHeld == false) wifiLock?.acquire()
         } catch (_: Exception) {
             // Wake locks are best-effort; never let them crash the service.
         }
     }
 
+    /**
+     * Build both locks once, in onCreate, rather than lazily on first acquire.
+     *
+     * newWakeLock and createWifiLock are binder round-trips to system_server, and the gate they used
+     * to sit inside is also taken from the main thread by stop and destroy — so a first acquire on
+     * the accept thread could park the main thread behind a binder call for as long as system_server
+     * was contended. Constructing eagerly leaves the gate wrapping only isHeld/acquire/release,
+     * which are cheap and local.
+     */
+    private fun createWakeLocks() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "Jevio:ProxyWakeLock"
+            ).apply { setReferenceCounted(false) }
+
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            // FULL_HIGH_PERF keeps Wi-Fi awake for the relay without the extra power draw of
+            // FULL_LOW_LATENCY (that mode is meant for gaming/voice and pins the radio in a
+            // high-power, low-latency state — overkill for a mostly-idle proxy).
+            @Suppress("DEPRECATION")
+            val mode = WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            wifiLock = wm.createWifiLock(mode, "Jevio:ProxyWifiLock").apply {
+                setReferenceCounted(false)
+            }
+        } catch (_: Exception) {
+            // Best-effort: a null lock simply means acquire/release are no-ops.
+        }
+    }
+
+    /**
+     * Unconditional teardown for stop / destroy / a failed start: disarm any linger and drop both
+     * locks now. Idempotent — a double stop, or a destroy after a stop, finds nothing armed and
+     * nothing held, and isHeld keeps the second release from throwing. A linger already past its
+     * delay and queued on the gate then finds liveConnections at 0 and releases into locks that are
+     * already gone, which the same isHeld check absorbs.
+     */
     private fun releaseWakeLocks() {
+        synchronized(wakeLockGate) {
+            pendingRelease?.cancel()
+            pendingRelease = null
+            liveConnections = 0
+            dropWakeLocks()
+        }
+    }
+
+    /** The release itself. Must hold [wakeLockGate]; separate try blocks so one throw can't skip
+     *  the other lock. */
+    private fun dropWakeLocks() {
         try {
             if (wakeLock?.isHeld == true) wakeLock?.release()
         } catch (_: Exception) {}
@@ -454,7 +584,10 @@ class ProxyService : Service() {
         statsJob?.cancel()
         statsJob = null
         unregisterNetworkCallback()
-        // Invalidates any start still queued behind an earlier teardown: it must not bind now.
+        // Invalidates any start still queued behind an earlier teardown: it must not bind now. It
+        // also retires this run's connection callbacks, and must therefore stay AHEAD of the
+        // release below: the clients torn down by stop() keep reporting their counts on the way
+        // out, and an unretired one would take the locks straight back.
         proxyGeneration.incrementAndGet()
 
         // Detach the server reference and flip state to stopped immediately so the UI
@@ -518,8 +651,8 @@ class ProxyService : Service() {
 
     /**
      * Listen for the device's default network changing (Wi-Fi ↔ mobile). When the active
-     * network actually changes we re-acquire the Wi-Fi lock and tell the proxy to drop its
-     * stale upstream sockets so Telegram reconnects instantly over the new link.
+     * network actually changes we tell the proxy to drop its stale upstream sockets so Telegram
+     * reconnects instantly over the new link.
      */
     private fun registerNetworkCallback() {
         if (networkCallback != null) return
@@ -548,7 +681,18 @@ class ProxyService : Service() {
         serviceScope.launch {
             // Small settle delay so the new network is actually usable before redialing.
             delay(700)
-            acquireWakeLocks()
+            // Re-assert, never resurrect. A switch on an idle proxy must leave it holding nothing:
+            // the unconditional acquire that used to sit here had no counterpart that would ever
+            // fire, because with no client there is no connection callback to release it. For a
+            // live relay the locks are already held, and this only repairs an acquire that threw.
+            // The switch itself needs nothing more: resetConnections() below closes every client,
+            // which walks the count to zero and merely ARMS the linger, and the redial that follows
+            // lands well inside it and disarms it — so the coverage is continuous across the switch.
+            synchronized(wakeLockGate) {
+                // Straight from the server, like every other decision on this count.
+                liveConnections = proxyServer?.connections ?: 0
+                if (liveConnections > 0) acquireWakeLocks()
+            }
             try { proxyServer?.resetConnections() } catch (_: Exception) {}
         }
     }
@@ -659,6 +803,11 @@ class ProxyService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // Retire the run before anything else. A destroy that did NOT come through stopProxy (the
+        // system tearing us down) leaves the server's clients still reporting their unwind, and a
+        // count landing after this point would take locks that the serviceScope.cancel() below has
+        // left nobody to release.
+        proxyGeneration.incrementAndGet()
         // Safety net: make sure locks are gone even if onDestroy hits before stopProxy.
         releaseWakeLocks()
         statsJob?.cancel()
