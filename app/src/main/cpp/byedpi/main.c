@@ -1314,9 +1314,10 @@ int parse_args(int argc, char **argv)
         }
     }
     if ((size_t )params.dp_n > sizeof(dp->bit) * 8) {
-        /* LOCAL PATCH (not upstream v0.17.3): fail instead of logging and carrying on. Past 64
-         * groups the bitmask cannot represent the configuration at all, so continuing means
-         * silently running a different strategy set than the command asked for. */
+        /* LOCAL PATCH (not upstream v0.17.3): unreachable belt-and-braces since add_group() now
+         * refuses id >= 64 up front, so dp_n can never exceed 64 -- kept only so the invariant
+         * stays stated where a reader looks for it. Upstream logged and carried on here, which
+         * meant running a different strategy set than the command asked for. */
         LOG(LOG_E, "too many groups!\n");
         return -1;
     }

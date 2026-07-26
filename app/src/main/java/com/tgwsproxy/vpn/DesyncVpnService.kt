@@ -407,8 +407,13 @@ class DesyncVpnService : VpnService(), Tunnel {
     private var byedpiArgs: Array<String> = arrayOf("ciadpi")
     private var socksPort: Int = DEFAULT_SOCKS_PORT
 
-    private var byedpiProxy: ByeDpiProxy? = null
-    private var byedpiThread: Thread? = null
+    // All three cross threads and all three feed stopByedpi()'s ownership test: the writer is the
+    // startVpn coroutine, the readers are a different Dispatchers.IO worker (ACTION_STOP), the main
+    // thread (onDestroy/onRevoke) and the tun-read thread. Nothing establishes happens-before
+    // between them — startVpn's synchronized block ends before startByedpi() is even called — so a
+    // stale read here means skipping the teardown of a live engine and then dropping its handles.
+    @Volatile private var byedpiProxy: ByeDpiProxy? = null
+    @Volatile private var byedpiThread: Thread? = null
     @Volatile private var byedpiExitCode: Int? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -533,10 +538,18 @@ class DesyncVpnService : VpnService(), Tunnel {
             byedpiExitCode = null
             val args = byedpiArgs
             val port = socksPort
-            byedpiThread = thread(name = "byedpi-loop", isDaemon = true) {
+            // Publish the handle BEFORE starting the thread. kotlin.concurrent.thread() starts it
+            // inside the call and only then assigns, which leaves a window where the engine is
+            // already running while byedpiThread is still null — a stopByedpi() landing there would
+            // see no owner, skip the teardown and clear the handles, orphaning a live listener that
+            // nothing can ever stop again (the native gate then refuses every later start).
+            val t = Thread({
                 try { byedpiExitCode = proxy.startProxy(args) }
                 catch (_: Throwable) { byedpiExitCode = -1 }
-            }
+            }, "byedpi-loop")
+            t.isDaemon = true
+            byedpiThread = t
+            t.start()
             // Readiness means the SOCKS listener accepts connections, not merely that its thread
             // has survived for an arbitrary delay. The liveness re-check matters because the port
             // could be answered by *someone else's* listener (ours lost the bind race after
@@ -601,7 +614,10 @@ class DesyncVpnService : VpnService(), Tunnel {
                 }
             } catch (_: Throwable) {}
         }
-        // Always drop the handles, owned or not — they describe a run that is over either way.
+        // Drop the handles either way. That is right for a run that has exited and for one we just
+        // stopped; it is a deliberate write-off for the one case where both joins time out and the
+        // thread is still alive, since we have no stronger lever than forceClose() and holding a
+        // handle we can never act on only makes the next start refuse too.
         byedpiProxy = null
         byedpiThread = null
         byedpiExitCode = null
@@ -630,8 +646,17 @@ class DesyncVpnService : VpnService(), Tunnel {
             stopEverything(error = _state.value.error ?: getString(R.string.byedpi_start_failed_short))
             return
         }
-        // User may have hit stop while we waited for SOCKS readiness.
-        if (!_state.value.isStarting || cleaningUp) return
+        // User may have hit stop while we waited for SOCKS readiness. stopEverything() only gates on
+        // cleaningUp, never on isStarting, so a stop can run to completion — including its own
+        // stopByedpi() against still-null handles — while we are in here. Bailing out bare would
+        // therefore strand the engine we just started: the service is gone, no further onDestroy
+        // fires, and its auth-less SOCKS listener keeps serving with the native gate raised, so
+        // every later start fails for the life of the process. Tear our own run down instead; the
+        // ownership test in stopByedpi() is what makes calling it here safe.
+        if (!_state.value.isStarting || cleaningUp) {
+            stopByedpi()
+            return
+        }
 
         // IPv4 only on purpose: we do NOT add an IPv6 address/route. If we advertised IPv6 on the
         // TUN, apps (YouTube/Instagram use Happy Eyeballs) would prefer AAAA/IPv6 and we'd have to
