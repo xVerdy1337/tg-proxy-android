@@ -87,7 +87,7 @@
             android:name=".service.DesyncTileService"
             android:exported="true"
             android:icon="@drawable/ic_tile_shield"
-            android:label="Разблокировка"
+            android:label="@string/tile_unblock"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
