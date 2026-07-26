@@ -1,7 +1,10 @@
 package com.tgwsproxy.vpn
 
+import com.tgwsproxy.net.StrategyTester
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -62,6 +65,24 @@ import org.junit.Test
  *
  * Every test below is therefore one of two shapes: "the hostile token is gone" or "the legitimate
  * token is still there, byte for byte".
+ *
+ * The file's second subject is [ByedpiPresetCatalog.migrateCommand], which sits one step earlier on
+ * the same launch path (DesyncVpnService.loadPrefs) and reasons about a command with this file's
+ * tokeniser and this file's letter table. Its two failure modes mirror the ones above:
+ *
+ *  - too shy → a persisted -A command keeps a provably inert auto-detect (params.timeout and
+ *    ptimeout are written by case 'T' alone, byedpi/main.c, and default to 0), and because every
+ *    group *other* than -A behaves exactly as before, the string still passes an auto-tune sweep and
+ *    re-elects itself ahead of the fixed catalog entry — the defect pins itself in place;
+ *  - too eager → a command with NO -A group gets a global params.timeout it never asked for, and
+ *    having no detect group it also has no second group to fall back to, so what used to be a stall
+ *    the kernel rides out becomes a hard reset.
+ *
+ * Byte-exactness is the third mode and the quietest: the output is compared as TEXT against the
+ * catalog by [ByedpiPresetCatalog.byCommand] and [StrategyTester.labelResForCommand], so a single
+ * rewritten space inside a quoted value relabels a shipped strategy as a custom command in the UI
+ * and in every support report that follows. That is why migrateCommand prepends to the original
+ * string instead of re-joining tokens, and why the tests below assert on whole strings.
  */
 class ByedpiArgsTest {
 
@@ -86,6 +107,67 @@ class ByedpiArgsTest {
 
     private fun words(command: String): List<String> =
         command.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+
+    /** Every command we ship, from both sources, catalog "off" (the empty one) included. */
+    private fun shippedCommands(): List<String> =
+        (ByedpiPresetCatalog.presets.map { it.command } + StrategyTester.STRATEGIES.map { it.command })
+            .distinct()
+
+    /**
+     * Every command we ship that opens an -A group. Both sources are checked together because both
+     * feed the same buildByedpiArgs and the same engine — a strategy that tunes differently from
+     * how it later runs is worse than no auto-tune at all.
+     */
+    private fun shippedAutoCommands(): List<String> =
+        shippedCommands().filter { c -> words(c).any { it.startsWith("-A") } }
+
+    /** The raw -T value ("2:2:2:64") of [command], in every spelling getopt would accept. */
+    private fun timeoutValue(command: String): String? {
+        val w = words(command)
+        for ((i, t) in w.withIndex()) {
+            val value = when {
+                t == "-T" || t == "--timeout" -> w.getOrNull(i + 1)
+                t.startsWith("--timeout=") -> t.removePrefix("--timeout=")
+                // Case-sensitive: -t is the fake TTL and carries no timeouts at all.
+                t.startsWith("-T") -> t.removePrefix("-T")
+                else -> null
+            }
+            if (value != null) return value
+        }
+        return null
+    }
+
+    /** The words of [command] that hand getopt a -T value, in every spelling this app writes. */
+    private fun timeoutTokens(command: String): List<String> =
+        words(command).filter {
+            // Case-sensitive, as everywhere: -t is the fake TTL and carries no timeouts at all.
+            it.startsWith("-T") || it == "--timeout" || it.startsWith("--timeout=")
+        }
+
+    /**
+     * [command] with its -T token — and, in the separate spelling, that token's value — removed.
+     *
+     * The superseded spelling is DERIVED rather than pasted in from the old catalog, for the same
+     * reason migrateCommand matches on shape instead of on a table of literals: an old literal stops
+     * describing anything the moment the catalog moves on, and the test would then keep passing
+     * while asserting nothing about what users actually have on disk.
+     */
+    private fun withoutTimeout(command: String): String {
+        val w = words(command)
+        val out = ArrayList<String>(w.size)
+        var i = 0
+        while (i < w.size) {
+            val t = w[i]
+            if (t == "-T" || t == "--timeout") {
+                // Separate-value spelling: the value is the next word and leaves with the flag.
+                i++
+            } else if (!t.startsWith("-T") && !t.startsWith("--timeout=")) {
+                out.add(t)
+            }
+            i++
+        }
+        return out.joinToString(" ")
+    }
 
     @Test
     fun argvStartsWithCiadpiAndThePinnedListenEndpoint() {
@@ -539,13 +621,14 @@ class ByedpiArgsTest {
     @Test
     fun everyDesyncFlagSurvivesVerbatim() {
         // One command carrying the whole vocabulary the catalog uses: -d disorder, -s split,
-        // -r tlsrec, -f fake, -t fake TTL, -o oob, -q disoob, -a udp-fake, -A auto, plus the
-        // "+s" suffix that anchors an offset to the SNI.
-        val command = "-d1 -s1+s -r1+s -f-1 -t8 -o1 -q4+hm -a1 -At,r,s -s50+s"
+        // -r tlsrec, -f fake, -t fake TTL, -o oob, -q disoob, -a udp-fake, -A auto, -T the
+        // timeouts -A needs to detect anything, plus the "+s" suffix that anchors an offset to the
+        // SNI.
+        val command = "-T2:2:2:64 -d1 -s1+s -r1+s -f-1 -t8 -o1 -q4+hm -a1 -At,r,s -s50+s"
         val out = strategy(command)
 
         assertEquals(words(command), out)
-        for (flag in listOf("-d", "-s", "-r", "-f", "-t", "-o", "-q", "-a", "-A")) {
+        for (flag in listOf("-d", "-s", "-r", "-f", "-t", "-o", "-q", "-a", "-A", "-T")) {
             assertTrue("$flag was eaten by the listen-flag filter", out.any { it.startsWith(flag) })
         }
         assertEquals(
@@ -553,6 +636,104 @@ class ByedpiArgsTest {
             listOf("-s1+s", "-r1+s", "-s50+s"),
             out.filter { it.endsWith("+s") },
         )
+    }
+
+    @Test
+    fun theAutoDetectTimeoutSurvivesInEveryFormAndShipsWithEveryAutoStrategy() {
+        // -T/--timeout is the one flag whose loss would not look like damage anywhere: the command
+        // still parses, -A still builds its groups, and nothing ever detects anything. case 'T'
+        // (byedpi/main.c) is the only writer of params.timeout / ptimeout / to_count_lim /
+        // to_bytes_lim, all of which default to 0, and with them at 0 an -A group has no trigger
+        // against a silent SNI drop — no RST for 't', no FIN for 's', no redirect for 'r', and
+        // connect() succeeds so 'c' never fires either. 'T' is in VALUE_SHORT_LETTERS, out of
+        // BLOCKED_SHORT_LETTERS, and "timeout" is a prefix of no blocked long name; these pin that
+        // down in every spelling getopt would accept.
+        assertEquals(listOf("-T", "2:2:2:64", "-d1"), strategy("-T 2:2:2:64 -d1"))
+        assertEquals(listOf("-T2:2:2:64", "-d1"), strategy("-T2:2:2:64 -d1"))
+        assertEquals(listOf("--timeout", "2:2:2:64", "-d1"), strategy("--timeout 2:2:2:64 -d1"))
+        assertEquals(listOf("--timeout=2:2:2:64", "-d1"), strategy("--timeout=2:2:2:64 -d1"))
+        // Trailing (nothing follows for a value-dropping rule to eat) and clustered behind
+        // booleans, in both the inline and the next-argv spelling — the shapes that trip a filter
+        // keyed on the token's first letter instead of on the cluster walk.
+        assertEquals(listOf("-d1", "-T2:2:2:64"), strategy("-d1 -T2:2:2:64"))
+        assertEquals(listOf("-d1", "-T", "2:2:2:64"), strategy("-d1 -T 2:2:2:64"))
+        assertEquals(listOf("-NXUT2:2:2:64", "-d1"), strategy("-NXUT2:2:2:64 -d1"))
+        assertEquals(listOf("-NXUT", "2:2:2:64", "-d1"), strategy("-NXUT 2:2:2:64 -d1"))
+
+        // The premise that makes all of the above worth asserting, and the regression that would
+        // put the "auto" strategies back to being auto in name only: every command we ship with an
+        // -A group carries the timeouts that group needs, and survives the filter byte for byte.
+        val autoCommands = shippedAutoCommands()
+
+        assertTrue("nothing ships -A any more — this test now covers nothing",
+            autoCommands.isNotEmpty())
+        for (command in autoCommands) {
+            assertTrue(
+                "'$command' arms -A's auto-detect with no -T, so no detector can ever fire",
+                words(command).any { it.startsWith("-T") || it.startsWith("--timeout") },
+            )
+            assertEquals(
+                "'$command' was mangled by the listen-flag filter",
+                words(command),
+                strategy(command),
+            )
+        }
+    }
+
+    /**
+     * The -T first field and [StrategyTester.TLS_TIMEOUT_MS] are one setting spread across two
+     * files, and pulling them apart fails in the direction nobody looks: the command still parses,
+     * the engine still recovers in production, and only the auto-tuner — the thing that decides
+     * whether the user is ever offered the strategy — records a dead host.
+     *
+     * Field 1 is armed as TCP_USER_TIMEOUT on the *upstream* socket (extend.c setup_conn), so when
+     * the DPI eats the ClientHello nothing happens on the tester's socket at all until it fires;
+     * only then does handle_err → on_torst → DETECT_TORST move to the next -A group and replay the
+     * saved ClientHello. Detect, reconnect and a complete second handshake all have to land inside
+     * one soTimeout window, which is why the margin below is not decoration.
+     *
+     * Field 4 is the same coupling seen from the other side: extend.c lifts that socket timeout
+     * only once recv_count passes to_bytes_lim, so it decides whether the aggressive deadline
+     * covers the pre-first-response window it was added for or rides every connection the preset
+     * carries for its whole life.
+     */
+    @Test
+    fun everyAutoStrategyDetectsWellInsideTheTestersOwnPatience() {
+        // Room for the reconnect plus a full replayed handshake on a slow mobile link. Nothing in
+        // the engine enforces it — it is the floor we refuse to ship below.
+        val replayHeadroomMs = 2_000
+
+        val autoCommands = shippedAutoCommands()
+        assertTrue("nothing ships -A any more — this test now covers nothing",
+            autoCommands.isNotEmpty())
+
+        for (command in autoCommands) {
+            val value = timeoutValue(command)
+            assertNotNull("'$command' arms -A with no -T value this test can read", value)
+            val fields = value!!.split(":")
+
+            // case 'T' (byedpi/main.c) reads field 1 with strtof, in SECONDS, into params.timeout.
+            val detectMs = ((fields[0].toFloatOrNull() ?: -1f) * 1000).toInt()
+            assertTrue("'$command' has an unparseable -T detect deadline", detectMs > 0)
+            assertTrue(
+                "'$command' detects at ${detectMs}ms, but the tester stops reading at " +
+                    "${StrategyTester.TLS_TIMEOUT_MS}ms — no detector can fire before the probe " +
+                    "gives up, so this strategy scores dead in every sweep however well it works",
+                detectMs + replayHeadroomMs <= StrategyTester.TLS_TIMEOUT_MS,
+            )
+
+            // to_bytes_lim: 0 (or an absent field) never releases the socket timeout, and a large
+            // one releases it only on connections that happen to pull that much down. A bare TLS
+            // ServerHello record already clears the bound below, so the release lands on the
+            // server's first packet rather than somewhere inside a long-lived connection.
+            val bytesLim = fields.getOrNull(3)?.toFloatOrNull()?.toInt() ?: 0
+            assertTrue(
+                "'$command' leaves -T's socket timeout armed for the life of every connection " +
+                    "under $bytesLim bytes — an ACK blackout then RSTs it, or caches a bogus " +
+                    "DETECT_TORST against the destination IP",
+                bytesLim in 1..256,
+            )
+        }
     }
 
     @Test
@@ -616,5 +797,282 @@ class ByedpiArgsTest {
         assertEquals(listOf("-#", "a b"), strategy("-# \"a b\""))
         assertEquals(listOf("-nwww.google.com", "-d1"), strategy("-n\"www.google.com\" -d1"))
         assertEquals(listOf("-nwww.google.com", "-d1"), strategy("-n'www.google.com' -d1"))
+    }
+
+    /**
+     * The load-bearing invariant of the migration, and the only one that cannot be recovered from
+     * later: the repaired string has to be the CURRENT catalog text, not merely an equivalent
+     * command line. Everything downstream compares text — byCommand picks the preset the picker
+     * highlights, labelResForCommand picks the name the UI and the support report print — so a
+     * command that runs identically but reads differently silently becomes "custom", and the user
+     * who was on a named preset can no longer tell us which one.
+     *
+     * The old spelling is derived by stripping the timeout token off the current one, which is
+     * exactly what those strings were before it was added, so this also asserts the migration is the
+     * precise inverse of that edit rather than something that merely looks like it.
+     */
+    @Test
+    fun aSupersededCatalogAutoCommandMigratesBackOntoTheCatalogEntryByteForByte() {
+        val autoPresets = ByedpiPresetCatalog.presets
+            .filter { p -> words(p.command).any { it.startsWith("-A") } }
+        assertTrue("no catalog preset opens an -A group any more — this test covers nothing",
+            autoPresets.isNotEmpty())
+
+        for (preset in autoPresets) {
+            val current = ByedpiPresetCatalog.byId(preset.id)!!.command
+            val superseded = withoutTimeout(current)
+
+            assertTrue(
+                "the derivation left a -T in '${preset.id}', so this test asserts nothing",
+                timeoutTokens(superseded).isEmpty(),
+            )
+            // The premise of the whole exercise: as it stands on disk, the old spelling matches no
+            // shipped strategy and is therefore already being shown as a custom command.
+            assertNull(
+                "'${preset.id}' still resolves without its timeout token — nothing to migrate",
+                ByedpiPresetCatalog.byCommand(superseded),
+            )
+
+            val migrated = ByedpiPresetCatalog.migrateCommand(superseded)
+            assertEquals(
+                "migrating the superseded spelling of '${preset.id}' must land on the shipped " +
+                    "command byte for byte, or the repaired command reads as a custom one",
+                current,
+                migrated,
+            )
+            // Equality above is what makes these two hold, and these two are what the UI asks.
+            assertEquals(
+                "the migrated command no longer resolves to '${preset.id}'",
+                preset.id,
+                ByedpiPresetCatalog.byCommand(migrated)?.id,
+            )
+            assertNotNull(
+                "the migrated '${preset.id}' has no strategy label, so it prints as custom",
+                StrategyTester.labelResForCommand(migrated),
+            )
+        }
+    }
+
+    /**
+     * The same invariant against the auto-tuner's own list. Both sources are checked because both
+     * feed the same sweep: a migrated command is seeded as candidate #0, and if its text does not
+     * match the tuner's entry it is offered under a generic label — the user then picks between two
+     * identical-looking strategies with no way to tell which one the engine is about to run.
+     */
+    @Test
+    fun aSupersededTunerAutoStrategyMigratesBackOntoTheTesterEntryByteForByte() {
+        val autoStrategies = StrategyTester.STRATEGIES
+            .filter { s -> words(s.command).any { it.startsWith("-A") } }
+        assertTrue("nothing in the tuner opens an -A group any more — this test covers nothing",
+            autoStrategies.isNotEmpty())
+
+        // Not named `strategy`: that is this file's own helper for the sanitised argv tail.
+        for (entry in autoStrategies) {
+            val superseded = withoutTimeout(entry.command)
+            assertTrue(
+                "the derivation left a -T in '${entry.command}', so this test asserts nothing",
+                timeoutTokens(superseded).isEmpty(),
+            )
+            assertNull(
+                "'$superseded' already labels — nothing to migrate",
+                StrategyTester.labelResForCommand(superseded),
+            )
+
+            val migrated = ByedpiPresetCatalog.migrateCommand(superseded)
+            assertEquals(
+                "migrating '$superseded' must land on the tuner's own string byte for byte",
+                entry.command,
+                migrated,
+            )
+            // STRATEGIES is distinctBy command, so this is the entry itself, not a look-alike.
+            assertEquals(
+                "the migrated command lost its label and would be offered as a custom one",
+                entry.labelRes,
+                StrategyTester.labelResForCommand(migrated),
+            )
+        }
+    }
+
+    /**
+     * Migration runs on every load and again at the top of every sweep, so it has to be a fixpoint.
+     * Two timeout tokens is not a parse error — getopt is last-wins, so the command still starts and
+     * still works — which is precisely why it would never be noticed: the text drifts one token
+     * further from the catalog on each pass, and everything that matches by text quietly stops
+     * matching.
+     */
+    @Test
+    fun migrationIsIdempotentSoTheTimeoutTokenCanNeverStack() {
+        val handWritten = listOf(
+            "-At,r,s -s1+s",
+            "--auto t,r,s -s1+s",
+            "-NAt,r,s -s1+s",
+            "--comment \"a b\" -At,r,s",
+            "-d1 -s1+s",
+            "-t8",
+            "",
+            "   ",
+        )
+        for (command in (shippedCommands() + handWritten).distinct()) {
+            val once = ByedpiPresetCatalog.migrateCommand(command)
+            assertEquals(
+                "migrating '$command' a second time moved it again",
+                once,
+                ByedpiPresetCatalog.migrateCommand(once),
+            )
+            assertTrue(
+                "migrating '$command' left ${timeoutTokens(once)} for getopt to choose between",
+                timeoutTokens(once).size <= 1,
+            )
+        }
+    }
+
+    /**
+     * The direction that actually costs the user something. params.timeout is GLOBAL, not scoped to
+     * a group, so arming it on a command that opens no -A group gives every connection a hard
+     * deadline with nothing to fall back to when it fires: extend.c's on_torst has no next group to
+     * move to, so a stall that Linux would have ridden out becomes a reset, and — worse — a
+     * DETECT_TORST cached against that destination for later connections to start from.
+     *
+     * Each entry below is one way to look like an -A group without being one.
+     */
+    @Test
+    fun aCommandWithNoAutoGroupIsNeverTouched() {
+        val untouched = listOf(
+            // Case is the whole difference: -t is --ttl and -a is --udp-fake. Both ride along in
+            // most shipped presets, so a case-insensitive match would migrate nearly the catalog.
+            "-t8",
+            "-a1",
+            "-f-1 -t8 -s1+s -a1",
+            // --auto-mode is option 'L', a different option that selects a mode and arms no
+            // detector at all. getopt_long settles the exact name "--auto" before it considers any
+            // abbreviation, so a prefix match here would repair the wrong command.
+            "--auto-mode=s",
+            "--auto-mode s",
+            "-L1",
+            "-Lt,r,s",
+            // A value-taking long option with nothing after it to take: the "skip the next token"
+            // rule must not walk off the end, and a dangling flag is not an -A group.
+            "--fake",
+            // 'A' inside a value, not a flag: the cluster walk has to stop at 'n' (--fake-sni),
+            // which swallows the rest of the token as its hostname.
+            "-nwww.Alpha.example",
+            "-n www.Alpha.example",
+            // …and 'A' inside the value of a value-taking flag one token further on. -# is
+            // --comment, the one flag whose value legitimately carries spaces.
+            "--comment \"-A is great\"",
+            "-#\"-A is great\"",
+            // A timeout with no auto group is not a migration candidate either: -T is only ever
+            // added to arm an -A group's detectors, never on its own.
+            "-T2:2:2:64",
+            "-T 2",
+            "--timeout=2",
+            "--timeout 2",
+            "-XT2:2:2:64",
+            // Nothing to migrate, and nothing to trim: an untouched command is returned as-is,
+            // whitespace and all.
+            "",
+            "   ",
+        )
+        for (command in untouched) {
+            assertEquals(
+                "'$command' opens no -A group and must come back untouched",
+                command,
+                ByedpiPresetCatalog.migrateCommand(command),
+            )
+        }
+    }
+
+    /**
+     * The hand-written half of the positive set. A pasted -A command has exactly the same dead
+     * detector as the ones we used to ship, so matching on shape has to reach every spelling getopt
+     * would resolve to option 'A' — not just the one the catalog happens to use.
+     */
+    @Test
+    fun everySpellingOfAnAutoGroupGainsTheTimeoutToken() {
+        val repaired = listOf(
+            "-At,r,s -s1+s",        // the short form, value glued on — what the catalog ships
+            "--auto=t,r,s -s1+s",   // long name, inline value
+            "--auto t,r,s -s1+s",   // long name, value in the next argv
+            "-NAt,r,s -s1+s",       // clustered: -N (no-domain, boolean) and then -A
+            "--fake -1 -At,r,s",    // -A behind a long flag that eats the NEXT token as its value
+        )
+        for (command in repaired) {
+            assertEquals(
+                "'$command' arms an -A group whose detectors can never fire",
+                "${ByedpiPresetCatalog.AUTO_DETECT_TIMEOUT} $command",
+                ByedpiPresetCatalog.migrateCommand(command),
+            )
+        }
+
+        // The repaired string is trimmed even though the input was not: byCommand and
+        // labelResForCommand compare against trimmed text, so keeping the padding would defeat the
+        // byte-exactness the migration exists to preserve.
+        assertEquals(
+            "${ByedpiPresetCatalog.AUTO_DETECT_TIMEOUT} -At,r,s -s1+s",
+            ByedpiPresetCatalog.migrateCommand("   -At,r,s -s1+s  "),
+        )
+    }
+
+    /**
+     * Why the result is the original string with a token in front rather than a re-joined token
+     * list. Re-joining is lossy in exactly one place — a quoted value containing whitespace — and
+     * that loss is not cosmetic: "a b" would come back as two argv entries, so --comment would take
+     * "a" and "b" would reach getopt as a positional argument.
+     */
+    @Test
+    fun migrationPrependsRatherThanRejoinsSoQuotedValuesSurviveVerbatim() {
+        val command = "--comment \"a b\" -At,r,s"
+        val migrated = ByedpiPresetCatalog.migrateCommand(command)
+
+        assertEquals("${ByedpiPresetCatalog.AUTO_DETECT_TIMEOUT} $command", migrated)
+        // The quotes are still doing their job by the time the engine path re-splits the string.
+        assertEquals(
+            listOf(ByedpiPresetCatalog.AUTO_DETECT_TIMEOUT, "--comment", "a b", "-At,r,s"),
+            strategy(migrated),
+        )
+    }
+
+    /**
+     * The two-sided guard over everything we ship. A shipped -A command that is not already in its
+     * current spelling would mean we shipped the inert auto-detect fresh; a shipped non-auto command
+     * that changes here would mean the migration is repairing roughly twenty strategies that never
+     * needed it. Either way the sweep would be tuning something other than what it later runs.
+     */
+    @Test
+    fun noShippedCommandNeedsMigrating() {
+        val shipped = shippedCommands()
+        assertTrue("the shipped command list collapsed — this test now covers nothing",
+            shipped.size > 20)
+        for (command in shipped) {
+            assertEquals(
+                "shipped command '$command' is not in its own current spelling",
+                command,
+                ByedpiPresetCatalog.migrateCommand(command),
+            )
+        }
+    }
+
+    /**
+     * The spellings a user can already have on disk with the timeouts in place. Each carries an -A
+     * group on purpose: without one migrateCommand returns at the first check and the -T detection
+     * below is never reached, so the no-op would prove nothing about it.
+     */
+    @Test
+    fun anAutoCommandThatAlreadyCarriesTheTimeoutIsLeftAlone() {
+        val current = listOf(
+            "-T2:2:2:64 -At,r,s -s1+s",     // what we ship
+            "-T 2 -At,r,s -s1+s",           // value in the next argv
+            "--timeout=2 -At,r,s -s1+s",    // long name, inline value
+            "--timeout 2 -At,r,s -s1+s",    // long name, value in the next argv
+            "-XT2:2:2:64 -At,r,s -s1+s",    // clustered behind -X (no-ipv6, boolean)
+            "-At,r,s -T2:2:2:64",           // order is irrelevant — getopt reads the whole argv
+        )
+        for (command in current) {
+            assertEquals(
+                "'$command' already arms its -A group and must not be given a second -T",
+                command,
+                ByedpiPresetCatalog.migrateCommand(command),
+            )
+        }
     }
 }

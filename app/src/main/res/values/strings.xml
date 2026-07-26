@@ -134,6 +134,11 @@
     <string name="auto_tune_progress">Checking %1$d/%2$d</string>
     <string name="auto_tune_keep_open">Keep the app open during the check.</string>
     <string name="auto_tune_found">Selected: «%1$s»</string>
+    <!-- Shown next to a finished sweep that left some targets out. %1$s is a list of service names.
+         Says only what the lookup established — the name was refused, so there was nothing to test —
+         and never diagnoses the network beyond that: a refused name and a DNS-level block look the
+         same from here, and either way no bypass method changes the outcome. -->
+    <string name="auto_tune_dns_skipped">Skipped: %1$s — the address didn\'t resolve, so there was nothing to test. Switching bypass method won\'t change that.</string>
     <string name="auto_tune_again">Tune again</string>
     <string name="turn_off_vpn_first">Turn off VPN first</string>
     <string name="turn_off_vpn_first_long">Turn off VPN first</string>
@@ -198,6 +203,9 @@
     <string name="auto_tune_vpn_running">Turn off VPN first — tuning needs the engine exclusively.</string>
     <string name="current_command">current command</string>
     <string name="auto_tune_none_worked">No method broke the block. Try manually in advanced settings.</string>
+    <!-- Replaces the sweep entirely: with nothing resolvable there is nothing to test, and pointing
+         the user at bypass methods would send them after the wrong problem. -->
+    <string name="auto_tune_dns_failed">None of the sites resolve on this network — that\'s DNS, not a block, and no bypass method can fix it. Change the network\'s DNS or switch networks.</string>
     <string name="proxy_starting">Proxy is starting…</string>
     <string name="error_with_message">Error: %1$s</string>
     <string name="proxy_listening">Proxy listening on %1$s:%2$d</string>

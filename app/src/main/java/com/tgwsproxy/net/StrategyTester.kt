@@ -29,7 +29,20 @@ import kotlin.concurrent.thread
 object StrategyTester {
 
     private const val SOCKS_CONNECT_TIMEOUT_MS = 3500
-    private const val TLS_TIMEOUT_MS = 3500
+
+    /**
+     * How long one blocking read of the handshake may take — and half of a coupled pair, which is
+     * why it is not private. The other half is the first field of the -T on every command that
+     * ships an -A group (the entries below and ByedpiPresetCatalog's tlsrec-double / auto-oob):
+     * byedpi arms it as TCP_USER_TIMEOUT on the *upstream* socket, so when the DPI swallows the
+     * ClientHello nothing at all happens on our socket until that deadline fires, on_torst moves to
+     * the next -A group and the saved ClientHello is replayed. Detect + reconnect + a whole second
+     * handshake therefore has to fit in one window here. At 3.5s against an 8s -T it could not, and
+     * the auto strategies were unselectable no matter how well they worked — the failure is silent
+     * from both ends, so ByedpiArgsTest pins the relationship instead of a comment alone.
+     */
+    const val TLS_TIMEOUT_MS = 5000
+
     // How long the local byedpi listener gets to start accepting before we call the strategy dead.
     private const val SOCKS_READY_MS = 3_000L
 
@@ -41,11 +54,17 @@ object StrategyTester {
         Strategy("-d1 -s1+s -r1+s -f-1 -t8 -a1", R.string.strategy_split_tlsrec_fake),
         Strategy("-f1+nme -t6 -a1", R.string.strategy_fake_split_ttl6),
         Strategy("-d1 -s1+s -s3+s -s6+s -s9+s -s12+s -s15+s -s20+s -s30+s -a1", R.string.strategy_cascade_split),
-        Strategy("-o1 -a1 -At,r,s -d1 -a1", R.string.strategy_oob_auto),
+        // Every -A entry in this list carries -T for the reason documented on ByedpiPresetCatalog's
+        // "tlsrec-double": nothing but case 'T' (byedpi/main.c) sets the timeouts, and without them
+        // -A's t/r/s detectors have no trigger at all against a silent SNI drop. Keep the value in
+        // sync with the catalog — a strategy that tests differently from how it later runs is worse
+        // than no auto-tune — and its first field under TLS_TIMEOUT_MS above, or the strategies it
+        // is meant to rescue go back to failing every sweep.
+        Strategy("-T2:2:2:64 -o1 -a1 -At,r,s -d1 -a1", R.string.strategy_oob_auto),
         Strategy("-d6+s -q4+hm -o2 -a1", R.string.strategy_disorder_oob),
         Strategy("-f-1 -t8 -s1+s -a1", R.string.strategy_fake_ttl8_split),
         Strategy("-d2 -s1+s -d5+s -s10+s -d20+s -a1", R.string.strategy_cascade_step2),
-        Strategy("-r5+s -s25+s -a1 -At,r,s -s50 -r5+s -s50+s -a1", R.string.strategy_tlsrec_split_double),
+        Strategy("-T2:2:2:64 -r5+s -s25+s -a1 -At,r,s -s50 -r5+s -s50+s -a1", R.string.strategy_tlsrec_split_double),
         Strategy("-d1 -s4 -d8 -s1+s -d5+s -s10+s -d20+s -a1", R.string.strategy_mix_disorder_split),
     ) + ByedpiPresetCatalog.autotunePresets.map { preset ->
         Strategy(preset.command, preset.labelRes)
@@ -128,6 +147,10 @@ object StrategyTester {
                     results[idx] = testHostThroughSocks(context, host, 443, port)
                 }
             }
+            // Derived from the two socket deadlines on purpose: a worker that is legitimately
+            // sitting through a -T detect and the replayed handshake that follows must not be
+            // abandoned one join short of the read it is about to complete — that scores the
+            // strategy dead for the same reason a too-short soTimeout does.
             val budget = (SOCKS_CONNECT_TIMEOUT_MS + TLS_TIMEOUT_MS + 1000).toLong()
             workers.forEach { try { it.join(budget) } catch (_: InterruptedException) {} }
             return StrategyResult(strategy, hosts.mapIndexed { idx, host ->

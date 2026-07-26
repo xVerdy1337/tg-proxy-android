@@ -131,6 +131,19 @@ private const val HOST_YOUTUBE_VIDEO = "redirector.googlevideo.com"
 private const val HOST_INSTAGRAM = "www.instagram.com"
 
 /**
+ * Display name for a probed host, resolved from the raw hostname the ViewModel hands over. It has to
+ * happen in the composition — see the note above for what a label built in the Application locale
+ * costs. Unknown hosts show as-is.
+ */
+@Composable
+private fun serviceLabel(host: String): String = when (host) {
+    HOST_YOUTUBE -> stringResource(R.string.service_youtube)
+    HOST_YOUTUBE_VIDEO -> stringResource(R.string.service_youtube_video)
+    HOST_INSTAGRAM -> stringResource(R.string.service_instagram)
+    else -> host
+}
+
+/**
  * Inline all «Разблокировка» sections into the caller's LazyColumn — single-screen layout,
  * no separate tab/scroll container. Caller owns spacing + bottom padding.
  *
@@ -381,6 +394,7 @@ private fun AutoTuneCard(
                     stringResource(R.string.auto_tune_found, autoTune.foundLabel ?: ""),
                     color = OkGreen, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold
                 )
+                DnsSkippedNote(autoTune.unresolvedHosts)
                 Spacer(Modifier.height(10.dp))
                 PrimaryButton(stringResource(R.string.enable), onClick = onEnable)
                 Spacer(Modifier.height(8.dp))
@@ -391,6 +405,7 @@ private fun AutoTuneCard(
         autoTune.finished && autoTune.error != null -> {
             PanelCard {
                 Text(autoTune.error, color = Warning, style = MaterialTheme.typography.bodySmall)
+                DnsSkippedNote(autoTune.unresolvedHosts)
                 Spacer(Modifier.height(10.dp))
                 PrimaryButton(
                     when {
@@ -417,6 +432,26 @@ private fun AutoTuneCard(
             )
         }
     }
+}
+
+/**
+ * Targets the sweep deliberately left untested because this network cannot resolve them. Nothing is
+ * drawn when every target resolved, so both finished branches can call it unconditionally.
+ */
+@Composable
+private fun DnsSkippedNote(hosts: List<String>) {
+    if (hosts.isEmpty()) return
+    // The label lookup is a composable call, so it cannot happen inside joinToString's lambda —
+    // that one is not inlined. Collect the names with a plain loop, then join.
+    val labels = ArrayList<String>(hosts.size)
+    for (host in hosts) labels.add(serviceLabel(host))
+    val names = labels.joinToString(", ")
+    Spacer(Modifier.height(8.dp))
+    Text(
+        stringResource(R.string.auto_tune_dns_skipped, names),
+        color = TextSecondary,
+        style = MaterialTheme.typography.labelSmall,
+    )
 }
 
 @Composable
@@ -515,6 +550,12 @@ private fun ServiceRow(
     name: String,
     result: ServiceProbe?,
     checking: Boolean,
+    /**
+     * Auto-tune's verdict for this host, or null when the sweep never reached one. A host the
+     * network could not resolve is kept OUT of hostOk on purpose, so it falls through to the manual
+     * probe below (usually «not checked», grey) instead of borrowing the red «blocked» that belongs
+     * to a host we actually tested and lost.
+     */
     forced: Boolean?,
 ) {
     val (dotColor, statusText, working) = when {
@@ -1060,15 +1101,7 @@ private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
 
 @Composable
 private fun ProbeResultRow(r: ServiceProbe) {
-    // Resolve the label from the host: the ViewModel hands us raw hostnames only, so this name comes
-    // from the composition's locale — the same one ServicesCard uses for the very same service. A
-    // label carried over from the ViewModel would have been built in the Application locale instead.
-    val name = when (r.host) {
-        HOST_YOUTUBE -> stringResource(R.string.service_youtube)
-        HOST_YOUTUBE_VIDEO -> stringResource(R.string.service_youtube_video)
-        HOST_INSTAGRAM -> stringResource(R.string.service_instagram)
-        else -> r.host
-    }
+    val name = serviceLabel(r.host)
     Column(
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -1151,7 +1184,16 @@ private fun ByedpiCommandCard(
                     .heightIn(min = 44.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .background(Accent)
-                    .clickable { onApply(text.trim()) }
+                    .clickable {
+                        // Settle the field on what will actually be stored. setByedpiCmd migrates
+                        // a superseded -A spelling, and if the result equals what is already saved
+                        // the StateFlow conflates, [command] never changes, remember(command) is
+                        // never re-keyed — so the box would keep showing the edit while the line
+                        // above it showed the real command, and the tap would look dead.
+                        val applied = ByedpiPresetCatalog.migrateCommand(text.trim())
+                        text = applied
+                        onApply(applied)
+                    }
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {

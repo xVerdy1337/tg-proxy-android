@@ -24,7 +24,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.net.UnknownHostException
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.concurrent.thread
 
 data class DesyncSettings(
     val preset: String = DesyncVpnService.PRESET_AUTO,
@@ -67,6 +70,14 @@ data class AutoTuneUiState(
     val error: String? = null,
     /** Per-host TLS-handshake result from the last/winning strategy (host → reachable). */
     val hostOk: Map<String, Boolean> = emptyMap(),
+    /**
+     * Targets left out of the sweep because the resolver came back with a definitive "no such
+     * host". Reported as skipped, never as blocked, and deliberately absent from [hostOk] so their
+     * row reads "not checked". A lookup that merely ran out of budget is NOT listed here — it is
+     * swept like any other host, because a check that never finished is not a fact about the
+     * network. Stays empty when every target was unresolved: that case never sweeps, see [error].
+     */
+    val unresolvedHosts: List<String> = emptyList(),
 )
 
 /** An installed app the user can choose to keep off the bypass. */
@@ -85,7 +96,20 @@ data class AppInfo(
 class DesyncViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
-        const val AUTO_TUNE_CACHE_PREFIX = "auto_tune_cache_"
+        // Versioned deliberately. A cache entry is a raw byedpi command string, and entries written
+        // before the -A strategies gained their -T timeouts hold the older, inert spelling. Such an
+        // entry is tested first and — since every group other than -A behaves exactly as it did —
+        // usually wins again, pinning the user to a command whose auto sections can never fire.
+        // A new prefix retires those winners instead of letting them re-elect themselves.
+        const val AUTO_TUNE_CACHE_PREFIX = "auto_tune_cache_v2_"
+
+        /**
+         * Whole budget for the pre-sweep name lookups. Generous against a working resolver (tens of
+         * milliseconds) and far below the resolver's own retry ladder, which is the point: we would
+         * rather abandon a slow lookup than spend ten seconds in front of a sweep. Expiring is
+         * cheap by design — an unanswered lookup leaves its host in the sweep, it never skips it.
+         */
+        const val DNS_TIMEOUT_MS = 3_000L
 
         /**
          * Loopback ports the tuner rotates through. Deliberately disjoint from the VPN's own SOCKS
@@ -112,6 +136,10 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
     val excluded: StateFlow<Set<String>> = _excluded.asStateFlow()
 
     val builtInExcluded: Set<String> = DesyncVpnService.EXCLUDED_APPS.toSet()
+
+    init {
+        migrateSavedCommand()
+    }
 
     /**
      * Hosts we probe and tune against — raw hostnames only. The ViewModel deliberately carries no
@@ -155,8 +183,10 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
 
     /**
      * The "grandma button": run every candidate strategy through the real native byedpi engine and
-     * keep the first one that completes a TLS handshake to all targets. On success it's saved as the
-     * active byedpi command. Requires the VPN to be OFF (engine allows one instance at a time).
+     * keep the one that completes a TLS handshake to the most targets (at least one), stopping early
+     * when a strategy takes them all. Targets the resolver definitively refuses are dropped before
+     * the sweep and never scored. On success the winner is saved as the active byedpi command. Requires
+     * the VPN to be OFF (engine allows one instance at a time).
      */
     fun runAutoTune() {
         if (_autoTune.value.running) return
@@ -178,8 +208,15 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
         }
         val hosts = targets()
         val networkCacheKey = autoTuneNetworkCacheKey()
-        val cached = networkCacheKey?.let { prefs().getString(AUTO_TUNE_CACHE_PREFIX + it, null) }
+        val cached = networkCacheKey
+            ?.let { prefs().getString(AUTO_TUNE_CACHE_PREFIX + it, null) }
+            ?.let { ByedpiPresetCatalog.migrateCommand(it) }
         // Test the currently-saved command first (instant if it still works), then the curated list.
+        // Current by construction: repaired once at init for prefs written by an older build, and
+        // by setByedpiCmd for everything written since. It matters here because a superseded -A
+        // spelling still passes on its non-auto groups, so as candidate #0 it would win the sweep
+        // and be written straight back, pinning the user to a command whose auto sections can
+        // never fire.
         val saved = _settings.value.byedpiCmd.trim()
         val strategies = buildList {
             if (!cached.isNullOrEmpty()) {
@@ -202,6 +239,35 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
         }
         _autoTune.value = AutoTuneUiState(running = true, total = strategies.size)
         viewModelScope.launch {
+            // Resolve once before sweeping: a host the resolver refuses outright is out of scope,
+            // not blocked. This asks the same resolver the bypass itself will use — the sweep runs with
+            // the VPN off, and once it is up our package is off the tunnel anyway (self-excluded in
+            // all-apps mode, absent from the allow-list otherwise), so the 8.8.8.8/1.1.1.1 the VPN
+            // puts on the TUN never applies to us or to byedpi. Where the underlying resolver
+            // NXDOMAINs one target, every strategy scored a host short, allOk could never be true so
+            // the early exit below never fired and the sweep ground through all ~28 candidates, and
+            // the user was told no method unblocked a service no desync could ever have reached.
+            // Never cached, per network or otherwise: re-asking costs milliseconds here.
+            val dns = withContext(Dispatchers.IO) {
+                // A broken check must not become a DNS accusation — fall back to sweeping everything.
+                try { dnsOutcomes(hosts) } catch (_: Throwable) { emptyMap<String, DnsOutcome>() }
+            }
+            // Only a definitive "no such host" may remove a target. A lookup that ran out of budget
+            // is swept exactly as it was before this check existed: worst case it fails in the sweep
+            // the way it always did, which beats being dropped from scoring — a dropped host shrinks
+            // what allOk demands, so the sweep breaks on the first candidate (the cached/saved one,
+            // tested first by construction), that winner is cached, and it wins again next run.
+            val (unresolved, sweepHosts) = hosts.partition { dns[it] == DnsOutcome.UNRESOLVED }
+            // Blame the resolver only when every target was definitively refused. An empty sweep set
+            // for any other reason — a cold radio right after a network change, where Android's own
+            // per-attempt timeout outlives our whole budget — is a failed check, not a verdict.
+            if (sweepHosts.isEmpty() && unresolved.isNotEmpty()) {
+                _autoTune.value = AutoTuneUiState(
+                    finished = true,
+                    error = app.getString(R.string.auto_tune_dns_failed),
+                )
+                return@launch
+            }
             var lastHosts: Map<String, Boolean> = emptyMap()
             var bestHosts: Map<String, Boolean> = emptyMap()
             val found = withContext(Dispatchers.IO) {
@@ -215,7 +281,7 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                     )
                     val port = freeAutoTunePort(avoid = lastPort)
                     lastPort = port
-                    val res = StrategyTester.testStrategy(app, s, hosts, port = port)
+                    val res = StrategyTester.testStrategy(app, s, sweepHosts, port = port)
                     // Key by the RAW hostname. Keying by the localized label used to work only
                     // because the reader resolved the same resource in the same locale; a per-app
                     // language or an Activity-level config override yields a different string there
@@ -232,7 +298,7 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                         hit = s
                         bestHosts = hostMap
                     }
-                    if (res.allOk) break // can't beat all-hosts-pass; stop early
+                    if (res.allOk) break // every host we could test passed; nothing beats that
                 }
                 if (bestOkCount > 0) hit else null
             }
@@ -244,12 +310,14 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                     foundLabel = app.getString(found.labelRes),
                     foundCommand = found.command,
                     hostOk = bestHosts,
+                    unresolvedHosts = unresolved,
                 )
             } else {
                 _autoTune.value = AutoTuneUiState(
                     finished = true,
                     error = app.getString(R.string.auto_tune_none_worked),
                     hostOk = lastHosts,
+                    unresolvedHosts = unresolved,
                 )
             }
         }
@@ -299,6 +367,76 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun loadExcluded(): Set<String> =
         prefs().getStringSet(DesyncVpnService.KEY_EXCLUDED_USER, emptySet())?.toSet() ?: emptySet()
+
+    /** What a pre-sweep lookup actually established about one host. */
+    private enum class DnsOutcome {
+        /** The resolver handed back addresses. */
+        RESOLVED,
+
+        /** The resolver answered, and the answer was "no such host". The only outcome that skips. */
+        UNRESOLVED,
+
+        /** No answer inside the budget, or our own check broke. Says nothing — sweep the host. */
+        UNKNOWN,
+    }
+
+    /**
+     * What this network was able to tell us about [hosts] before the sweep starts. Three-way on
+     * purpose: skipping a target is a claim about the network, and only a definitive negative earns
+     * it. A lookup that has merely not come back yet is [DnsOutcome.UNKNOWN] and gets swept exactly
+     * as it was before this check existed — worst case it fails in the sweep the way it always did.
+     *
+     * Each lookup gets its own thread: InetAddress has no timeout knob and Android's resolver sits
+     * on a dead server through its whole retry ladder, so the only way to bound this is to stop
+     * waiting. Abandoning a straggler therefore has to be free, and here it is: the first lookups
+     * after a network change routinely outlast this budget with netd's cache cold, and on such a
+     * perfectly healthy network nothing may be skipped. Must be called off the main thread.
+     */
+    private fun dnsOutcomes(hosts: List<String>): Map<String, DnsOutcome> {
+        val outcomes = ConcurrentHashMap<String, DnsOutcome>()
+        val workers = hosts.map { host ->
+            thread(name = "dns-$host", isDaemon = true) {
+                // Twice before believing a refusal. On Android UnknownHostException is also what a
+                // transient resolver failure looks like — EAI_AGAIN, a SERVFAIL, netd giving up —
+                // and the underlying code is not readable from here (GaiException is not public
+                // API). One such blip on a healthy network would drop the host from the sweep,
+                // which shrinks what allOk demands, so the loop breaks on candidate #0 and caches
+                // it. A second attempt that never returns is fine: the join deadline leaves the
+                // host UNKNOWN, and UNKNOWN is swept.
+                outcomes[host] = try {
+                    resolveOnce(host)
+                } catch (_: UnknownHostException) {
+                    try {
+                        resolveOnce(host)
+                    } catch (_: UnknownHostException) {
+                        DnsOutcome.UNRESOLVED // refused twice; still never means "blocked"
+                    } catch (_: Throwable) {
+                        DnsOutcome.UNKNOWN
+                    }
+                } catch (_: Throwable) {
+                    DnsOutcome.UNKNOWN // SecurityException & friends: our check broke, not the name
+                }
+            }
+        }
+        val deadlineNs = System.nanoTime() + DNS_TIMEOUT_MS * 1_000_000L
+        for (w in workers) {
+            val leftMs = (deadlineNs - System.nanoTime()) / 1_000_000L
+            if (leftMs <= 0L) break // join(0) waits forever — abandon the stragglers instead
+            try { w.join(leftMs) } catch (_: InterruptedException) {}
+        }
+        // A straggler that publishes between the loop exiting and this read is still honoured — the
+        // map is live. That is harmless (a late definitive answer is no less definitive) but it is
+        // not the same as "expired lookups are ignored": absent simply stays UNKNOWN, i.e. swept.
+        return hosts.associateWith { outcomes[it] ?: DnsOutcome.UNKNOWN }
+    }
+
+    /** One resolver attempt. Throws [UnknownHostException] on a refusal, like the platform call. */
+    private fun resolveOnce(host: String): DnsOutcome =
+        if (InetAddress.getAllByName(host).isNotEmpty()) {
+            DnsOutcome.RESOLVED
+        } else {
+            DnsOutcome.UNKNOWN // no addresses without an error: nothing was established
+        }
 
     /**
      * Pick a loopback port the next byedpi test instance can actually bind. The old fixed rotation
@@ -356,6 +494,22 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    /**
+     * Repair a superseded saved command once, at the pref rather than only in memory.
+     *
+     * DesyncVpnService.loadPrefs also migrates, but only for the string it is about to launch — the
+     * pref itself keeps the old spelling, and this class reads it raw. Left at that, the UI would
+     * print one command as "current" while the engine ran another, and since every shipped -A
+     * strategy now carries -T the stale text would match no preset and be relabelled a custom
+     * command. In an app whose support flow is "send us your current command", showing a value the
+     * engine is not running is a reporting defect, not cosmetics.
+     */
+    private fun migrateSavedCommand() {
+        val current = _settings.value.byedpiCmd
+        val migrated = ByedpiPresetCatalog.migrateCommand(current)
+        if (migrated != current) setByedpiCmd(migrated)
+    }
+
     private fun load(): DesyncSettings {
         val p = prefs()
         return DesyncSettings(
@@ -371,9 +525,17 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
     fun defaultCmdForPreset(preset: String): String =
         ByedpiPresetCatalog.commandFor(preset)
 
+    /**
+     * Migrating HERE rather than only on load is what makes "the pref, the UI and the engine hold
+     * one string" actually true. This is the write the user goes through — the Apply button on the
+     * command editor — so without it, typing an -A group by hand stores the inert spelling, the
+     * card labels it a custom command because no shipped strategy matches, and the VPN then runs
+     * something else entirely, since loadPrefs repairs it again on the way to the engine.
+     */
     fun setByedpiCmd(cmd: String) {
-        prefs().edit().putString(DesyncVpnService.KEY_BYEDPI_CMD, cmd).apply()
-        _settings.value = _settings.value.copy(byedpiCmd = cmd)
+        val migrated = ByedpiPresetCatalog.migrateCommand(cmd)
+        prefs().edit().putString(DesyncVpnService.KEY_BYEDPI_CMD, migrated).apply()
+        _settings.value = _settings.value.copy(byedpiCmd = migrated)
     }
 
     fun setPreset(preset: String) {

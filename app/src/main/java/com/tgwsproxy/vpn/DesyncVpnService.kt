@@ -189,7 +189,19 @@ class DesyncVpnService : VpnService(), Tunnel {
         // Letters that take a value in byedpi's options[] table. The FIRST such letter in a cluster
         // swallows the rest of the token as its inline value, so scanning must stop there — in
         // "-nwww.ip.example" the "ip" is hostname bytes, not flags.
-        private const val VALUE_SHORT_LETTERS = "wipIbcxALuTByKHVRsdoqfntlOQeMrmagWPjC#/"
+        // internal, not private: ByedpiPresetCatalog.migrateCommand walks clustered shorts the same
+        // way and must use the same letter table — two copies of "which byedpi letters take a
+        // value" would drift, and a wrong answer there silently changes what reaches the engine.
+        internal const val VALUE_SHORT_LETTERS = "wipIbcxALuTByKHVRsdoqfntlOQeMrmagWPjC#/"
+
+        // The long options with has_arg == 0 in byedpi's options[] table. Kept beside the short
+        // letters for the same reason: anything walking a command has to know which tokens consume
+        // the NEXT one, and assuming every long option does means a boolean silently masks the
+        // token after it.
+        internal val BOOLEAN_LONG_OPTIONS = setOf(
+            "daemon", "no-domain", "no-ipv6", "no-udp", "help", "version",
+            "transparent", "tfo", "md5sig", "wait-send", "drop-sack",
+        )
         // The subset a user command may not carry, value-taking (i p y w H j C P l B) and boolean
         // (D E) alike. Case matters: -I (--conn-ip) is not -i, and -B (--copy) is not -b.
         private const val BLOCKED_SHORT_LETTERS = "ipywHjClBPDE"
@@ -275,7 +287,10 @@ class DesyncVpnService : VpnService(), Tunnel {
             return out
         }
 
-        private fun shellSplit(s: String): List<String> {
+        // internal for the same reason as VALUE_SHORT_LETTERS: anything that reasons about a
+        // command's tokens must agree with the splitter the engine path actually uses, or it will
+        // disagree exactly on quoted values.
+        internal fun shellSplit(s: String): List<String> {
             val out = ArrayList<String>()
             val sb = StringBuilder()
             var quote = 0.toChar()
@@ -494,7 +509,10 @@ class DesyncVpnService : VpnService(), Tunnel {
         val preset = p.getString(KEY_PRESET, PRESET_AUTO) ?: PRESET_AUTO
         activePreset = preset
         // Custom command wins; otherwise derive byedpi args from the preset.
-        val custom = (p.getString(KEY_BYEDPI_CMD, "") ?: "").trim()
+        // migrateCommand, not the raw pref: a saved -A command written before the -T timeouts
+        // existed has a dead auto-detect, and this path (tile, boot autostart) can launch it long
+        // before the UI ever gets a chance to repair it.
+        val custom = ByedpiPresetCatalog.migrateCommand((p.getString(KEY_BYEDPI_CMD, "") ?: "").trim())
         val command = if (custom.isNotEmpty()) custom else presetToByedpiArgs(preset)
         socksPort = selectSocksPort()
         byedpiArgs = buildByedpiArgs(command, "127.0.0.1", socksPort)
