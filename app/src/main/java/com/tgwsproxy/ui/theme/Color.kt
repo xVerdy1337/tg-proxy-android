@@ -5,8 +5,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 
 // === Jevio matte dark ===
-// Deep neutral canvas, smoky charcoal surfaces and a single high-visibility lime accent.
-// The alpha on surfaces preserves the existing soft-depth treatment without light flash.
+// Deep neutral canvas, smoky charcoal surfaces and a single high-visibility accent drawn from the
+// brand gradient's warm end. The alpha on surfaces preserves the existing soft-depth treatment
+// without light flash.
+//
+// The accent has a hard constraint: [OnAccent] is the near-black canvas, because the accent is a
+// FILLED button background with dark text on top. So it has to stay light. The saturated blue and
+// red from the same gradient sit around 5.8:1 against that text — passable but a visible downgrade
+// from the 10.2:1 the warm end gives. Swapping the accent for a darker hue means flipping OnAccent
+// to a light colour first, everywhere, not just editing the value here.
 
 val Background = Color(0xFF11120F)
 val Surface = Color(0xE31C1D19)
@@ -34,9 +41,9 @@ val GlassShadow = Color(0x60000000)
 val Destructive = Color(0xFFEE7B72)
 val ErrorContainer = Color(0xE83B1E1C)
 
-val Signal = Color(0xFFDFFF4F)
+val Signal = Color(0xFFEFB68C)
 val Accent = Signal
-val AccentDark = Color(0xFFC1DC36)
+val AccentDark = Color(0xFFD69A6E)
 val AccentSoft = Signal
 val Warning = Color(0xFFF2C94C)
 val Info = Color(0xFF9BCBFF)
