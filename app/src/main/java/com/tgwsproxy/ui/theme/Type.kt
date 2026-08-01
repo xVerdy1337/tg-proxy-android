@@ -75,13 +75,18 @@ val Typography = Typography(
         lineHeight = 17.sp,
         color = TextSecondary
     ),
+    // Deliberately the one style with NO baked colour. Button provides labelLarge as the ambient
+    // text style, and a colour set in the style beats the button's own contentColor — so baking
+    // cream in here made every accent-filled button render its label at 1.6:1 on the peach fill,
+    // regardless of the contentColor = OnAccent each of them correctly asks for. A button label has
+    // to follow its container. The three call sites that use labelLarge directly all set their own
+    // colour, so nothing else changes.
     labelLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Medium,
         fontSize = 15.sp,
         lineHeight = 20.sp,
         letterSpacing = (-0.1).sp,
-        color = TextPrimary
     ),
     labelMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,

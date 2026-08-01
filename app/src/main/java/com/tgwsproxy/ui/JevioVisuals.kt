@@ -3,6 +3,7 @@ package com.tgwsproxy.ui
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -62,6 +63,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tgwsproxy.ui.theme.AccentDark
 import com.tgwsproxy.ui.theme.Background
 import com.tgwsproxy.ui.theme.GlassBorder
 import com.tgwsproxy.ui.theme.GlassShadow
@@ -218,6 +220,15 @@ internal fun JevioStateDial(
     val haptic = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
     val pressScale = rememberPressScale(interaction)
+    val pressed by interaction.collectIsPressedAsState()
+    // The ring is the only accent-painted surface here and a 3% shrink on a 138dp circle is easy to
+    // miss, so the press also sinks the accent to its darker peer. A colour swap is not motion, so
+    // unlike the scale it still happens when animators are off — only the transition is zeroed.
+    val ringColor by animateColorAsState(
+        targetValue = if (pressed) AccentDark else Signal,
+        animationSpec = tween(if (reduceMotion) 0 else 140, easing = JevioEaseOut),
+        label = "stateRingPress",
+    )
     val duration = if (reduceMotion) 0 else 260
     val ringProgress by animateFloatAsState(
         targetValue = if (active) 1f else 0f,
@@ -263,7 +274,7 @@ internal fun JevioStateDial(
             if (showingBusy) {
                 CircularProgressIndicator(
                     modifier = Modifier.fillMaxSize(),
-                    color = Signal,
+                    color = ringColor,
                     trackColor = Primary.copy(alpha = 0.10f),
                     strokeWidth = 8.dp,
                     strokeCap = StrokeCap.Round,
@@ -272,7 +283,7 @@ internal fun JevioStateDial(
                 CircularProgressIndicator(
                     progress = { ringProgress },
                     modifier = Modifier.fillMaxSize(),
-                    color = Signal,
+                    color = ringColor,
                     trackColor = Primary.copy(alpha = 0.12f),
                     strokeWidth = 8.dp,
                     strokeCap = StrokeCap.Round,

@@ -1,5 +1,8 @@
 package com.tgwsproxy.proxy
 
+import android.content.Context
+import android.os.SystemClock
+import com.tgwsproxy.R
 import kotlinx.coroutines.*
 import kotlinx.coroutines.selects.select
 import java.io.IOException
@@ -13,6 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 class MtProtoProxyServer(
+    private val appContext: Context,
     private val host: String,
     private val port: Int,
     private val secret: String,
@@ -36,6 +40,18 @@ class MtProtoProxyServer(
     @Volatile private var running = false
     private val activeConnections = ConcurrentHashMap.newKeySet<Socket>()
     private val connectionCount = AtomicInteger(0)
+
+    /**
+     * Live client count, readable at any moment from any thread.
+     *
+     * The number delivered to `onConnectionChange` is a SNAPSHOT taken by whichever thread did the
+     * increment or decrement, and the atomic update and the callback are two separate steps — so two
+     * callbacks racing from different threads arrive in an order unrelated to the order the counter
+     * actually moved, in BOTH directions. A consumer that latches the delivered value can therefore
+     * end up believing there are no clients while one is relaying. Anything making a decision on the
+     * count must read this instead of trusting the payload.
+     */
+    val connections: Int get() = connectionCount.get()
     private val serverScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val secretBytes = parseSecret(secret)
 
@@ -111,7 +127,7 @@ class MtProtoProxyServer(
         running = true
         serverSocket = ServerSocket(port, 50, java.net.InetAddress.getByName(host))
         serverSocket?.receiveBufferSize = 256 * 1024
-        onLog("Прокси слушает на $host:$port")
+        onLog(appContext.getString(R.string.proxy_listening, host, port))
 
         while (running) {
             try {
@@ -123,12 +139,16 @@ class MtProtoProxyServer(
                 // Cap concurrent clients. Telegram opens at most ~15; anything beyond MAX_CLIENTS on
                 // a loopback proxy is a local flood (each client fans out up to ~18 upstream TLS
                 // dials), so drop it rather than exhaust fds/threads.
-                if (connectionCount.get() >= MAX_CLIENTS) {
+                // The increment IS the admission decision: get()-then-incrementAndGet() is
+                // check-then-act, so two admissions that observe the same pre-increment value both
+                // pass a cap that only has room for one. Reserve first, hand the slot back on refusal.
+                val count = connectionCount.incrementAndGet()
+                if (count > MAX_CLIENTS) {
+                    connectionCount.decrementAndGet()
                     try { clientSocket.close() } catch (_: Exception) {}
                     continue
                 }
                 activeConnections.add(clientSocket)
-                val count = connectionCount.incrementAndGet()
                 onConnectionChange(count)
 
                 serverScope.launch {
@@ -152,7 +172,7 @@ class MtProtoProxyServer(
         activeConnections.forEach { try { it.close() } catch (_: Exception) {} }
         activeConnections.clear()
         try { serverSocket?.close() } catch (_: Exception) {}
-        onLog("Прокси остановлен")
+        onLog(appContext.getString(R.string.proxy_stopped_log))
     }
 
     /**
@@ -169,7 +189,7 @@ class MtProtoProxyServer(
         // Re-evaluate routes on the new network: an endpoint that worked on Wi-Fi may be
         // blocked on mobile (or vice-versa), so drop the cache and let the next connect race.
         routeCache.clear()
-        if (n > 0) onLog("Сеть изменилась — переподключаю ($n)")
+        if (n > 0) onLog(appContext.getString(R.string.network_changed, n))
     }
 
     private fun readFully(input: InputStream, n: Int): ByteArray? {
@@ -438,15 +458,22 @@ class MtProtoProxyServer(
 
         // Carry bridge + winning candidate together so there's no race between "who won" and
         // "which endpoint won" (the candidate is needed later to cache a proven route).
+        //
+        // [winner] is also the sole arbiter of bridge OWNERSHIP: complete() succeeds for exactly
+        // one caller, so exactly one candidate keeps its bridge and every other candidate closes
+        // the bridge it created itself. The previous shape — register each bridge in a list and
+        // sweep the list once the race resolved — stranded live sockets: connect() blocks on a
+        // plain CountDownLatch (WebSocketBridge), so cancelling the jobs cannot stop a candidate
+        // that is already dialling, and one that registered or finished after the sweep was never
+        // closed by anybody. OkHttp's 30s pingInterval then kept those sockets alive forever, a
+        // whole Cloudflare wave's worth per race, on every reconnect.
         val winner = kotlinx.coroutines.CompletableDeferred<Pair<WebSocketBridge, WsCandidate>?>()
-        val bridges = java.util.Collections.synchronizedList(ArrayList<WebSocketBridge>())
 
         val jobs = candidates.map { c ->
             serverScope.launch {
                 val b = WebSocketBridge()
-                bridges.add(b)
                 val ok = try { b.connect(c.pinnedIp, c.host, c.path) } catch (_: Exception) { false }
-                if (ok && !winner.isCompleted && winner.complete(Pair(b, c))) {
+                if (ok && winner.complete(Pair(b, c))) {
                     lastRoute = c.kind
                     onLog("[$label] WS connected via ${c.host} (${c.kind})")
                 } else {
@@ -460,10 +487,32 @@ class MtProtoProxyServer(
             winner.complete(null)
         }
 
-        val result = withTimeoutOrNull(timeoutMs) { winner.await() }
-        jobs.forEach { it.cancel() }
-        synchronized(bridges) {
-            for (b in bridges) if (b !== result?.first) try { b.close() } catch (_: Exception) {}
+        var result: Pair<WebSocketBridge, WsCandidate>? = null
+        try {
+            result = withTimeoutOrNull(timeoutMs) { winner.await() }
+        } finally {
+            // The arbitration below must also run when serverScope is cancelled under us
+            // (stop() / resetConnections): await() then throws CancellationException instead of
+            // returning, while connect() is a plain blocking latch that no cancellation can
+            // interrupt — so a candidate already dialling still finishes, still wins the
+            // deferred, and its bridge would be left with no owner at all (the caller never
+            // receives it, and stop() only closes client sockets). OkHttp's 30s pingInterval
+            // keeps such a socket alive indefinitely. NonCancellable so this runs to the end
+            // inside an already-cancelled scope.
+            withContext(NonCancellable) {
+                jobs.forEach { it.cancel() }
+                // Slam the door: once the deferred holds null, every candidate still stuck in
+                // connect() loses the arbitration and closes the bridge it created itself.
+                // If the slam loses, someone won between the await and here — adopt and close
+                // that bridge unless it is the one we are handing to a live caller. await()
+                // cannot suspend here, the deferred is completed either way by this point.
+                if (!winner.complete(null)) {
+                    val late = winner.await()?.first
+                    if (late != null && late !== result?.first) {
+                        try { late.close() } catch (_: Exception) {}
+                    }
+                }
+            }
         }
         // Note: caching happens in bridgeData once the route actually carries data, not here.
         return result
@@ -488,20 +537,118 @@ class MtProtoProxyServer(
         // Per-connection traffic, used to decide whether this route actually works.
         val localUp = AtomicLong(0)
         val localDown = AtomicLong(0)
+        // When the last byte moved in each direction. uptimeMillis (not wall clock, not
+        // elapsedRealtime) because it is the same monotonic clock delay() runs on and, like
+        // delay(), it stops during deep sleep — so a doze period cannot be mistaken for silence.
+        //
+        // Seeded to session start rather than to a 0 "never" sentinel: 0 is also a legal absolute
+        // uptimeMillis() value, so the `now - lastDownAt >= STALL_SILENCE_MS` term below would
+        // read "never received" as "silent since device boot" — always past the threshold on a
+        // long-up device (the 90s floor silently disappears and eviction needs only the
+        // confirmations) and never past it on the BootReceiver auto-start path, where uptime is
+        // still under 90s and a genuinely dead route stays hidden. Measuring from session start
+        // makes "never" mean "silent for as long as this session has existed", which is the
+        // question actually being asked, and both directions then obey STALL_SILENCE_MS.
+        val sessionStart = SystemClock.uptimeMillis()
+        val lastUpAt = AtomicLong(sessionStart)
+        val lastDownAt = AtomicLong(sessionStart)
 
         // Stall watchdog: a route that opened but never delivers a byte back while the client
         // is actively sending = dead upstream (e.g. a Cloudflare edge that can't reach
         // Telegram). pingInterval keeps such a socket alive forever, so detect it ourselves,
         // evict the route from cache and drop the client so it reconnects and re-races.
+        //
+        // Both signals are gated on an empty OkHttp send queue. Upstream bytes are counted at
+        // proxy INGRESS — lastUpAt is stamped when they are read off the 256 KB-buffered loopback
+        // socket, and wsBridge.send() returns true as soon as OkHttp *enqueues* — so "we sent and
+        // nothing came back" (dead route) and "we have not put it on the wire yet" (slow uplink)
+        // are otherwise indistinguishable. queueSize() is the discriminator: while it is non-zero
+        // the far end cannot possibly have answered, so silence carries no information. This does
+        // not blunt the dead-edge catch, because a Cloudflare edge that cannot reach Telegram
+        // still drains our frames over its own perfectly healthy TLS socket.
+        //
+        // Two separate signals, because they need very different evidence:
+        //
+        //  1. One-shot at STALL_FIRST_BYTE_MS — "we sent, it is all on the wire, and nothing has
+        //     EVER come back". That is the case this watchdog was written for, and a route that
+        //     delivered even one byte is exempt from it forever, so it cannot misfire mid-session.
+        //     A session still draining a backlog at that instant simply falls through to (2).
+        //  2. Recurring, for a route that dies later. Its evidence is time-based, never a
+        //     per-sample delta of the counters: "downstream unchanged while upstream grew during
+        //     this window" is ordinary healthy behaviour — an idle session's
+        //     ping_delay_disconnect writes every 30-60s and the pong can easily land on the
+        //     other side of a sample boundary, and one upload.saveFilePart on a slow uplink
+        //     grows upstream by a whole part before the server can possibly answer. Both look
+        //     exactly like a delta-stall. So instead: the trailing STALL_SILENCE_MS window must
+        //     hold at least one byte from the client and none back, STALL_CONFIRMATIONS polls in
+        //     a row.
+        //
+        //     The upstream half is a RECENCY bound, not merely "upstream newer than downstream".
+        //     The latter is satisfied FOREVER by any session whose last frame happened to go up,
+        //     and a msgs_ack — which the server owes no answer to — is exactly how a session
+        //     normally falls quiet, so a healthy idle media/download connection reached the
+        //     threshold on the clock alone and evicted the proven route for every future
+        //     connection to that DC. A client genuinely stuck on a dead route keeps pinging and
+        //     resending its pending queries, so it stays inside the window and is still caught;
+        //     one that has sent nothing for STALL_SILENCE_MS has no outstanding demand and
+        //     nothing user-visible to unstick, so leaving it alone is the answer, not a miss.
+        //
+        //     Both halves use the one constant on purpose. A wider recency bound W would re-open
+        //     the hole: an idle session satisfies the predicate from lastDown + STALL_SILENCE_MS
+        //     until lastUp + W — a span of W - STALL_SILENCE_MS + (lastUp - lastDown) — and once
+        //     that reaches STALL_POLL_INTERVAL_MS two consecutive confirmations fit inside it.
+        //     At W = STALL_SILENCE_MS the span collapses to the gap between the last byte back
+        //     and the last byte up, sub-second for an ack (it trails its own container), leaving
+        //     an order of magnitude before it could span the 15s a confirmation pair needs.
+        //
+        //     Detection latency is unchanged by the extra term: silence starts at the last byte
+        //     back, the first poll that can see STALL_SILENCE_MS of it lands up to one poll
+        //     interval late, the confirmation one interval after that — 105-120s — while a route
+        //     that was never alive is still caught at 9s by (1).
+        //
+        // The bar is deliberately high because tripping is expensive: it evicts the proven route
+        // for EVERY session to this DC and kills this client's socket — and since the client then
+        // redials and re-sends exactly the same data, a misfire that the data itself provokes
+        // reproduces on every redial, i.e. it livelocks instead of recovering.
         val watchdog = serverScope.async {
             try {
-                kotlinx.coroutines.delay(9000)
-                if (localDown.get() == 0L && localUp.get() > 0L) {
-                    routeCache.remove(cacheKey)
-                    onLog("[$label] route stalled (no data back) — dropping & reconnecting")
-                    try { wsBridge.close() } catch (_: Exception) {}
-                    try { clientSocket.close() } catch (_: Exception) {}
+                kotlinx.coroutines.delay(STALL_FIRST_BYTE_MS)
+                var stalled = localDown.get() == 0L && localUp.get() > 0L &&
+                    wsBridge.queueSize() == 0L
+                var confirmations = 0
+                // Silence is measured from the later of the last byte back and the last poll that
+                // still had unsent bytes: when a long drain finishes, the far end has only just
+                // received the batch, and queueSize() does not count the tail already handed to
+                // the kernel send buffer. Restarting the clock gives the answer a full
+                // STALL_SILENCE_MS to arrive instead of evicting one poll pair after the queue
+                // empties on a backlog that took minutes to push.
+                var busyAt = sessionStart
+                while (!stalled) {
+                    kotlinx.coroutines.delay(STALL_POLL_INTERVAL_MS)
+                    val now = SystemClock.uptimeMillis()
+                    if (wsBridge.queueSize() > 0L) {
+                        // A pipelined batch of 512 KB upload.saveFilePart bodies is handed to us
+                        // over loopback in milliseconds but needs >100s on a 100 kbit/s uplink.
+                        // Nothing can come back until it lands, so drop the streak rather than
+                        // let a healthy upload confirm itself to death.
+                        busyAt = now
+                        confirmations = 0
+                        continue
+                    }
+                    val downAt = lastDownAt.get()
+                    val upAt = lastUpAt.get()
+                    // Unanswered demand, no answer for a whole window, and the demand is still
+                    // live — the last term is what keeps a merely idle session out of the count.
+                    val quiet = upAt > downAt &&
+                        now - maxOf(downAt, busyAt) >= STALL_SILENCE_MS &&
+                        now - upAt <= STALL_SILENCE_MS
+                    confirmations = if (quiet) confirmations + 1 else 0
+                    stalled = confirmations >= STALL_CONFIRMATIONS
                 }
+                routeCache.remove(cacheKey)
+                onLog("[$label] route stalled (no data back) — dropping & reconnecting")
+                try { wsBridge.close() } catch (_: Exception) {}
+                try { clientSocket.close() } catch (_: Exception) {}
             } catch (_: Exception) {}
         }
 
@@ -515,6 +662,7 @@ class MtProtoProxyServer(
                         break
                     }
                     localUp.addAndGet(read.toLong())
+                    lastUpAt.set(SystemClock.uptimeMillis())
                     bytesUp.addAndGet(read.toLong())
                     val chunk = buffer.copyOfRange(0, read)
                     val plain = ctx.cltDecryptor.update(chunk)
@@ -542,6 +690,7 @@ class MtProtoProxyServer(
                     if (localDown.getAndAdd(data.size.toLong()) == 0L) {
                         routeCache[cacheKey] = candidate
                     }
+                    lastDownAt.set(SystemClock.uptimeMillis())
                     bytesDown.addAndGet(data.size.toLong())
                     val plain = ctx.tgDecryptor.update(data)
                     val encrypted = ctx.cltEncryptor.update(plain)
@@ -644,6 +793,31 @@ class MtProtoProxyServer(
         // First-wave (direct endpoints) budget before falling back to the Cloudflare pool. Short
         // so a failing direct route escalates quickly, long enough for a healthy one to win.
         const val WS_WAVE_TIMEOUT_MS = 4_000L
+        // One-shot "nothing has ever arrived" check. Well past the worst first-response latency
+        // (relayInit + a DC round trip is sub-second even on a bad mobile link), short enough
+        // that the redial happens while the user is still looking at the app. Kept at 9s: a dead
+        // Cloudflare edge drains our frames instantly, so the empty-queue gate it now carries
+        // does not delay it — it only spares a session that opens straight into a large upload.
+        const val STALL_FIRST_BYTE_MS = 9_000L
+        // Poll period of the slow mid-session stall check.
+        const val STALL_POLL_INTERVAL_MS = 15_000L
+        // How long silence must last before a poll counts as stalled, measured from the later of
+        // the last byte back and the last poll that still had bytes queued for the wire. With the
+        // uplink accounted for by queueSize() this no longer has to budget for our own send
+        // backlog — a pipelined 1.3 MB of 512 KB upload.saveFilePart bodies reaches our loopback
+        // buffer in milliseconds and takes >105s to push at 100 kbit/s, which used to be the case
+        // this constant was stretched to cover and could not: it is bounded by the uplink, not by
+        // any number chosen here. What is left to clear are genuine SERVER-side gaps — a ~0.3s
+        // round trip, an idle session's 30-60s ping_delay_disconnect — so 90s keeps well over an
+        // order of magnitude of headroom. Doubles as the recency bound on the upstream side of
+        // the same check (the window must also CONTAIN a byte from the client); the two must stay
+        // one constant — see the watchdog for why splitting them re-opens the idle-session hole.
+        const val STALL_SILENCE_MS = 90_000L
+        // Consecutive stalled polls required before evicting, so no single unlucky sample — a
+        // pong in flight across a poll boundary — can poison the proven route for every session
+        // to this DC. 90s + 2 x 15s means a route that dies mid-session is dropped ~2 min in,
+        // while the common dead-on-arrival case is already caught at 9s.
+        const val STALL_CONFIRMATIONS = 2
         // Idle I/O timeout on the benign masking relay so a silent peer can't hang it forever.
         const val RELAY_IO_TIMEOUT_MS = 15_000
         // Max accepted Fake-TLS ClientHello record length — bounds the pre-auth allocation.

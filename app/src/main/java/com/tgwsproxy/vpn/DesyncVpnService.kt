@@ -114,54 +114,170 @@ class DesyncVpnService : VpnService(), Tunnel {
          * strategy — community/BBD command strings paste in verbatim (engine = byedpi v0.17.3).
          */
         fun buildByedpiArgs(command: String, ip: String, port: Int): Array<String> {
-            val base = mutableListOf("ciadpi", "-i", ip, "-p", port.toString())
+            // -U pins UDP off. We never speak SOCKS5 UDP ASSOCIATE to byedpi — VPN UDP goes out
+            // through UdpAssociation's own protected DatagramSocket — so the engine's whole UDP
+            // path is dead weight here, and it is the one part a pasted string can still abuse:
+            // desync_udp() applies -O/--fake-offset to the fake packet without a lower bound, so a
+            // negative offset walks pkt.data backwards out of its .bss buffer and sends whatever
+            // it finds to the peer. Any co-resident app can drive that, since our listener is
+            // auth-less on loopback. Unlike the -i pin this one cannot be beaten by a later token:
+            // params.udp is only ever cleared (byedpi/main.c case 'U'), never set back.
+            val base = mutableListOf("ciadpi", "-i", ip, "-p", port.toString(), "-U")
             base.addAll(filterListenFlags(shellSplit(command)))
             return base.toTypedArray()
         }
 
         /**
-         * Sanitise a user/preset byedpi command before it reaches the native engine. Two goals:
+         * Sanitise a user/preset byedpi command before it reaches the native engine. Three goals:
          *
          *  1. The listen endpoint (-i/--ip, -p/--port) must stay pinned to 127.0.0.1:<port>. A
          *     pasted "-i 0.0.0.0" would otherwise (getopt last-wins) expose the auth-less SOCKS5
          *     proxy to the whole network.
-         *  2. A DPI-strategy string has no business touching the filesystem or daemonising the
+         *  2. The egress must stay direct. -C/--connect-to makes byedpi forward *every* proxied
+         *     connection to an arbitrary upstream host:port instead of the real destination, so a
+         *     pasted "strategy" could silently route all of the user's traffic through a stranger's
+         *     server — a wider hole than the -i hijack, and invisible in the UI.
+         *  3. A DPI-strategy string has no business touching the filesystem or daemonising the
          *     engine, so we also strip byedpi's file/daemon options: -y/--cache-file and
-         *     -w/--pidfile (write arbitrary paths), -H/--hosts and -j/--ipset (read arbitrary
-         *     files), and -D/--daemon, -E/--transparent.
+         *     -w/--pidfile (write arbitrary paths), -P/--protect-path (a filesystem socket path —
+         *     guarded by __linux__ upstream, so it *is* compiled in on Android), and -D/--daemon,
+         *     -E/--transparent.
          *
-         * Handles the separate form ("-i" "0.0.0.0"), the long "=" form ("--ip=0.0.0.0"), and the
-         * glued short form ("-i0.0.0.0", "-yfile"). For -i/-p the glued match stays narrow (value
-         * must start with a digit/'.'/':'), so a future "-probe"/"-ipv6" isn't wrongly dropped;
-         * the file flags glue-match any value.
+         *     The read side is keyed on the PRIMITIVE, not on individual flags: every option whose
+         *     value reaches ftob() (byedpi/main.c) fopen()s it and slurps the whole file unless it
+         *     starts with ':'. There are exactly three such call sites — -H/--hosts, -j/--ipset and
+         *     -l/--fake-data — and all three are blocked. -l is the dangerous one: the bytes are not
+         *     merely read, they become the decoy payload that desync.c sends to the destination
+         *     (whole-file for udp_fake), at a TTL the same command chooses via -t, so a high TTL
+         *     turns "read a local file" into "ship it to a host of my choosing". Any future byedpi
+         *     option that calls ftob() must be added here too.
+         *  4. -B/--copy must go, for availability rather than confidentiality. It rewinds getopt by
+         *     assigning to optind (byedpi/main.c), and only a later -A advances it again; without
+         *     one, parse_args never terminates. "-B 1" rewinds to the initial group, whose _optind
+         *     is 0, so argv is re-parsed from the start forever. That spins a thread we can no
+         *     longer stop (server_fd is never published, so the flag stays raised) and every later
+         *     start loses the singleton gate — one pasted string bricks the bypass until the user
+         *     force-stops the app. No preset uses it.
+         *
+         * Matching has to mirror what getopt/byedpi actually accept, not what a well-formed command
+         * looks like, because both of the obvious narrowings are bypassable:
+         *
+         *  - Glued short form. It is NOT enough to glue-match only values that look like an address
+         *    ("-i0.0.0.0"): byedpi runs -i's value through get_addr_scheme() and get_addr()
+         *    (byedpi/main.c), which strip a "socks5://"/"tcp://"/... scheme prefix and accept a
+         *    bracketed literal, so "-i[::]" and "-isocks5://0.0.0.0" would sail past a
+         *    digit/'.'/':' whitelist and still bind every interface. We therefore match on the flag
+         *    letter alone. That is safe here: each blocked short spelling is a single letter, and
+         *    no other byedpi short option is spelled with these letters.
+         *  - Long form. getopt_long accepts any UNAMBIGUOUS abbreviation, so "--connect" reaches
+         *    connect-to, "--pid" reaches pidfile and "--host" reaches hosts. We therefore match a
+         *    long option by PREFIX. Over-matching an ambiguous abbreviation is harmless — byedpi
+         *    rejects it anyway — and checked against the option table in byedpi/main.c, exactly one
+         *    flag we want to keep is a prefix of a blocked name: --fake (-f) sits inside
+         *    --fake-data (-l). getopt_long resolves an EXACT name match before any abbreviation, so
+         *    --fake must still reach -f; [EXACT_KEEP_LONG] carries that one exception. Everything
+         *    else (--proto, --cache-ttl, --cache-merge, --conn-ip, --comment, --pf, --help, --debug,
+         *    --ttl, --tlsrec, --fake-sni, --fake-offset, --fake-tls-mod, …) is unaffected.
+         *
+         * Clustered shorts have to be decomposed, not prefix-matched. byedpi builds its getopt
+         * optstring straight from options[] with no leading '+'/'-' (byedpi/main.c), so shorts
+         * cluster freely and "-Ni 0.0.0.0" is -N followed by -i taking the NEXT argv. Inspecting
+         * only position 1 would wave that through, and getopt's last-wins then beats our pin — the
+         * same total bypass as a bare "-i", just wearing a harmless boolean in front. The same
+         * shape reaches every other blocked flag ("-UC host:443", "-Xy /sdcard/x").
          */
+        // Letters that take a value in byedpi's options[] table. The FIRST such letter in a cluster
+        // swallows the rest of the token as its inline value, so scanning must stop there — in
+        // "-nwww.ip.example" the "ip" is hostname bytes, not flags.
+        // internal, not private: ByedpiPresetCatalog.migrateCommand walks clustered shorts the same
+        // way and must use the same letter table — two copies of "which byedpi letters take a
+        // value" would drift, and a wrong answer there silently changes what reaches the engine.
+        internal const val VALUE_SHORT_LETTERS = "wipIbcxALuTByKHVRsdoqfntlOQeMrmagWPjC#/"
+
+        // The long options with has_arg == 0 in byedpi's options[] table. Kept beside the short
+        // letters for the same reason: anything walking a command has to know which tokens consume
+        // the NEXT one, and assuming every long option does means a boolean silently masks the
+        // token after it.
+        internal val BOOLEAN_LONG_OPTIONS = setOf(
+            "daemon", "no-domain", "no-ipv6", "no-udp", "help", "version",
+            "transparent", "tfo", "md5sig", "wait-send", "drop-sack",
+        )
+        // The subset a user command may not carry, value-taking (i p y w H j C P l B) and boolean
+        // (D E) alike. Case matters: -I (--conn-ip) is not -i, and -B (--copy) is not -b.
+        private const val BLOCKED_SHORT_LETTERS = "ipywHjClBPDE"
+        // getopt_long prefers an exact name over any abbreviation, so these must survive the
+        // prefix match below even though they are prefixes of a blocked name. Currently only
+        // --fake (-f), which sits inside --fake-data (-l).
+        private val EXACT_KEEP_LONG = setOf("fake")
+
+        private const val KEEP = 0
+        private const val DROP = 1
+        private const val DROP_WITH_VALUE = 2
+
+        /**
+         * Walk a clustered single-dash token the way getopt would and decide its fate. Returns
+         * [DROP_WITH_VALUE] when the blocked letter ended the token, because getopt will then take
+         * the following argv as its value and we must drop that too.
+         */
+        private fun classifyShortCluster(t: String): Int {
+            for (idx in 1 until t.length) {
+                val c = t[idx]
+                val takesValue = c in VALUE_SHORT_LETTERS
+                if (c in BLOCKED_SHORT_LETTERS) {
+                    return if (takesValue && idx == t.length - 1) DROP_WITH_VALUE else DROP
+                }
+                // Reached a harmless flag that consumes the remainder as its value: everything
+                // after it is data, so nothing dangerous can still be hiding in this token.
+                if (takesValue) return KEEP
+                // Otherwise it is a boolean (or a letter getopt will reject) — keep walking, the
+                // dangerous one may sit further in.
+            }
+            return KEEP
+        }
+
         private fun filterListenFlags(tokens: List<String>): List<String> {
-            // Flags that take a following value (strip the flag AND its value).
-            val valueShort = setOf("-i", "-p", "-y", "-w", "-H", "-j")
-            val valueLong = setOf("--ip", "--port", "--cache-file", "--pidfile", "--hosts", "--ipset")
-            // Bare boolean flags (no value) to strip: daemonize / transparent mode.
-            val boolFlags = setOf("-D", "--daemon", "-E", "--transparent")
-            // Short flags whose value may be glued directly to the flag.
-            val gluableShort = listOf("-i", "-p", "-y", "-w", "-H", "-j")
+            // Short flags that take a value (strip the flag AND its value, in both forms).
+            val valueShort = listOf("-i", "-p", "-y", "-w", "-H", "-j", "-C", "-P", "-l", "-B")
+            val boolShort = setOf("-D", "-E")
+            // Long spellings, split by whether getopt consumes a following token for them.
+            val valueLong = listOf(
+                "--ip", "--port", "--cache-file", "--pidfile", "--hosts", "--ipset",
+                "--connect-to", "--protect-path", "--fake-data", "--copy",
+            )
+            val boolLong = listOf("--daemon", "--transparent")
 
             val out = ArrayList<String>(tokens.size)
             var i = 0
             while (i < tokens.size) {
                 val t = tokens[i]
-                if (t in boolFlags) { i++; continue }
-                val separate = t in valueShort || t in valueLong
-                val longGlued = valueLong.any { t.startsWith("$it=") }
-                val glued = gluableShort.any { f ->
-                    t.length > 2 && t.startsWith(f) && when (f) {
-                        // -i/-p: only when the next char begins an address/port value, so we don't
-                        // swallow an unrelated token that merely starts with -i/-p.
-                        "-i", "-p" -> t[2].isDigit() || t[2] == '.' || t[2] == ':'
-                        else -> true
+                var drop = false
+                var dropValue = false
+                when {
+                    t in boolShort -> drop = true
+                    t in valueShort -> { drop = true; dropValue = true }
+                    // Glued and/or clustered short form: "-i[::]", "-isocks5://0.0.0.0", "-p1080",
+                    // "-yfile", "-Ni 0.0.0.0", "-UC host:443".
+                    t.length > 2 && t.startsWith("-") && !t.startsWith("--") ->
+                        when (classifyShortCluster(t)) {
+                            DROP -> drop = true
+                            DROP_WITH_VALUE -> { drop = true; dropValue = true }
+                        }
+                    t.length > 2 && t.startsWith("--") -> {
+                        val name = t.substring(2).substringBefore('=')
+                        when {
+                            name.isEmpty() -> {}
+                            name in EXACT_KEEP_LONG -> {}
+                            valueLong.any { it.startsWith("--$name") } -> {
+                                drop = true
+                                // "--ip=0.0.0.0" carries its value inline; "--ip 0.0.0.0" does not.
+                                dropValue = !t.contains('=')
+                            }
+                            boolLong.any { it.startsWith("--$name") } -> drop = true
+                        }
                     }
                 }
-                if (separate || longGlued || glued) {
-                    // separate-argument form ("-i" "0.0.0.0") — also drop the following value
-                    if (separate && i + 1 < tokens.size) i++
+                if (drop) {
+                    if (dropValue && i + 1 < tokens.size) i++
                     i++
                     continue
                 }
@@ -171,7 +287,10 @@ class DesyncVpnService : VpnService(), Tunnel {
             return out
         }
 
-        private fun shellSplit(s: String): List<String> {
+        // internal for the same reason as VALUE_SHORT_LETTERS: anything that reasons about a
+        // command's tokens must agree with the splitter the engine path actually uses, or it will
+        // disagree exactly on quoted values.
+        internal fun shellSplit(s: String): List<String> {
             val out = ArrayList<String>()
             val sb = StringBuilder()
             var quote = 0.toChar()
@@ -190,6 +309,43 @@ class DesyncVpnService : VpnService(), Tunnel {
             }
             if (sb.isNotEmpty()) out.add(sb.toString())
             return out
+        }
+
+        /**
+         * Block until byedpi's SOCKS5 listener on 127.0.0.1:[port] actually accepts a connection,
+         * or [deadlineMs] elapses. Returns true only on a successful accept.
+         *
+         * The engine binds some way into its own start-up, so "the byedpi thread is still alive"
+         * (or any fixed sleep) is not readiness: whoever dials first — the TUN relay here, the
+         * StrategyTester there — would race the bind and see connection-refused on the very first
+         * flow. Keeping this in one place means both callers agree on what "up" means.
+         */
+        fun awaitSocksReady(
+            port: Int,
+            deadlineMs: Long = 3_000L,
+            alive: () -> Boolean = { true },
+        ): Boolean {
+            val deadline = System.currentTimeMillis() + deadlineMs
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", port), 150) }
+                    return true
+                } catch (_: Exception) {
+                    // byedpi's main() returns straight away on an invalid command or a lost bind
+                    // race. Once the engine is gone no later attempt can succeed, so short-circuit
+                    // instead of making the user watch out the whole deadline for a known failure.
+                    if (!alive()) return false
+                    try {
+                        Thread.sleep(40)
+                    } catch (_: InterruptedException) {
+                        // Re-arm the flag we just consumed: the auto-tune sweep interrupts its
+                        // worker to abort, and swallowing it here would strand that thread.
+                        Thread.currentThread().interrupt()
+                        return false
+                    }
+                }
+            }
+            return false
         }
 
         private const val NOTIFICATION_ID = 2
@@ -266,8 +422,13 @@ class DesyncVpnService : VpnService(), Tunnel {
     private var byedpiArgs: Array<String> = arrayOf("ciadpi")
     private var socksPort: Int = DEFAULT_SOCKS_PORT
 
-    private var byedpiProxy: ByeDpiProxy? = null
-    private var byedpiThread: Thread? = null
+    // All three cross threads and all three feed stopByedpi()'s ownership test: the writer is the
+    // startVpn coroutine, the readers are a different Dispatchers.IO worker (ACTION_STOP), the main
+    // thread (onDestroy/onRevoke) and the tun-read thread. Nothing establishes happens-before
+    // between them — startVpn's synchronized block ends before startByedpi() is even called — so a
+    // stale read here means skipping the teardown of a live engine and then dropping its handles.
+    @Volatile private var byedpiProxy: ByeDpiProxy? = null
+    @Volatile private var byedpiThread: Thread? = null
     @Volatile private var byedpiExitCode: Int? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -311,13 +472,28 @@ class DesyncVpnService : VpnService(), Tunnel {
                 return START_NOT_STICKY
             }
             else -> {
+                // A null intent is the system redelivering START_STICKY after our process was
+                // killed — not a user action. Without this gate any such restart re-established
+                // the VPN even when the user had switched it off, so a tunnel could reappear
+                // behind their back; consult the persisted flag instead (same reconciliation as
+                // ProxyService) and stand down if we were not supposed to be running. Every real
+                // start path (MainActivity, tile, BootReceiver) sets ACTION_START, so a
+                // user-initiated start never reaches this branch with a null intent.
+                if (intent == null) {
+                    val shouldRun = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                        .getBoolean(KEY_VPN_RUNNING, false)
+                    if (!shouldRun) {
+                        stopSelf()
+                        return START_NOT_STICKY
+                    }
+                }
                 // Off the main thread so isStarting can paint immediately and byedpi's bind-wait
                 // doesn't freeze the UI (or risk an ANR) for up to a few seconds.
                 scope.launch {
                     try {
                         startVpn()
                     } catch (e: Exception) {
-                        stopEverything(error = formatFailure("запуска VPN", e))
+                        stopEverything(error = formatFailure(getString(R.string.vpn_fail_start_stage), e))
                     }
                 }
             }
@@ -333,7 +509,10 @@ class DesyncVpnService : VpnService(), Tunnel {
         val preset = p.getString(KEY_PRESET, PRESET_AUTO) ?: PRESET_AUTO
         activePreset = preset
         // Custom command wins; otherwise derive byedpi args from the preset.
-        val custom = (p.getString(KEY_BYEDPI_CMD, "") ?: "").trim()
+        // migrateCommand, not the raw pref: a saved -A command written before the -T timeouts
+        // existed has a dead auto-detect, and this path (tile, boot autostart) can launch it long
+        // before the UI ever gets a chance to repair it.
+        val custom = ByedpiPresetCatalog.migrateCommand((p.getString(KEY_BYEDPI_CMD, "") ?: "").trim())
         val command = if (custom.isNotEmpty()) custom else presetToByedpiArgs(preset)
         socksPort = selectSocksPort()
         byedpiArgs = buildByedpiArgs(command, "127.0.0.1", socksPort)
@@ -360,12 +539,16 @@ class DesyncVpnService : VpnService(), Tunnel {
 
     /**
      * Start the native byedpi engine as a local SOCKS5 proxy on a background thread.
-     * byedpi's main() blocks while serving, so we launch it and briefly wait: if it returns
-     * (thread dies) with a non-zero code right away, the command was invalid → fail.
-     * Returns true if the proxy is up.
+     * byedpi's main() blocks while serving, so we launch it and then poll the listener for
+     * readiness; a thread that dies before the port answers means the command was invalid or the
+     * bind failed, and [awaitSocksReady] gives up as soon as that happens rather than at the
+     * deadline. Returns true if the proxy is up.
      */
     private fun startByedpi(): Boolean {
-        // Drop any leftover instance (auto-tune, previous VPN session) so g_proxy_running is free.
+        // Drop a leftover run of OUR OWN from a previous VPN session, so the native singleton is
+        // free before we claim it. This deliberately cannot reach an auto-tune instance: those live
+        // on StrategyTester's own ByeDpiProxy and are not tracked by our handles — tearing one down
+        // from here is what the ownership test in stopByedpi() exists to prevent.
         stopByedpi()
         return try {
             val proxy = ByeDpiProxy()
@@ -373,37 +556,39 @@ class DesyncVpnService : VpnService(), Tunnel {
             byedpiExitCode = null
             val args = byedpiArgs
             val port = socksPort
-            byedpiThread = thread(name = "byedpi-loop", isDaemon = true) {
+            // Publish the handle BEFORE starting the thread. kotlin.concurrent.thread() starts it
+            // inside the call and only then assigns, which leaves a window where the engine is
+            // already running while byedpiThread is still null — a stopByedpi() landing there would
+            // see no owner, skip the teardown and clear the handles, orphaning a live listener that
+            // nothing can ever stop again (the native gate then refuses every later start).
+            val t = Thread({
                 try { byedpiExitCode = proxy.startProxy(args) }
                 catch (_: Throwable) { byedpiExitCode = -1 }
-            }
+            }, "byedpi-loop")
+            t.isDaemon = true
+            byedpiThread = t
+            t.start()
             // Readiness means the SOCKS listener accepts connections, not merely that its thread
-            // has survived for an arbitrary delay.
-            val deadline = System.currentTimeMillis() + 3_000
-            var ready = false
-            while (byedpiThread?.isAlive == true && System.currentTimeMillis() < deadline) {
-                try {
-                    Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", port), 150) }
-                    ready = true
-                    break
-                } catch (_: Exception) {
-                    Thread.sleep(40)
-                }
-            }
+            // has survived for an arbitrary delay. The liveness re-check matters because the port
+            // could be answered by *someone else's* listener (ours lost the bind race after
+            // selectSocksPort released it) — a dead engine thread means that accept wasn't us.
+            val ready = awaitSocksReady(port) { byedpiThread?.isAlive == true } &&
+                byedpiThread?.isAlive == true
             if (!ready) {
                 val code = byedpiExitCode
                 val alive = byedpiThread?.isAlive == true
                 val reason = when {
                     !alive && code == -1 ->
-                        "byedpi не запустился (порт $port занят или движок уже работает). Закрой ByeByeDPI/другие SOCKS и попробуй снова"
+                        getString(R.string.byedpi_port_busy, port)
                     !alive && code != null ->
-                        "byedpi завершился сразу (код $code). Проверь команду byedpi в настройках"
+                        getString(R.string.byedpi_exit_code, code)
                     alive ->
-                        "byedpi SOCKS не отвечает на 127.0.0.1:$port (таймаут). Попробуй ещё раз"
+                        getString(R.string.byedpi_socks_timeout, port)
                     else ->
-                        "byedpi SOCKS не готов на 127.0.0.1:$port"
+                        getString(R.string.byedpi_socks_not_ready, port)
                 }
                 _state.value = VpnState(isRunning = false, isStarting = false, error = reason)
+                // stopByedpi() no-ops when this run no longer owns the engine — see its doc.
                 stopByedpi()
                 return false
             }
@@ -412,25 +597,45 @@ class DesyncVpnService : VpnService(), Tunnel {
             _state.value = VpnState(
                 isRunning = false,
                 isStarting = false,
-                error = "byedpi не запустился: ${e.message ?: e.javaClass.simpleName}",
+                error = getString(R.string.byedpi_start_failed, e.message ?: e.javaClass.simpleName),
             )
             stopByedpi()
             false
         }
     }
 
+    /**
+     * Tear down *our* byedpi run, if we still have one.
+     *
+     * The ownership test has to live here rather than at the call sites: stopProxy/forceClose reach
+     * the process-wide native globals, not [byedpiProxy], so they hit whichever run holds them
+     * right now. A run whose startProxy already returned holds nothing — the native epilogue either
+     * released the globals or found itself superseded — and firing anyway shuts down somebody
+     * else's listener. Concretely: an auto-tune sweep owns the engine, the user enables the VPN from
+     * the quick-settings tile, our start is refused, and we kill the listener the sweep is probing
+     * through, so the strategy under test is scored as broken and may be dropped from the cache.
+     * A null exit code means the thread is still inside main(), i.e. the run may be ours, so
+     * unknown is treated as owned.
+     */
     private fun stopByedpi() {
         val proxy = byedpiProxy
-        try { proxy?.stopProxy() } catch (_: Throwable) {}
-        // Give the loop up to 2s to unwind; if it's still alive, hard-close the socket and wait again.
         val t = byedpiThread
-        try {
-            t?.join(2000)
-            if (t != null && t.isAlive) {
-                try { proxy?.forceClose() } catch (_: Throwable) {}
-                try { t.join(1500) } catch (_: Throwable) {}
-            }
-        } catch (_: Throwable) {}
+        if (t != null && byedpiExitCode == null) {
+            try { proxy?.stopProxy() } catch (_: Throwable) {}
+            // Give the loop up to 2s to unwind; if it's still alive, hard-close the socket and wait
+            // again.
+            try {
+                t.join(2000)
+                if (t.isAlive) {
+                    try { proxy?.forceClose() } catch (_: Throwable) {}
+                    try { t.join(1500) } catch (_: Throwable) {}
+                }
+            } catch (_: Throwable) {}
+        }
+        // Drop the handles either way. That is right for a run that has exited and for one we just
+        // stopped; it is a deliberate write-off for the one case where both joins time out and the
+        // thread is still alive, since we have no stronger lever than forceClose() and holding a
+        // handle we can never act on only makes the next start refuse too.
         byedpiProxy = null
         byedpiThread = null
         byedpiExitCode = null
@@ -456,11 +661,20 @@ class DesyncVpnService : VpnService(), Tunnel {
 
         // Bring up the native byedpi SOCKS5 proxy first — the relay dials it for every TCP flow.
         if (!startByedpi()) {
-            stopEverything(error = _state.value.error ?: "byedpi не запустился")
+            stopEverything(error = _state.value.error ?: getString(R.string.byedpi_start_failed_short))
             return
         }
-        // User may have hit stop while we waited for SOCKS readiness.
-        if (!_state.value.isStarting || cleaningUp) return
+        // User may have hit stop while we waited for SOCKS readiness. stopEverything() only gates on
+        // cleaningUp, never on isStarting, so a stop can run to completion — including its own
+        // stopByedpi() against still-null handles — while we are in here. Bailing out bare would
+        // therefore strand the engine we just started: the service is gone, no further onDestroy
+        // fires, and its auth-less SOCKS listener keeps serving with the native gate raised, so
+        // every later start fails for the life of the process. Tear our own run down instead; the
+        // ownership test in stopByedpi() is what makes calling it here safe.
+        if (!_state.value.isStarting || cleaningUp) {
+            stopByedpi()
+            return
+        }
 
         // IPv4 only on purpose: we do NOT add an IPv6 address/route. If we advertised IPv6 on the
         // TUN, apps (YouTube/Instagram use Happy Eyeballs) would prefer AAAA/IPv6 and we'd have to
@@ -500,7 +714,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             tunIn = FileInputStream(fd.fileDescriptor)
             tunOut = FileOutputStream(fd.fileDescriptor)
         } catch (e: Exception) {
-            val reason = formatFailure("поднятия VPN", e)
+            val reason = formatFailure(getString(R.string.vpn_fail_establish_stage), e)
             _state.value = VpnState(isRunning = false, isStarting = false, error = reason)
             stopEverything(error = reason)
             return
@@ -743,7 +957,12 @@ class DesyncVpnService : VpnService(), Tunnel {
     }
 
     private fun formatFailure(stage: String, e: Exception): String =
-        "Не удалось $stage: ${e.javaClass.simpleName}: ${e.message ?: "без подробностей"}"
+        getString(
+            R.string.vpn_fail_format,
+            stage,
+            e.javaClass.simpleName,
+            e.message ?: getString(R.string.vpn_fail_no_details),
+        )
 
     private fun persistRunning(on: Boolean) {
         getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_VPN_RUNNING, on).apply()
@@ -760,8 +979,12 @@ class DesyncVpnService : VpnService(), Tunnel {
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val ch = NotificationChannel(CHANNEL_ID, "Разблокировка", NotificationManager.IMPORTANCE_LOW)
-            ch.description = "Статус обхода блокировок YouTube / Instagram"
+            val ch = NotificationChannel(
+                CHANNEL_ID,
+                getString(R.string.desync_channel_name),
+                NotificationManager.IMPORTANCE_LOW,
+            )
+            ch.description = getString(R.string.desync_channel_desc)
             getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
         }
     }
@@ -776,12 +999,12 @@ class DesyncVpnService : VpnService(), Tunnel {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Разблокировка включена")
-            .setContentText("YouTube и Instagram обходят блокировку")
+            .setContentTitle(getString(R.string.desync_notification_title))
+            .setContentText(getString(R.string.desync_notification_text))
             .setSmallIcon(R.drawable.ic_tile_shield)
             .setOngoing(true)
             .setContentIntent(open)
-            .addAction(0, "Отключить", stop)
+            .addAction(0, getString(R.string.notification_disable), stop)
             .build()
     }
 

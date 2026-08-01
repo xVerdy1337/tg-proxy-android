@@ -1,5 +1,7 @@
 package com.tgwsproxy.net
 
+import android.content.Context
+import com.tgwsproxy.R
 import com.tgwsproxy.desync.DesyncEngine
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -44,19 +46,23 @@ object HelloProbe {
      * Run one probe: connect, send the (maybe re-framed) ClientHello, classify the reaction.
      *
      * PASS is granted ONLY when the server replies with a real TLS handshake record (first byte
-     * 0x16 = ServerHello). Everything else is treated conservatively so we never report "работает"
-     * when it doesn't:
-     *   - RST / broken pipe                      -> BLOCKED (DPI сбросил поток)
-     *   - TLS alert (0x15)                       -> BLOCKED (TLS-уровневый отказ, часто по SNI)
-     *   - silence until timeout (drop/throttle)  -> BLOCKED (нет ответа)
-     *   - clean FIN/EOF with no data             -> BLOCKED (закрыто без handshake)
-     *   - any non-TLS byte (interceptor/stub)    -> BLOCKED (подозрительный ответ)
-     *   - DNS / route / connect failure          -> ERROR
+     * 0x16 = ServerHello). Everything else is treated conservatively so we never report "works"
+     * when it doesn't. Each row names the resource it puts in `detail`, so the wording lives in
+     * strings.xml alone (it is translated per-locale) and this table stays checkable against it:
+     *   - RST / broken pipe                      -> BLOCKED (probe_reset_dpi)
+     *   - TLS alert (0x15)                       -> BLOCKED (probe_tls_alert)
+     *   - silence until timeout (drop/throttle)  -> BLOCKED (probe_no_response)
+     *   - clean FIN/EOF with no data             -> BLOCKED (probe_closed_fin)
+     *   - any non-TLS byte (interceptor/stub)    -> BLOCKED (probe_non_tls)
+     *   - DNS / route / connect failure          -> ERROR   (e.message, else probe_network_error/probe_error)
      *
      * latencyMs is the true response time (last byte sent -> first reaction), measured with
      * nanoTime; for the timeout case it is just the read window and must not be read as RTT.
+     *
+     * [context] is needed because `detail` is shown to the user verbatim, so it has to come from
+     * string resources rather than from literals baked into this layer.
      */
-    fun probe(host: String, port: Int = 443, method: Method): Result {
+    fun probe(context: Context, host: String, port: Int = 443, method: Method): Result {
         val startNs = System.nanoTime()
         var sentNs = startNs
         var sock: Socket? = null
@@ -93,29 +99,30 @@ object HelloProbe {
             } catch (e: SocketTimeoutException) {
                 // A live HTTPS server replies within ~RTT on a direct connection. Silence here means
                 // the flow was silently dropped/throttled — that is NOT a working bypass.
-                return Result(method, Outcome.BLOCKED, elapsedMs(sentNs), "нет ответа (тихий дроп/троттл)")
+                return Result(method, Outcome.BLOCKED, elapsedMs(sentNs), context.getString(R.string.probe_no_response))
             }
             val rttMs = elapsedMs(sentNs)
             return when {
                 first < 0 ->
-                    Result(method, Outcome.BLOCKED, rttMs, "закрыто без ответа (FIN)")
+                    Result(method, Outcome.BLOCKED, rttMs, context.getString(R.string.probe_closed_fin))
                 first == 0x16 ->
-                    Result(method, Outcome.PASS, rttMs, "TLS ServerHello получен")
+                    Result(method, Outcome.PASS, rttMs, context.getString(R.string.probe_server_hello))
                 first == 0x15 ->
-                    Result(method, Outcome.BLOCKED, rttMs, "TLS alert (отказ handshake)")
+                    Result(method, Outcome.BLOCKED, rttMs, context.getString(R.string.probe_tls_alert))
                 else ->
-                    Result(method, Outcome.BLOCKED, rttMs, "не-TLS ответ 0x${(first and 0xFF).toString(16)} (перехват)")
+                    // The 0x prefix lives in the resource, so the arg is the bare hex digits only.
+                    Result(method, Outcome.BLOCKED, rttMs, context.getString(R.string.probe_non_tls, (first and 0xFF).toString(16)))
             }
         } catch (e: IOException) {
             val msg = (e.message ?: "").lowercase()
             val blocked = "reset" in msg || "econnreset" in msg || "broken pipe" in msg || "epipe" in msg
             return if (blocked) {
-                Result(method, Outcome.BLOCKED, elapsedMs(startNs), "сброс соединения (DPI)")
+                Result(method, Outcome.BLOCKED, elapsedMs(startNs), context.getString(R.string.probe_reset_dpi))
             } else {
-                Result(method, Outcome.ERROR, elapsedMs(startNs), e.message ?: "ошибка сети")
+                Result(method, Outcome.ERROR, elapsedMs(startNs), e.message ?: context.getString(R.string.probe_network_error))
             }
         } catch (e: Exception) {
-            return Result(method, Outcome.ERROR, elapsedMs(startNs), e.message ?: "ошибка")
+            return Result(method, Outcome.ERROR, elapsedMs(startNs), e.message ?: context.getString(R.string.probe_error))
         } finally {
             try { sock?.close() } catch (_: Exception) {}
         }

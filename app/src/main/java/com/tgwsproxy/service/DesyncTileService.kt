@@ -63,10 +63,10 @@ class DesyncTileService : TileService() {
     private fun setTileState(running: Boolean) {
         val tile = qsTile ?: return
         tile.state = if (running) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
-        tile.label = "Разблокировка"
+        tile.label = getString(R.string.tile_unblock)
         tile.icon = Icon.createWithResource(this, R.drawable.ic_tile_shield)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            tile.subtitle = if (running) "Включена" else "Выключена"
+            tile.subtitle = getString(if (running) R.string.tile_on else R.string.tile_off)
         }
         tile.updateTile()
     }

@@ -435,6 +435,15 @@ int get_addr(const char *str, union sockaddr_u *addr)
         e = strchr(str, 0);
     }
     if (e != s) {
+        /* LOCAL PATCH (not upstream v0.17.3): bound the VLA. Its size comes straight from an
+         * argv-controlled length, and in this app byedpi runs on a Java-created thread with a
+         * ~1MB stack, so a long enough value (-I/--conn-ip is the one such option a user command
+         * may still carry) moves the stack pointer past the guard page before memcpy touches it.
+         * getaddrinfo() below is AI_NUMERICHOST, so nothing longer than a numeric v4/v6 literal
+         * plus a scope id can ever resolve -- rejecting early changes no legal behaviour. */
+        if ((e - s) >= 128) {
+            return -1;
+        }
         char str_ip[(e - s) + 1];
         memcpy(str_ip, s, e - s);
         str_ip[e - s] = 0;
@@ -596,6 +605,15 @@ void *add(void **root, int *n, size_t ss)
 
 static struct desync_params *add_group(struct desync_params *prev)
 {
+    /* LOCAL PATCH (not upstream v0.17.3): refuse the group before anything is allocated or linked
+     * once its id would no longer fit the bitmask. The shift below forces this, and the check has
+     * to be HERE rather than at the end of parse_args: params.dp_n is only validated once the whole
+     * getopt loop has finished, by which time dp_full_mask is already wrong. Reachable from a
+     * pasted command carrying enough -A tokens. All three callers treat a null return as a hard
+     * failure. (sizeof does not evaluate its operand, so `prev` may be null here.) */
+    if ((size_t )params.dp_n >= sizeof(prev->bit) * 8) {
+        return 0;
+    }
     struct desync_params *dp = calloc(1, sizeof(*prev));
     if (!dp) {
         return 0;
@@ -605,7 +623,10 @@ static struct desync_params *add_group(struct desync_params *prev)
         prev->next = dp;
     }
     dp->id = params.dp_n;
-    dp->bit = 1 << dp->id;
+    /* LOCAL PATCH: the literal 1 was an int, so id 31 shifted into the sign bit and id 32+ was
+     * undefined behaviour that on ARM aliases id % 32, silently giving two groups one mask bit.
+     * The id < 64 bound is enforced at the top of this function. */
+    dp->bit = (uint64_t )1 << dp->id;
     dp->str = "";
     
     params.dp_n++;
@@ -788,7 +809,12 @@ int parse_args(int argc, char **argv)
             
         case 'b':
             val = strtol(optarg, &end, 0);
-            if (val <= 0 || val > INT_MAX/4 || *end)
+            /* LOCAL PATCH (not upstream v0.17.3): ceiling lowered from INT_MAX/4 to 1 MiB.
+             * bfsize is the size of two to three buffers PER CONNECTION, so the old bound let a
+             * pasted string ask the allocator for half a gigabyte on the first proxied flow --
+             * on Android that is an OOM kill, not a graceful failure. 1 MiB is still 64x the
+             * 16384 default and far above anything a desync strategy needs. */
+            if (val <= 0 || val > (1 << 20) || *end)
                 invalid = 1;
             else
                 params.bfsize = val;
@@ -880,13 +906,25 @@ int parse_args(int argc, char **argv)
                         break;
                     case 'n': 
                         break;
-                    case 'p':
-                        if ((end = strchr(end, '='))) {
-                            float f = strtof(end + 1, &end);
-                            if (*end) invalid = 1;
-                            else dp->prev->pri = (int )f;
+                    case 'p': {
+                        /* LOCAL PATCH (not upstream v0.17.3): every other case in this loop
+                         * reaches the trailing strchr() only via `continue`, which the while
+                         * condition then short-circuits on a NULL end. This one used to assign
+                         * strchr(end, '=') straight into `end` and `break`, so a bare "p" with no
+                         * '=' (e.g. "-A p", or a truncated "-At,p") fell out with end == NULL and
+                         * strchr(NULL, ',') below segfaulted the whole process during parsing --
+                         * and since the command is persisted and re-applied on start, that is a
+                         * crash loop, not a one-off. Fail through `continue` like the rest. */
+                        char *eq = strchr(end, '=');
+                        if (!eq) {
+                            invalid = 1;
+                            continue;
                         }
+                        float pri_f = strtof(eq + 1, &end);
+                        if (*end) invalid = 1;
+                        else dp->prev->pri = (int )pri_f;
                         break;
+                    }
                     default:
                         invalid = 1;
                         continue;
@@ -1276,7 +1314,12 @@ int parse_args(int argc, char **argv)
         }
     }
     if ((size_t )params.dp_n > sizeof(dp->bit) * 8) {
+        /* LOCAL PATCH (not upstream v0.17.3): unreachable belt-and-braces since add_group() now
+         * refuses id >= 64 up front, so dp_n can never exceed 64 -- kept only so the invariant
+         * stays stated where a reader looks for it. Upstream logged and carried on here, which
+         * meant running a different strategy set than the command asked for. */
         LOG(LOG_E, "too many groups!\n");
+        return -1;
     }
     if (params.baddr.sa.sa_family != AF_INET6) {
         params.ipv6 = 0;

@@ -8,6 +8,7 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.tgwsproxy.service.LogLine
 import com.tgwsproxy.service.ProxyService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,6 +27,10 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
      * flashed the full-screen "connecting" spinner for the 1–2s it takes the service to bind
      * and emit — which looked like the proxy briefly dropping into a connecting state.
      * The real service state reconciles this within a moment once the binding completes.
+     *
+     * Nothing seeds [ProxyUiState.error] on purpose: a failed start is a fact about one attempt in
+     * one process, never persisted, so the first frame after a cold open has nothing to report and
+     * must not resurrect a complaint the user already walked away from.
      */
     private fun initialStateFromPrefs(): ProxyUiState {
         return try {
@@ -112,7 +117,11 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
                     bytesUp = serviceState.bytesUp,
                     bytesDown = serviceState.bytesDown,
                     startedAt = serviceState.startedAt,
-                    route = serviceState.route
+                    route = serviceState.route,
+                    // This rebuilds from scratch rather than copy()ing, so anything the service owns
+                    // has to be mapped here or it is silently dropped on the next emission — and the
+                    // service is exactly who knows why a start failed.
+                    error = serviceState.error
                 )
             }
         }
@@ -122,7 +131,10 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
         val context = getApplication<Application>()
         val current = _uiState.value
         if (current.isLoading) return
-        _uiState.value = current.copy(isLoading = true)
+        // Drop the previous failure the moment the button is pressed rather than waiting for the
+        // service to re-emit: the reason belongs to the attempt that just ended, and leaving it
+        // under the spinner reads as if the new attempt had already failed too.
+        _uiState.value = current.copy(isLoading = true, error = null)
 
         try {
             if (current.isRunning) {
@@ -184,7 +196,7 @@ data class ProxyUiState(
     val port: Int = 1443,
     val secret: String = "",
     val connectionCount: Int = 0,
-    val logs: List<String> = emptyList(),
+    val logs: List<LogLine> = emptyList(),
     val proxyLink: String = "",
     val cfDomain: String = "",
     val cfWorkerDomain: String = "",
@@ -192,5 +204,7 @@ data class ProxyUiState(
     val bytesUp: Long = 0,
     val bytesDown: Long = 0,
     val startedAt: Long = 0,
-    val route: String = ""
+    val route: String = "",
+    /** Localized, actionable reason the last start attempt failed; null = nothing to show. */
+    val error: String? = null
 )

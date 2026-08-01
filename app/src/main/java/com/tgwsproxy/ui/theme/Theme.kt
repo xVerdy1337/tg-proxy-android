@@ -5,7 +5,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
@@ -36,8 +35,12 @@ fun TgWsProxyTheme(
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as? Activity)?.window ?: return@SideEffect
-            window.statusBarColor = Background.toArgb()
-            window.navigationBarColor = Background.toArgb()
+            // Only the icon appearance is set here. statusBarColor/navigationBarColor used to be
+            // painted to the canvas colour too, but both are deprecated and are a no-op on API 35 —
+            // under edge-to-edge the bars are transparent by design and the app's own background
+            // shows through them, which is why JevioBackground fills the whole window. Light icons
+            // because that background is #11120F; MainActivity.enableEdgeToEdge asks for the same,
+            // and this keeps it true across recompositions and theme changes.
             val controller = WindowCompat.getInsetsController(window, view)
             controller.isAppearanceLightStatusBars = false
             controller.isAppearanceLightNavigationBars = false

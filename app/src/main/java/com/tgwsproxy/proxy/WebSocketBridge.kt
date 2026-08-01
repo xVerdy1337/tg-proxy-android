@@ -124,6 +124,15 @@ class WebSocketBridge {
         return isConnected && (webSocket?.send(data.toByteString(0, data.size)) ?: false)
     }
 
+    /**
+     * Bytes handed to OkHttp by [send] that have not been written to the socket yet. Non-zero
+     * means our own uplink is still draining this session's frames, so the far end cannot have
+     * answered them — the stall watchdog needs that to tell a dead route from a slow uplink,
+     * since [send] returns true the moment a frame is merely enqueued. 0 once there is no socket
+     * (nothing of ours is in flight), and never throws: a stall check must not become a crash.
+     */
+    fun queueSize(): Long = try { webSocket?.queueSize() ?: 0L } catch (_: Exception) { 0L }
+
     suspend fun receive(): ByteArray? {
         // receiveCatching returns a closed result (→ null) once the channel is closed,
         // so there's no need to probe isEmpty (not a reliable readiness signal).

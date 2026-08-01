@@ -719,11 +719,22 @@ ssize_t desync_udp(int sfd, char *buffer,
             pkt = fake_udp;
         }
         if (dp->fake_offset.m) {
-            if (pkt.size > dp->fake_offset.pos) { 
-                pkt.size -= dp->fake_offset.pos;
-                pkt.data += dp->fake_offset.pos;
+            /* LOCAL PATCH (not upstream v0.17.3): the comparison below was sign-blind, so a
+             * negative --fake-offset made it true, grew pkt.size and walked pkt.data BACKWARDS out
+             * of its buffer -- the `else pkt.size = 0` guard could never fire. The bytes are then
+             * sent to the peer, i.e. an out-of-bounds read that exfiltrates. The TCP path already
+             * clamps this (see get_tcp_fake); this one did not. Negative values of this same field
+             * stay legal on the TCP path, where gen_offset() reads it as "from the end" (spelled
+             * -O-1 / --fake-offset=-1) -- they are invalid only here, where the value is used as a
+             * raw index into the fake packet. */
+            long off = dp->fake_offset.pos;
+            if (off > 0 && off < (long )pkt.size) {
+                pkt.size -= off;
+                pkt.data += off;
             }
-            else pkt.size = 0;
+            else if (off) {
+                pkt.size = 0;
+            }
         }
         int bttl = dp->ttl ? dp->ttl : DEFAULT_TTL;
         if (setttl(sfd, bttl) < 0) {

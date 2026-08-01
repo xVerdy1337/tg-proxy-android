@@ -49,7 +49,6 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -110,6 +109,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -134,6 +134,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.tgwsproxy.R
+import com.tgwsproxy.service.LogKind
+import com.tgwsproxy.service.LogLine
 import com.tgwsproxy.ui.theme.Background
 import com.tgwsproxy.ui.theme.Accent
 import com.tgwsproxy.ui.theme.Border
@@ -169,28 +171,28 @@ private fun copyToClipboard(context: Context, label: String, text: String, toast
     }
 }
 
-private fun formatBytes(b: Long): String {
-    if (b < 1024) return "$b Б"
+private fun formatBytes(context: android.content.Context, b: Long): String {
+    if (b < 1024) return context.getString(R.string.unit_b, b)
     val kb = b / 1024.0
-    if (kb < 1024) return String.format(Locale.US, "%.1f КБ", kb)
+    if (kb < 1024) return context.getString(R.string.unit_kb, kb)
     val mb = kb / 1024.0
-    if (mb < 1024) return String.format(Locale.US, "%.1f МБ", mb)
-    return String.format(Locale.US, "%.2f ГБ", mb / 1024.0)
+    if (mb < 1024) return context.getString(R.string.unit_mb, mb)
+    return context.getString(R.string.unit_gb, mb / 1024.0)
 }
 
-private fun formatUptime(startedAt: Long, now: Long): String {
-    if (startedAt <= 0) return "—"
+private fun formatUptime(context: android.content.Context, startedAt: Long, now: Long): String {
+    if (startedAt <= 0) return context.getString(R.string.em_dash)
     val s = ((now - startedAt) / 1000).coerceAtLeast(0)
     val h = s / 3600; val m = (s % 3600) / 60; val sec = s % 60
     return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, sec)
     else String.format(Locale.US, "%02d:%02d", m, sec)
 }
 
-private fun routeLabel(route: String): String = when (route) {
+private fun routeLabel(context: android.content.Context, route: String): String = when (route) {
     "cloudflare" -> "Cloudflare"
-    "direct" -> "Прямое"
+    "direct" -> context.getString(R.string.route_direct)
     "tcp" -> "TCP"
-    else -> "—"
+    else -> context.getString(R.string.em_dash)
 }
 
 private enum class MainTab { Telegram, Sites }
@@ -212,6 +214,13 @@ fun MainScreen(
     var tgAdvancedOpen by remember { mutableStateOf(false) }
     var showOnboarding by remember { mutableStateOf(shouldShowOnboarding(context)) }
 
+    // Both of these decide whether their card exists at all, and that decision has to be made out
+    // here: the list spaces its items by a fixed 16dp, which an item collects even when its content
+    // draws nothing, so "return early inside the composable" leaves a gap behind. Hoisting the
+    // update probe also stops it re-firing every time the banner's item leaves the lazy window.
+    val updateUrl = rememberUpdateUrl(context)
+    val batteryRestricted = !batteryOptimizationsIgnored()
+
     if (showOnboarding) {
         OnboardingDialog(
             onDismiss = {
@@ -221,10 +230,13 @@ fun MainScreen(
         )
     }
 
+    // The whole log is one item, so "within two items of the end" would be true for the entire
+    // scroll through an expanded 200-line log and every new line would yank the user back down.
+    // Only the genuinely-last item being on screen counts as being at the bottom.
     val isAtBottom by remember {
         derivedStateOf {
             val lastVisibleItem = listState.layoutInfo.visibleItemsInfo.lastOrNull()
-            lastVisibleItem != null && lastVisibleItem.index >= listState.layoutInfo.totalItemsCount - 2
+            lastVisibleItem != null && lastVisibleItem.index >= listState.layoutInfo.totalItemsCount - 1
         }
     }
 
@@ -232,7 +244,10 @@ fun MainScreen(
         listState.scrollToItem(0)
     }
 
-    LaunchedEffect(uiState.logs.size) {
+    // Keyed on the newest line's sequence number, not on the log's size: the log is capped at 200,
+    // so once it fills up the size stops changing and a size key would freeze the auto-follow for
+    // the rest of the session. seq keeps moving for every line that arrives, cap or no cap.
+    LaunchedEffect(uiState.logs.lastOrNull()?.seq) {
         if (tab != MainTab.Telegram) return@LaunchedEffect
         val totalItems = listState.layoutInfo.totalItemsCount
         if (isAtBottom && totalItems > 0) {
@@ -245,6 +260,12 @@ fun MainScreen(
             modifier = Modifier.fillMaxSize(),
             topBar = {
                 TopAppBar(
+                // Was WindowInsets(0,0,0,0), which stripped the status-bar inset the bar exists to
+                // apply — under the edge-to-edge Android 15 enforces, the mark and the wordmark
+                // rendered underneath the clock. Scaffold hands the body a top padding equal to
+                // this bar's height, so the inset has to be consumed here or the whole screen
+                // shifts up by it.
+                windowInsets = TopAppBarDefaults.windowInsets,
                 title = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -252,7 +273,10 @@ fun MainScreen(
                     ) {
                         Image(
                             painter = painterResource(id = R.drawable.ic_jevio_logo),
-                            contentDescription = "Jevio Unblocker",
+                            // Decorative: the wordmark right beside it already says the same thing,
+                            // and a description here made TalkBack read the brand twice over.
+                            contentDescription = null,
+                            colorFilter = ColorFilter.tint(Primary),
                             modifier = Modifier.size(28.dp)
                         )
                         Spacer(modifier = Modifier.width(12.dp))
@@ -264,6 +288,7 @@ fun MainScreen(
                                 fontWeight = FontWeight.Light,
                                 maxLines = 1,
                                 softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
                             )
                             Text(
                                 "UNBLOCKER",
@@ -273,6 +298,7 @@ fun MainScreen(
                                 ),
                                 color = TextSecondary,
                                 maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                     }
@@ -297,7 +323,9 @@ fun MainScreen(
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     contentPadding = PaddingValues(top = 4.dp, bottom = 32.dp)
                 ) {
-                    item(key = "update-banner") { UpdateBanner(context = context) }
+                    if (updateUrl != null) {
+                        item(key = "update-banner") { UpdateBanner(context = context, url = updateUrl) }
+                    }
                     item(key = "main-tabs") {
                         MainTabRow(selected = tab, onSelect = { tab = it })
                     }
@@ -315,7 +343,9 @@ fun MainScreen(
                                 )
                             }
 
-                            item(key = "battery-optimization") { BatteryOptimizationCard() }
+                            if (batteryRestricted) {
+                                item(key = "battery-optimization") { BatteryOptimizationCard() }
+                            }
 
                             item(key = "tg-advanced") {
                                 TgAdvancedCard(
@@ -344,14 +374,19 @@ fun MainScreen(
                                     ) {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Text(
-                                                text = "Логи",
+                                                text = stringResource(R.string.logs),
                                                 style = MaterialTheme.typography.labelLarge,
                                                 color = TextSecondary
                                             )
                                             Spacer(Modifier.width(8.dp))
                                             Text(
                                                 text = "${uiState.logs.size}",
-                                                style = MaterialTheme.typography.labelSmall,
+                                                // tnum, like every other live number here: the count
+                                                // climbs to 200 and proportional digits would resize
+                                                // the pill under it on almost every log line.
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontFeatureSettings = "tnum"
+                                                ),
                                                 color = TextSecondary,
                                                 modifier = Modifier
                                                     .clip(RoundedCornerShape(8.dp))
@@ -361,15 +396,23 @@ fun MainScreen(
                                         }
                                         Icon(
                                             imageVector = if (logsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                            contentDescription = if (logsExpanded) "Скрыть логи" else "Показать логи",
+                                            contentDescription = if (logsExpanded) stringResource(R.string.hide_logs) else stringResource(R.string.show_logs),
                                             tint = TextSecondary
                                         )
                                     }
                                 }
 
                                 if (logsExpanded) {
-                                    itemsIndexed(uiState.logs) { _, log ->
-                                        LogItem(log)
+                                    // One item, not one per line: as top-level entries the lines
+                                    // inherited the list's 16dp page gap, and LogItem is drawn to
+                                    // sit flush — 200 of them turned the log into a ladder that was
+                                    // half empty space. The cost is that the whole (200-line capped)
+                                    // log composes at once instead of only its visible window, which
+                                    // is cheap next to reading a log full of holes.
+                                    item(key = "logs-body") {
+                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            uiState.logs.forEach { log -> LogItem(log) }
+                                        }
                                     }
                                 }
                             }
@@ -438,7 +481,7 @@ private fun MainTabRow(selected: MainTab, onSelect: (MainTab) -> Unit) {
                     modifier = Modifier.weight(1f),
                 )
                 MainTabButton(
-                    label = "Сайты",
+                    label = stringResource(R.string.tab_sites),
                     selected = selected == MainTab.Sites,
                     onClick = { onSelect(MainTab.Sites) },
                     modifier = Modifier.weight(1f),
@@ -481,11 +524,16 @@ private fun MainTabButton(
     ) {
         Text(
             text = label,
-            color = TextPrimary,
+            // The selected tab sits on the accent-filled indicator, so its label has to flip to
+            // OnAccent like every other filled surface in the app. Left as TextPrimary it was cream
+            // on peach — 1.6:1, and 1.0:1 back when the accent was lime, i.e. the label of whichever
+            // tab you were on was the least readable text on screen.
+            color = if (selected) OnAccent else TextPrimary,
             fontWeight = FontWeight.Medium,
             style = MaterialTheme.typography.bodyMedium,
             maxLines = 1,
             softWrap = false,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -511,10 +559,10 @@ private fun TelegramHero(
         MaterialTheme.typography.headlineMedium
     }
     val stateLabel = when {
-        busy && running -> "Остановка…"
-        busy -> "Запуск…"
-        running -> "Активен"
-        else -> "Выключен"
+        busy && running -> stringResource(R.string.state_stopping)
+        busy -> stringResource(R.string.state_starting)
+        running -> stringResource(R.string.state_active)
+        else -> stringResource(R.string.state_off)
     }
 
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -540,12 +588,14 @@ private fun TelegramHero(
                     style = MaterialTheme.typography.titleLarge,
                     color = TextPrimary,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = "Локальный прокси",
+                    text = stringResource(R.string.local_proxy),
                     style = MaterialTheme.typography.labelSmall,
                     color = TextSecondary,
                     maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -555,13 +605,13 @@ private fun TelegramHero(
             active = running,
             busy = busy,
             onClick = onToggle,
-            accessibilityLabel = "Управление прокси Telegram",
-            onClickLabel = if (running) "Остановить прокси" else "Запустить прокси",
+            accessibilityLabel = stringResource(R.string.a11y_telegram_proxy),
+            onClickLabel = if (running) stringResource(R.string.a11y_stop_proxy) else stringResource(R.string.a11y_start_proxy),
             announcedState = when {
-                busy && running -> "Выключается"
-                busy -> "Включается"
-                running -> "Включено"
-                else -> "Выключено"
+                busy && running -> stringResource(R.string.a11y_turning_off)
+                busy -> stringResource(R.string.a11y_turning_on)
+                running -> stringResource(R.string.state_on)
+                else -> stringResource(R.string.state_off)
             },
         )
         Spacer(Modifier.height(18.dp))
@@ -590,20 +640,33 @@ private fun TelegramHero(
         Text(
             text = when {
                 running && uiState.route.isNotEmpty() ->
-                    "Маршрут: ${routeLabel(uiState.route)}"
-                running -> "Локальный прокси для Telegram"
-                else -> "Один тап — и Telegram без блокировок"
+                    stringResource(R.string.route_label, routeLabel(LocalContext.current, uiState.route))
+                running -> stringResource(R.string.local_proxy_for_telegram)
+                else -> stringResource(R.string.one_tap_telegram)
             },
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary,
             textAlign = TextAlign.Center,
             maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
         )
+        // Same treatment as the Sites hero: a failed start has to say so under the dial, or it is
+        // indistinguishable from never having pressed it.
+        uiState.error?.let {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = Destructive,
+                fontWeight = FontWeight.Medium,
+                textAlign = TextAlign.Center,
+            )
+        }
 
         if (running && uiState.proxyLink.isNotEmpty()) {
             Spacer(Modifier.height(20.dp))
             PillButton(
-                label = "Подключить Telegram",
+                label = stringResource(R.string.connect_telegram),
                 loading = false,
                 destructive = false,
                 enabled = true,
@@ -634,12 +697,12 @@ private fun TelegramHero(
                 ) {
                     Row(modifier = Modifier.fillMaxWidth()) {
                         MiniStat(
-                            label = "Аптайм",
-                            value = formatUptime(uiState.startedAt, now),
+                            label = stringResource(R.string.stat_uptime),
+                            value = formatUptime(LocalContext.current, uiState.startedAt, now),
                             modifier = Modifier.weight(1f),
                         )
                         MiniStat(
-                            label = "Связи",
+                            label = stringResource(R.string.stat_connections),
                             value = uiState.connectionCount.toString(),
                             modifier = Modifier.weight(1f),
                         )
@@ -647,13 +710,13 @@ private fun TelegramHero(
                     Spacer(Modifier.height(10.dp))
                     Row(modifier = Modifier.fillMaxWidth()) {
                         MiniStat(
-                            label = "Вверх",
-                            value = formatBytes(uiState.bytesUp),
+                            label = stringResource(R.string.stat_up),
+                            value = formatBytes(LocalContext.current, uiState.bytesUp),
                             modifier = Modifier.weight(1f),
                         )
                         MiniStat(
-                            label = "Вниз",
-                            value = formatBytes(uiState.bytesDown),
+                            label = stringResource(R.string.stat_down),
+                            value = formatBytes(LocalContext.current, uiState.bytesDown),
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -748,6 +811,7 @@ private fun MiniStat(label: String, value: String, modifier: Modifier = Modifier
             color = TextPrimary,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -757,6 +821,7 @@ private fun MiniStat(label: String, value: String, modifier: Modifier = Modifier
             style = MaterialTheme.typography.labelSmall,
             color = TextSecondary,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -791,9 +856,9 @@ private fun TgAdvancedCard(
             Icon(Icons.Default.Tune, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text("Настройки", color = TextPrimary, fontWeight = FontWeight.Medium)
+                Text(stringResource(R.string.settings), color = TextPrimary, fontWeight = FontWeight.Medium)
                 Text(
-                    "Сервер, секрет, Fake TLS, Cloudflare",
+                    stringResource(R.string.tg_settings_subtitle),
                     color = TextSecondary, style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -845,16 +910,23 @@ private fun ProxyInfoCard(
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             CopyableRow(
-                label = "Сервер",
+                label = stringResource(R.string.server),
                 value = "${uiState.host}:${uiState.port}",
-                onCopy = { copyToClipboard(context, "Сервер", "${uiState.host}:${uiState.port}", "Скопировано") }
+                onCopy = {
+                    copyToClipboard(
+                        context,
+                        context.getString(R.string.server),
+                        "${uiState.host}:${uiState.port}",
+                        context.getString(R.string.copied),
+                    )
+                }
             )
 
             HorizontalDivider(color = Border)
 
             Column {
                 Text(
-                    text = "Секрет",
+                    text = stringResource(R.string.secret),
                     style = MaterialTheme.typography.labelMedium,
                     color = TextSecondary
                 )
@@ -865,7 +937,7 @@ private fun ProxyInfoCard(
                 ) {
                     Text(
                         text = if (secretRevealed || uiState.secret.isEmpty()) {
-                            uiState.secret.ifEmpty { "—" }
+                            uiState.secret.ifEmpty { stringResource(R.string.em_dash) }
                         } else {
                             "•".repeat(minOf(uiState.secret.length, 20))
                         },
@@ -873,24 +945,28 @@ private fun ProxyInfoCard(
                         color = TextPrimary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
+                        // The value is the only thing here that wants the leftover width. It used to
+                        // share it 50/50 with a weighted Spacer, which left ~68dp of a 360dp screen
+                        // for a 173dp secret — truncated for everyone, always. The icon buttons are
+                        // unweighted, so Row still measures them at full size before this gets the
+                        // remainder, and short values still leave them pinned to the right edge.
+                        modifier = Modifier.weight(1f)
                     )
-                    Spacer(Modifier.weight(1f))
                     if (uiState.secret.isNotEmpty()) {
                         IconButton(onClick = { secretRevealed = !secretRevealed }) {
                             Icon(
                                 imageVector = if (secretRevealed) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = if (secretRevealed) "Скрыть" else "Показать",
+                                contentDescription = if (secretRevealed) stringResource(R.string.hide) else stringResource(R.string.show),
                                 tint = TextSecondary,
                                 modifier = Modifier.size(20.dp)
                             )
                         }
                         IconButton(onClick = {
-                            copyToClipboard(context, "Секрет", uiState.secret, "Секрет скопирован")
+                            copyToClipboard(context, context.getString(R.string.secret), uiState.secret, context.getString(R.string.secret_copied))
                         }) {
                             Icon(
                                 imageVector = Icons.Default.ContentCopy,
-                                contentDescription = "Копировать секрет",
+                                contentDescription = stringResource(R.string.copy_secret),
                                 tint = TextSecondary,
                                 modifier = Modifier.size(18.dp)
                             )
@@ -899,7 +975,7 @@ private fun ProxyInfoCard(
                             IconButton(onClick = onRegenerateSecret) {
                                 Icon(
                                     imageVector = Icons.Default.Refresh,
-                                    contentDescription = "Сменить секрет",
+                                    contentDescription = stringResource(R.string.regenerate_secret),
                                     tint = TextSecondary,
                                     modifier = Modifier.size(18.dp)
                                 )
@@ -910,11 +986,11 @@ private fun ProxyInfoCard(
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = if (uiState.fakeTlsDomain.isNotEmpty()) {
-                        "Режим Fake TLS (ee-секрет) под домен ${uiState.fakeTlsDomain}."
+                        stringResource(R.string.secret_fake_tls_mode, uiState.fakeTlsDomain)
                     } else if (uiState.isRunning) {
-                        "Секрет постоянный — ссылку в Telegram повторно добавлять не нужно."
+                        stringResource(R.string.secret_persistent)
                     } else {
-                        "Секрет сохраняется между запусками. Нажмите ↻, чтобы сгенерировать новый."
+                        stringResource(R.string.secret_saved_hint)
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = TextSecondary
@@ -945,7 +1021,7 @@ private fun CopyableRow(label: String, value: String, onCopy: () -> Unit) {
         IconButton(onClick = onCopy) {
             Icon(
                 imageVector = Icons.Default.ContentCopy,
-                contentDescription = "Копировать",
+                contentDescription = stringResource(R.string.copy),
                 tint = TextSecondary,
                 modifier = Modifier.size(18.dp)
             )
@@ -983,7 +1059,7 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
                     Spacer(Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Fake TLS маскировка",
+                            text = stringResource(R.string.fake_tls_title),
                             style = MaterialTheme.typography.titleMedium,
                             color = TextPrimary,
                             fontWeight = FontWeight.SemiBold,
@@ -991,7 +1067,7 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            text = if (enabled) "Вкл · ${uiState.fakeTlsDomain}" else "Выкл",
+                            text = if (enabled) stringResource(R.string.on_with_value, uiState.fakeTlsDomain) else stringResource(R.string.off),
                             style = MaterialTheme.typography.labelSmall,
                             color = if (enabled) Primary else TextSecondary,
                             maxLines = 1,
@@ -1003,14 +1079,14 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
                 IconButton(onClick = { expanded = !expanded }) {
                     Icon(
                         imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = if (expanded) "Свернуть" else "Развернуть",
+                        contentDescription = if (expanded) stringResource(R.string.collapse) else stringResource(R.string.expand),
                         tint = TextSecondary
                     )
                 }
             }
 
             Text(
-                text = "Маскирует прокси под HTTPS к настоящему сайту — самый надёжный обход DPI. Укажите домен, и ссылка станет ee-секретом.",
+                text = stringResource(R.string.fake_tls_desc),
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary
             )
@@ -1022,7 +1098,7 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
             ) {
                 Column {
                     Spacer(Modifier.height(14.dp))
-                    Text("Быстрый выбор домена:", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                    Text(stringResource(R.string.fake_tls_quick_pick), style = MaterialTheme.typography.labelMedium, color = TextSecondary)
                     Spacer(Modifier.height(8.dp))
                     androidx.compose.foundation.layout.FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1048,7 +1124,7 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
                     OutlinedTextField(
                         value = domainInput,
                         onValueChange = { domainInput = it },
-                        label = { Text("Домен маскировки", color = TextSecondary) },
+                        label = { Text(stringResource(R.string.fake_tls_domain_label), color = TextSecondary) },
                         placeholder = { Text("www.example.com", color = TextSecondary) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
@@ -1074,7 +1150,12 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
                         ) {
                             Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Включить", fontWeight = FontWeight.SemiBold, maxLines = 1)
+                            Text(
+                                stringResource(R.string.enable),
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
                         if (enabled) {
                             OutlinedButton(
@@ -1084,13 +1165,18 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
                                 border = BorderStroke(1.dp, Border)
                             ) {
-                                Text("Выключить", color = TextSecondary, maxLines = 1)
+                                Text(
+                                    stringResource(R.string.disable),
+                                    color = TextSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
                             }
                         }
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        text = "После изменения добавьте новую ссылку в Telegram заново.",
+                        text = stringResource(R.string.fake_tls_relink_hint),
                         style = MaterialTheme.typography.labelSmall,
                         color = Warning
                     )
@@ -1123,7 +1209,7 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
                     Icon(Icons.Default.Tune, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        text = "Свой Cloudflare",
+                        text = stringResource(R.string.cf_title),
                         style = MaterialTheme.typography.titleMedium,
                         color = TextPrimary,
                         fontWeight = FontWeight.SemiBold
@@ -1132,7 +1218,7 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
             }
 
             Text(
-                text = "Если сеть блокирует Telegram, прокси автоматически идёт через Cloudflare. Можно указать свой домен (надёжнее, чем общие).",
+                text = stringResource(R.string.cf_desc),
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary
             )
@@ -1140,7 +1226,7 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
             OutlinedTextField(
                 value = domainInput,
                 onValueChange = { domainInput = it },
-                label = { Text("Свои Cloudflare-домены", color = TextSecondary) },
+                label = { Text(stringResource(R.string.cf_domains_label), color = TextSecondary) },
                 placeholder = { Text("example.com, mydomain.com", color = TextSecondary) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
@@ -1159,7 +1245,7 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "Несколько доменов — через запятую. Оставьте пустым, чтобы использовать встроенные домены.",
+                text = stringResource(R.string.cf_domains_hint),
                 style = MaterialTheme.typography.labelSmall,
                 color = TextSecondary
             )
@@ -1173,12 +1259,12 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
             ) {
                 Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("Сохранить", fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.save), fontWeight = FontWeight.SemiBold)
             }
 
             Spacer(Modifier.height(20.dp))
             Text(
-                text = "Cloudflare Worker — бесплатно, без покупки домена. Разверните воркер по инструкции (docs/CfWorker.md) и вставьте его адрес *.workers.dev.",
+                text = stringResource(R.string.cf_worker_desc),
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary
             )
@@ -1186,7 +1272,7 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
             OutlinedTextField(
                 value = workerInput,
                 onValueChange = { workerInput = it },
-                label = { Text("Cloudflare Worker домен", color = TextSecondary) },
+                label = { Text(stringResource(R.string.cf_worker_label), color = TextSecondary) },
                 placeholder = { Text("name.username.workers.dev", color = TextSecondary) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
@@ -1205,7 +1291,7 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "Несколько воркеров — через запятую. Оставьте пустым, чтобы не использовать.",
+                text = stringResource(R.string.cf_worker_hint),
                 style = MaterialTheme.typography.labelSmall,
                 color = TextSecondary
             )
@@ -1219,12 +1305,12 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
             ) {
                 Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("Сохранить Worker", fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.save_worker), fontWeight = FontWeight.SemiBold)
             }
             if (uiState.isRunning) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "Изменения применятся после перезапуска прокси.",
+                    text = stringResource(R.string.restart_proxy_hint),
                     style = MaterialTheme.typography.labelSmall,
                     color = Warning
                 )
@@ -1233,27 +1319,31 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
     }
 }
 
-@Composable
-private fun LogItem(log: String) {
-    val color = when {
-        log.contains("ERROR", ignoreCase = true)          -> Destructive
-        log.contains("failed", ignoreCase = true)         -> Warning
-        log.contains("WARN", ignoreCase = true)           -> Warning
-        log.contains("handshake ok", ignoreCase = true)   -> Mauve
-        log.contains("Fake TLS", ignoreCase = true)       -> Primary
-        log.contains("Cloudflare", ignoreCase = true)     -> Info
-        log.contains("WS connected", ignoreCase = true)   -> Info
-        else -> TextSecondary
-    }
+/**
+ * Colour per log role. Only a lookup: the keyword matching that decides the role happens once, when
+ * the line is created, because the whole 200-line log recomposes on every arriving line and seven
+ * case-insensitive scans × 200 lines per line was ~1400 substring searches for one new entry.
+ */
+private fun logColor(kind: LogKind): Color = when (kind) {
+    LogKind.ERROR -> Destructive
+    LogKind.WARNING -> Warning
+    LogKind.HANDSHAKE -> Mauve
+    LogKind.FAKE_TLS -> Primary
+    LogKind.CLOUDFLARE -> Info
+    LogKind.WS -> Info
+    LogKind.PLAIN -> TextSecondary
+}
 
+@Composable
+private fun LogItem(log: LogLine) {
     Text(
-        text = log,
+        text = log.text,
         style = MaterialTheme.typography.bodySmall.copy(
             fontFamily = FontFamily.Monospace,
             fontSize = 11.sp,
             lineHeight = 16.sp
         ),
-        color = color,
+        color = logColor(log.kind),
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(4.dp))
@@ -1302,13 +1392,13 @@ private fun TelegramChannelCard(context: Context) {
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Наш Telegram-канал",
+                    text = stringResource(R.string.tg_channel_title),
                     style = MaterialTheme.typography.titleSmall,
                     color = TextPrimary,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = "@jevio_dev — новости и обновления",
+                    text = stringResource(R.string.tg_channel_subtitle),
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary
                 )
@@ -1323,9 +1413,13 @@ private fun TelegramChannelCard(context: Context) {
     }
 }
 
-/** Keeps long-running proxy services alive when Android applies background limits. */
+/**
+ * Whether we are already exempt from battery optimisation — re-read on every resume, since the user
+ * grants it in Settings and comes back. Kept apart from the card for the same reason as
+ * [rememberUpdateUrl]: the caller has to know before it decides to emit a list item.
+ */
 @Composable
-private fun BatteryOptimizationCard() {
+private fun batteryOptimizationsIgnored(): Boolean {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -1345,13 +1439,23 @@ private fun BatteryOptimizationCard() {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    if (ignoring) return
+    return ignoring
+}
+
+/** Keeps long-running proxy services alive when Android applies background limits. */
+@Composable
+private fun BatteryOptimizationCard() {
+    val context = LocalContext.current
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Surface),
-        border = BorderStroke(1.dp, Warning.copy(alpha = 0.5f)),
+        // 0.7, not 0.5: Warning was darkened to #B68A1A to separate the status colours from the
+        // brand accent in tone, which took this border to 2.33:1 over the card — under the 3:1
+        // floor for a component boundary, on the one card whose whole job is to not look like a
+        // normal action. 0.7 restores 3.33:1 with headroom for the ambient blob behind the panel.
+        border = BorderStroke(1.dp, Warning.copy(alpha = 0.7f)),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1433,7 +1537,7 @@ private fun OnboardingDialog(onDismiss: () -> Unit) {
                 .padding(24.dp)
         ) {
             Text(
-                "Добро пожаловать в Jevio Unblocker",
+                stringResource(R.string.onboarding_welcome),
                 color = TextPrimary,
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
@@ -1441,20 +1545,20 @@ private fun OnboardingDialog(onDismiss: () -> Unit) {
             Spacer(Modifier.height(18.dp))
             OnboardingRow(
                 icon = Icons.Default.Send,
-                title = "Telegram-прокси",
-                body = "Запустите прокси и подключите Telegram по готовой ссылке.",
+                title = stringResource(R.string.onboarding_proxy_title),
+                body = stringResource(R.string.onboarding_proxy_body),
             )
             Spacer(Modifier.height(14.dp))
             OnboardingRow(
                 icon = Icons.Default.PlayArrow,
-                title = "Разблокировка сайтов",
-                body = "Дополнительно можно подобрать метод и включить локальный VPN без внешнего сервера.",
+                title = stringResource(R.string.onboarding_sites_title),
+                body = stringResource(R.string.onboarding_sites_body),
             )
             Spacer(Modifier.height(14.dp))
             OnboardingRow(
                 icon = Icons.Default.Shield,
-                title = "Всё под контролем",
-                body = "Продвинутые параметры свёрнуты, а банки и системные сервисы можно исключить из обхода.",
+                title = stringResource(R.string.onboarding_control_title),
+                body = stringResource(R.string.onboarding_control_body),
             )
             Spacer(Modifier.height(24.dp))
             Button(
@@ -1466,7 +1570,7 @@ private fun OnboardingDialog(onDismiss: () -> Unit) {
                     contentColor = OnAccent,
                 ),
             ) {
-                Text("Понятно, начать", color = OnAccent, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.onboarding_cta), color = OnAccent, fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -1493,13 +1597,21 @@ private fun OnboardingRow(icon: ImageVector, title: String, body: String) {
     }
 }
 
+/**
+ * Release URL when GitHub reports a newer tag than ours, null otherwise — i.e. almost always. The
+ * caller uses it to decide whether the banner's list item exists at all; see [MainScreen].
+ */
 @Composable
-private fun UpdateBanner(context: Context) {
+private fun rememberUpdateUrl(context: Context): String? {
     var updateUrl by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         updateUrl = withContext(Dispatchers.IO) { checkForUpdate(context) }
     }
-    val url = updateUrl ?: return
+    return updateUrl
+}
+
+@Composable
+private fun UpdateBanner(context: Context, url: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1518,9 +1630,9 @@ private fun UpdateBanner(context: Context) {
         Icon(Icons.Default.Refresh, contentDescription = null, tint = Accent, modifier = Modifier.size(22.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text("Доступна новая версия", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.update_available), color = TextPrimary, fontWeight = FontWeight.SemiBold)
             Text(
-                "Нажмите, чтобы скачать обновление",
+                stringResource(R.string.update_tap_download),
                 color = TextSecondary, style = MaterialTheme.typography.labelSmall
             )
         }
@@ -1677,6 +1789,7 @@ private fun PreviewBrandHeader() {
         Image(
             painter = painterResource(id = R.drawable.ic_jevio_logo),
             contentDescription = null,
+            colorFilter = ColorFilter.tint(Primary),
             modifier = Modifier.size(28.dp),
         )
         Spacer(Modifier.width(12.dp))
@@ -1687,6 +1800,7 @@ private fun PreviewBrandHeader() {
                 color = TextPrimary,
                 fontWeight = FontWeight.Light,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             Text(
                 "UNBLOCKER",
@@ -1696,6 +1810,7 @@ private fun PreviewBrandHeader() {
                 ),
                 color = TextSecondary,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -1745,7 +1860,7 @@ private fun FullMainScreenPreview() {
                     onSaveCfWorkerDomain = {},
                 )
                 Text(
-                    "Разблокировка сайтов",
+                    stringResource(R.string.sites_unlock_heading),
                     style = MaterialTheme.typography.labelLarge,
                     color = TextSecondary,
                     modifier = Modifier.padding(top = 10.dp),
