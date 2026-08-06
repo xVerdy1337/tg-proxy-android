@@ -32,11 +32,6 @@ class MainActivity : ComponentActivity() {
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
-    private val autoTuneLocationPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-            desyncVm.runAutoTune()
-        }
-
     // System VPN consent dialog ("Разрешить Jevio создать VPN-подключение?"). On approval we
     // actually start the desync VPN service.
     private val vpnConsentLauncher =
@@ -65,7 +60,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     MainScreen(
                         desyncVm = desyncVm,
-                        onRunAutoTune = { runAutoTuneWithNetworkCache() },
+                        onRunAutoTune = { desyncVm.runAutoTune() },
                         onEnableVpn = { requestVpnConsent() },
                         onDisableVpn = { stopDesyncVpn() }
                     )
@@ -96,15 +91,6 @@ class MainActivity : ComponentActivity() {
             action = DesyncVpnService.ACTION_STOP
         }
         startService(intent)
-    }
-
-    private fun runAutoTuneWithNetworkCache() {
-        val granted = ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.ACCESS_FINE_LOCATION,
-        ) == PackageManager.PERMISSION_GRANTED
-        if (granted) desyncVm.runAutoTune()
-        else autoTuneLocationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
     }
 
     /**

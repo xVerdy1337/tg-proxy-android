@@ -231,7 +231,9 @@ fun LazyListScope.unblockSections(
         val settings by vm.settings.collectAsState()
         val probe by vm.probe.collectAsState()
         val excluded by vm.excluded.collectAsState()
+        val targeted by vm.targeted.collectAsState()
         var showExclusions by remember { mutableStateOf(false) }
+        var showTargets by remember { mutableStateOf(false) }
         if (showExclusions) {
             val installedApps by vm.installedApps.collectAsState()
             ExclusionDialog(
@@ -240,6 +242,15 @@ fun LazyListScope.unblockSections(
                 builtIn = vm.builtInExcluded,
                 onToggle = { pkg, on -> vm.setExcluded(pkg, on) },
                 onClose = { showExclusions = false },
+            )
+        }
+        if (showTargets) {
+            val installedApps by vm.installedApps.collectAsState()
+            TargetDialog(
+                apps = installedApps,
+                targeted = targeted,
+                onToggle = { pkg, on -> vm.setTargeted(pkg, on) },
+                onClose = { showTargets = false },
             )
         }
         UnblockSettingsCard(
@@ -253,6 +264,8 @@ fun LazyListScope.unblockSections(
             onAllApps = { vm.setAllApps(it) },
             excludedCount = excluded.size + vm.builtInExcluded.size,
             onOpenExclusions = { vm.loadInstalledApps(); showExclusions = true },
+            targetedCount = targeted.size,
+            onOpenTargets = { vm.loadInstalledApps(); showTargets = true },
         )
     }
 }
@@ -1013,6 +1026,8 @@ private fun UnblockSettingsCard(
     onAllApps: (Boolean) -> Unit,
     excludedCount: Int,
     onOpenExclusions: () -> Unit,
+    targetedCount: Int,
+    onOpenTargets: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -1087,27 +1102,24 @@ private fun UnblockSettingsCard(
                     restartHint = stringResource(R.string.restart_vpn_after_change),
                     onChange = onAllApps
                 )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(Surface)
-                        .border(1.dp, Border, RoundedCornerShape(14.dp))
-                        .clickable { onOpenExclusions() }
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.Block, null, tint = TextSecondary, modifier = Modifier.size(22.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(stringResource(R.string.exclusions_title), color = TextPrimary, fontWeight = FontWeight.Medium)
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            stringResource(R.string.exclusions_count, excludedCount),
-                            color = TextSecondary, style = MaterialTheme.typography.labelSmall
-                        )
-                    }
-                    Icon(Icons.Default.KeyboardArrowDown, null, tint = TextSecondary, modifier = Modifier.size(22.dp))
+                // One row, whichever list the current mode actually consults. Showing both would put
+                // a control on screen that changes nothing: exclusions are ignored while an
+                // allowlist is in force, and the allowlist is ignored in all-apps mode.
+                if (settings.allApps) {
+                    AppListRow(
+                        icon = Icons.Default.Block,
+                        title = stringResource(R.string.exclusions_title),
+                        subtitle = stringResource(R.string.exclusions_count, excludedCount),
+                        onClick = onOpenExclusions,
+                    )
+                } else {
+                    AppListRow(
+                        icon = Icons.Default.Check,
+                        title = stringResource(R.string.targets_title),
+                        subtitle = stringResource(R.string.targets_count, targetedCount),
+                        subtitleColor = if (targetedCount == 0) Signal else TextSecondary,
+                        onClick = onOpenTargets,
+                    )
                 }
             }
         }
@@ -1507,6 +1519,146 @@ private fun ExclusionDialog(
     }
 }
 
+/**
+ * The "opens an app picker" row. Extracted when the allowlist picker landed so the two rows cannot
+ * drift apart visually — they sit in the same slot of the same card and only ever one is on screen,
+ * so any difference in padding or weight would read as the card jumping when the mode is switched.
+ */
+@Composable
+private fun AppListRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+    subtitleColor: Color = TextSecondary,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Surface)
+            .border(1.dp, Border, RoundedCornerShape(14.dp))
+            .clickable { onClick() }
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, tint = TextSecondary, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = TextPrimary, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(2.dp))
+            Text(subtitle, color = subtitleColor, style = MaterialTheme.typography.labelSmall)
+        }
+        Icon(Icons.Default.KeyboardArrowDown, null, tint = TextSecondary, modifier = Modifier.size(22.dp))
+    }
+}
+
+/**
+ * Picker for "selected apps only" mode: which apps go THROUGH the bypass.
+ *
+ * Deliberately not the same composable as [ExclusionDialog] even though the two look alike. That one
+ * force-checks and disables the built-in bank/gov entries because in all-apps mode they must stay off
+ * the bypass; here nothing is forced — this mode routes only what is checked, so those apps are
+ * already excluded by omission, and disabling them would stop a user who genuinely wants one routed
+ * from saying so. Sharing one composable would have meant a flag deciding which of two different
+ * semantics each row has.
+ */
+@Composable
+private fun TargetDialog(
+    apps: List<AppInfo>,
+    targeted: Set<String>,
+    onToggle: (String, Boolean) -> Unit,
+    onClose: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    // Snapshotted when the dialog opens, and the sort key from then on. Sorting on the live set would
+    // reorder the list under the user's finger the moment they tick a box — the row they just tapped
+    // jumps to the top and the next tap lands on a different app.
+    val initiallyTargeted = remember { targeted }
+    Dialog(onDismissRequest = onClose) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp))
+                .background(Surface)
+                .border(1.dp, Border, RoundedCornerShape(20.dp))
+                .padding(16.dp)
+        ) {
+            Text(stringResource(R.string.targets_title), color = TextPrimary, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                stringResource(R.string.targets_dialog_desc),
+                color = TextSecondary, style = MaterialTheme.typography.labelSmall
+            )
+            if (targeted.isEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.targets_empty_warning),
+                    color = Signal, style = MaterialTheme.typography.labelSmall
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text(stringResource(R.string.search_app), color = TextMuted) },
+                singleLine = true,
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = SurfaceVariant,
+                    unfocusedContainerColor = SurfaceVariant,
+                    focusedTextColor = TextPrimary,
+                    unfocusedTextColor = TextPrimary,
+                    cursorColor = Accent,
+                    focusedIndicatorColor = Accent,
+                    unfocusedIndicatorColor = Border,
+                )
+            )
+            Spacer(Modifier.height(10.dp))
+            if (apps.isEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
+                    Text(stringResource(R.string.loading_apps), color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                }
+            } else {
+                val filtered = apps
+                    .filter {
+                        query.isBlank() || it.label.contains(query, ignoreCase = true) || it.pkg.contains(query, ignoreCase = true)
+                    }
+                    .sortedWith(
+                        compareByDescending<AppInfo> { initiallyTargeted.contains(it.pkg) }
+                            .thenBy { it.label.lowercase() }
+                    )
+                androidx.compose.foundation.lazy.LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                    items(filtered, key = { it.pkg }) { app ->
+                        val checked = targeted.contains(app.pkg)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { onToggle(app.pkg, !checked) }
+                                .padding(vertical = 8.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = checked,
+                                onCheckedChange = { v -> onToggle(app.pkg, v) },
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(app.label, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+                                Text(app.pkg, color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            PrimaryButton(stringResource(R.string.done), hapticFeedback = false, onClick = onClose)
+        }
+    }
+}
+
 /** Reusable card surface — renamed from the previous local `Card` to avoid shadowing material3.Card. */
 @Composable
 private fun PanelCard(content: @Composable ColumnScope.() -> Unit) {
@@ -1704,6 +1856,8 @@ internal fun FullUnblockPreviewContent() {
             onAllApps = {},
             excludedCount = 0,
             onOpenExclusions = {},
+            targetedCount = DesyncVpnService.TARGET_APPS.size,
+            onOpenTargets = {},
         )
     }
 }

@@ -280,4 +280,18 @@ class TcpConnection(
     }
 
     fun close() = synchronized(lock) { closeLocked(sendRst = false) }
+
+    /**
+     * Close and tell the app about it with an RST — for a flow that is known dead rather than merely
+     * finished, i.e. a default-network switch: the upstream socket's path no longer exists, but the
+     * app's half of the connection has no way to find that out.
+     *
+     * [close] stays silent on purpose, because its callers (teardown, idle reaping) either have no
+     * peer left to inform or are about to drop the TUN anyway. Here the TUN is still up and the RST
+     * is the entire point: without it the app sits on a socket nothing will ever answer until its own
+     * TCP timeout expires — minutes of a spinner after walking off Wi-Fi onto mobile, which is the
+     * symptom the switch handling exists to remove. Reusing close() here would reset the flows and
+     * still leave the user waiting.
+     */
+    fun closeWithReset() = synchronized(lock) { closeLocked(sendRst = true) }
 }

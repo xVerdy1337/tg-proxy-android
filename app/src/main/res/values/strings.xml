@@ -176,9 +176,13 @@
     <string name="block_quic_subtitle">Speeds up YouTube bypass: plain TLS instead of QUIC</string>
     <string name="all_apps">All apps</string>
     <string name="all_apps_on_subtitle">Bypass for all apps (recommended)</string>
-    <string name="all_apps_off_subtitle">YouTube and Instagram only — enable «all» if it doesn\'t work</string>
+    <string name="all_apps_off_subtitle">Only the apps you pick — enable «all» if it doesn\'t work</string>
     <string name="exclusions_title">Don\'t use bypass for…</string>
     <string name="exclusions_count">%1$d excluded (banks, gov services…)</string>
+    <string name="targets_title">Use bypass for…</string>
+    <string name="targets_count">%1$d apps selected</string>
+    <string name="targets_dialog_desc">Checked apps go through the bypass. Everything else connects normally. Restart VPN after changes.</string>
+    <string name="targets_empty_warning">Nothing selected — the bypass won\'t cover any app. Check at least one.</string>
     <string name="pipe_diagnostics">Pipe diagnostics</string>
     <string name="pipe_diagnostics_desc">Checks a plain connection without desync. Only to see whether the problem is the network or the bypass method.</string>
     <string name="check_without_bypass">Check without bypass</string>
@@ -245,6 +249,7 @@
     <string name="byedpi_socks_not_ready">byedpi SOCKS not ready on 127.0.0.1:%1$d</string>
     <string name="byedpi_start_failed">byedpi failed to start: %1$s</string>
     <string name="byedpi_start_failed_short">byedpi failed to start</string>
+    <string name="byedpi_native_unavailable">The bypass engine is not bundled for this device\'s processor (%1$s). Install the build for this architecture</string>
     <string name="tls_ok">TLS ok</string>
     <string name="byedpi_bad_command">byedpi did not start (bad command)</string>
     <string name="timeout">timeout</string>

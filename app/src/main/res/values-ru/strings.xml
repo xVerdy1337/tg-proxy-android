@@ -157,9 +157,13 @@
     <string name="block_quic_subtitle">Ускоряет обход для YouTube: обычный TLS вместо QUIC</string>
     <string name="all_apps">Все приложения</string>
     <string name="all_apps_on_subtitle">Обход для всех приложений (рекомендуется)</string>
-    <string name="all_apps_off_subtitle">Только YouTube и Instagram — включи «все», если не работает</string>
+    <string name="all_apps_off_subtitle">Только выбранные приложения — включи «все», если не работает</string>
     <string name="exclusions_title">Не использовать обход для…</string>
     <string name="exclusions_count">%1$d исключено (банки, Госуслуги…)</string>
+    <string name="targets_title">Использовать обход для…</string>
+    <string name="targets_count">Выбрано приложений: %1$d</string>
+    <string name="targets_dialog_desc">Отмеченные приложения идут через обход. Остальные подключаются как обычно. После изменений перезапусти VPN.</string>
+    <string name="targets_empty_warning">Ничего не выбрано — обход не будет работать ни для одного приложения. Отметь хотя бы одно.</string>
     <string name="pipe_diagnostics">Диагностика трубы</string>
     <string name="pipe_diagnostics_desc">Проверяет обычное подключение без desync. Нужен только чтобы понять, где проблема: в сети или в методе обхода.</string>
     <string name="check_without_bypass">Проверить без обхода</string>
@@ -211,6 +215,7 @@
     <string name="byedpi_socks_not_ready">byedpi SOCKS не готов на 127.0.0.1:%1$d</string>
     <string name="byedpi_start_failed">byedpi не запустился: %1$s</string>
     <string name="byedpi_start_failed_short">byedpi не запустился</string>
+    <string name="byedpi_native_unavailable">Движок обхода не собран под процессор этого устройства (%1$s). Установи сборку под свою архитектуру</string>
     <string name="tls_ok">TLS ок</string>
     <string name="byedpi_bad_command">byedpi не стартовал (плохая команда)</string>
     <string name="timeout">таймаут</string>

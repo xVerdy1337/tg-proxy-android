@@ -14,9 +14,13 @@ android {
         versionCode = 3
         versionName = "1.2"
 
+        // x86_64 is here for emulators/Chromebooks/WSA, not for phones: without it those builds
+        // ship no libbyedpi.so at all and the bypass can never start on them. It costs one more
+        // .so in the APK; splits/bundles drop it again for every real device.
         ndk {
             abiFilters.add("arm64-v8a")
             abiFilters.add("armeabi-v7a")
+            abiFilters.add("x86_64")
         }
 
     }

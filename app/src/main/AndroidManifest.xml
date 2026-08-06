@@ -2,11 +2,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Detect Wi-Fi ↔ mobile switches to reconnect active sessions on the new network. -->
+    <!-- Detect Wi-Fi ↔ mobile switches to reconnect active sessions on the new network, and
+         fingerprint the current link (gateway/prefix/DNS) to cache the auto-tuned bypass method
+         per network. That fingerprint replaced an SSID hash, which is why no location permission
+         is requested here: the SSID is location data on Android, the link properties are not. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Hold a Wi-Fi lock so the relay survives screen-off. -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <!-- Cache the automatic bypass method per Wi-Fi SSID (requested only from Auto Tune). -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

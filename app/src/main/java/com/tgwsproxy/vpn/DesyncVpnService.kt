@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -84,6 +86,18 @@ class DesyncVpnService : VpnService(), Tunnel {
         const val KEY_BYEDPI_CMD = "byedpi_cmd"
         // User-chosen packages to keep OFF the bypass (StringSet), on top of EXCLUDED_APPS.
         const val KEY_EXCLUDED_USER = "desync_excluded_user"
+
+        /**
+         * User-chosen packages to route THROUGH the bypass in "selected apps only" mode (StringSet).
+         *
+         * Absent ≠ empty, and the difference is the whole point: absent means the user has never
+         * opened the picker, so [TARGET_APPS] is used as the starting point. An explicitly saved
+         * empty set means they unchecked everything, which is honoured as written — see
+         * [targetPackages]. Storing the default eagerly instead would have frozen whatever
+         * TARGET_APPS looked like at install time, so a later build adding an app would never reach
+         * anyone who had already run the old one.
+         */
+        const val KEY_TARGET_USER = "desync_target_user"
 
         const val PRESET_TLSREC = "tlsrec"
         const val PRESET_SPLIT = "split"
@@ -363,13 +377,28 @@ class DesyncVpnService : VpnService(), Tunnel {
         private const val MAX_TCP_FLOWS = 1024
         private const val MAX_UDP_FLOWS = 512
 
+        // Default-network switch handling (see registerNetworkCallback).
+        //
+        // The debounce window swallows the burst a single real switch produces — registration
+        // replays onAvailable for the current network, and roaming between APs on the same SSID
+        // fires repeatedly — so one walk from Wi-Fi to mobile costs one reset rather than several.
+        // Matches ProxyService's 1.5s for the same reason it picked it: long enough to cover a
+        // burst, short enough that two genuine switches in a row are still two resets.
+        private const val NETWORK_DEBOUNCE_MS = 1_500L
+        // And then let the new link finish coming up before inviting every app to redial onto it.
+        // Same 700ms ProxyService settles for; a reset into a not-yet-usable network merely spends
+        // the app's first retry, and some apps back off after it.
+        private const val NETWORK_SETTLE_MS = 700L
+
         // Returned by relayExecutor once the pool is gone (after stopEverything) so a late
         // execute() is a clean no-op-then-reject instead of resurrecting a pool post-shutdown.
         private val REJECTING_EXECUTOR = Executor {
             throw java.util.concurrent.RejectedExecutionException("relay pool stopped")
         }
 
-        // Beta allowlist — the apps we actually want to unblock.
+        // Default allowlist for "selected apps only" — the apps we actually want to unblock. Only a
+        // STARTING POINT since the picker landed: the user's own set, once saved, replaces it
+        // wholesale (see KEY_TARGET_USER and targetPackages).
         val TARGET_APPS = listOf(
             "com.google.android.youtube",
             "com.google.android.apps.youtube.music",
@@ -393,6 +422,19 @@ class DesyncVpnService : VpnService(), Tunnel {
             "ru.pyaterochka.app",          // Пятёрочка (старый пакет)
             "ru.perekrestok.app",          // Перекрёсток
         )
+
+        /**
+         * The packages "selected apps only" mode should route, read from [prefs].
+         *
+         * Lives here rather than in either caller because the service (which builds the tunnel) and
+         * the settings UI (which shows the count and the checkmarks) must agree exactly: a UI that
+         * counted TARGET_APPS while the tunnel routed a saved set would show the user a list that
+         * isn't the one in force. The absent-vs-empty distinction is described on [KEY_TARGET_USER].
+         */
+        fun targetPackages(prefs: android.content.SharedPreferences): Set<String> {
+            val saved = prefs.getStringSet(KEY_TARGET_USER, null)
+            return saved?.toSet() ?: TARGET_APPS.toSet()
+        }
 
         private val _state = MutableStateFlow(VpnState())
         val state: StateFlow<VpnState> = _state.asStateFlow()
@@ -419,6 +461,7 @@ class DesyncVpnService : VpnService(), Tunnel {
     private var blockQuic = true
     private var allApps = true
     private var excludedUser: Set<String> = emptySet()
+    private var targetUser: Set<String> = TARGET_APPS.toSet()
     private var byedpiArgs: Array<String> = arrayOf("ciadpi")
     private var socksPort: Int = DEFAULT_SOCKS_PORT
 
@@ -434,6 +477,14 @@ class DesyncVpnService : VpnService(), Tunnel {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var readThread: Thread? = null
     private var statsJob: Job? = null
+
+    // Default-network watch. Registered once the TUN is up and dropped in stopEverything; the id and
+    // timestamp are the debounce state (see onNetworkChanged) and are read from the callback thread
+    // while the coroutine that acts on them runs on Dispatchers.IO, hence @Volatile.
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var lastNetworkId: String? = null
+    @Volatile private var lastNetworkChangeAt = 0L
     @Volatile private var running = false
     @Volatile private var cleaningUp = false
     // Keep the startup failure visible after stopSelf() triggers onDestroy().
@@ -506,6 +557,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         blockQuic = p.getBoolean(KEY_BLOCK_QUIC, true)
         allApps = p.getBoolean(KEY_ALL_APPS, true)
         excludedUser = p.getStringSet(KEY_EXCLUDED_USER, emptySet())?.toSet() ?: emptySet()
+        targetUser = targetPackages(p)
         val preset = p.getString(KEY_PRESET, PRESET_AUTO) ?: PRESET_AUTO
         activePreset = preset
         // Custom command wins; otherwise derive byedpi args from the preset.
@@ -545,6 +597,17 @@ class DesyncVpnService : VpnService(), Tunnel {
      * deadline. Returns true if the proxy is up.
      */
     private fun startByedpi(): Boolean {
+        // No engine bundled for this ABI → say so instead of walking into the readiness poll, whose
+        // vocabulary ("port busy", "SOCKS not ready") would blame a port conflict for a missing .so
+        // and send the user looking for another proxy app to close.
+        if (!ByeDpiProxy.nativeAvailable) {
+            _state.value = VpnState(
+                isRunning = false,
+                isStarting = false,
+                error = getString(R.string.byedpi_native_unavailable, ByeDpiProxy.primaryAbi()),
+            )
+            return false
+        }
         // Drop a leftover run of OUR OWN from a previous VPN session, so the native singleton is
         // free before we claim it. This deliberately cannot reach an auto-tune instance: those live
         // on StrategyTester's own ByeDpiProxy and are not tracked by our handles — tearing one down
@@ -676,10 +739,21 @@ class DesyncVpnService : VpnService(), Tunnel {
             return
         }
 
-        // IPv4 only on purpose: we do NOT add an IPv6 address/route. If we advertised IPv6 on the
-        // TUN, apps (YouTube/Instagram use Happy Eyeballs) would prefer AAAA/IPv6 and we'd have to
-        // silently drop those packets → multi-second connect stalls instead of an instant IPv4
-        // path. With no IPv6 on the interface, apps go straight to IPv4 where the desync applies.
+        // IPv4 only on the *addresses*: we deliberately do not put an IPv6 address on the TUN. If we
+        // advertised one, apps (YouTube/Instagram use Happy Eyeballs) would prefer AAAA/IPv6 and we'd
+        // have to silently drop those packets → multi-second connect stalls instead of an instant
+        // IPv4 path. With no IPv6 source address on the interface, apps go straight to IPv4 where
+        // the desync applies.
+        //
+        // The IPv6 *route* is a different question, and it is why "::/0" is here. Claiming a route
+        // for a family we hold no address for changes nothing about which family apps pick — that is
+        // decided by source-address selection, and there is still no IPv6 source to select. What it
+        // does decide is where a stray IPv6 packet goes when an app emits one anyway (a literal
+        // AAAA destination, a socket bound before we came up, a library with its own resolver):
+        // without the route it leaves on the underlying interface, outside the tunnel and outside
+        // the desync, which is exactly the flow a DPI box is watching for. With it, the packet
+        // arrives in the TUN and readLoop drops it — the app fails over to IPv4 in Happy Eyeballs
+        // time instead of completing a plaintext handshake past the bypass.
         val builder = Builder()
             .setSession("Jevio Unblocker")
             .setMtu(MTU)
@@ -687,6 +761,9 @@ class DesyncVpnService : VpnService(), Tunnel {
             .addRoute("0.0.0.0", 0)
             .addDnsServer("8.8.8.8")
             .addDnsServer("1.1.1.1")
+        // Guarded on its own: a device that refuses an IPv6 route it has no address for must fall
+        // back to the previous behaviour (IPv6 unclaimed), not fail to establish the VPN at all.
+        try { builder.addRoute("::", 0) } catch (_: Exception) {}
 
         if (allApps) {
             // Our own app must bypass the TUN (byedpi's upstream socket reaches the net directly).
@@ -698,12 +775,17 @@ class DesyncVpnService : VpnService(), Tunnel {
             }
         } else {
             var added = 0
-            for (pkg in TARGET_APPS) {
+            for (pkg in targetUser) {
                 try { builder.addAllowedApplication(pkg); added++ } catch (_: Exception) { /* not installed */ }
             }
-            // If none of the target apps are installed, fall back to routing self-excluded all-apps
-            // so the user at least sees it work in a browser.
-            if (added == 0) {
+            // Fall back to all-apps only when the allowlist could not be honoured at all — none of
+            // the chosen packages is installed, so an empty allowlist would route NOTHING and the
+            // VPN would look broken. Deliberately NOT reached when the user saved an empty set on
+            // purpose: silently promoting "route nothing" to "route everything" would push traffic
+            // through the desync that they had explicitly taken out of it, and in a build where
+            // banking apps are excluded by name in the other branch only, that is the one direction
+            // this fallback must never move.
+            if (added == 0 && targetUser.isNotEmpty()) {
                 try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
             }
         }
@@ -736,6 +818,9 @@ class DesyncVpnService : VpnService(), Tunnel {
 
         readThread = thread(name = "tun-read", isDaemon = true) { readLoop() }
         startStats()
+        // After running = true, so the callback's own guard can't reject the registration replay for
+        // a run that is in fact up. It only ever resets flows, and there are none yet.
+        registerNetworkCallback()
     }
 
     private fun readLoop() {
@@ -896,6 +981,92 @@ class DesyncVpnService : VpnService(), Tunnel {
         }
     }
 
+    /**
+     * Watch the device's default network so a Wi-Fi ↔ mobile switch doesn't leave the tunnel full of
+     * flows that can never complete.
+     *
+     * Only the flows are reset — byedpi is deliberately left running. Its upstream sockets belong to
+     * a process that is off the tunnel (self-excluded in all-apps mode, absent from the allow-list
+     * otherwise), so every connect() it makes after the switch already goes out over the new default
+     * network; the engine has nothing stale to rebuild. Restarting it would instead cost the SOCKS
+     * bind-and-wait on every subway stop, and each restart is a chance for the port to be taken.
+     *
+     * Deliberately NOT paired with setUnderlyingNetworks(): a VPN that never sets it is defined to
+     * follow the system default, which is exactly what we want. Pinning an explicit array would
+     * replace that with a list we then have to keep correct by hand.
+     */
+    private fun registerNetworkCallback() {
+        if (networkCallback != null) return
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            connectivityManager = cm
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                // networkHandle is a stable per-network id (API 23+); Network.toString() is not
+                // contractually stable and produced spurious "changed" events in ProxyService.
+                override fun onAvailable(network: Network) {
+                    onNetworkChanged(network.networkHandle.toString())
+                }
+            }
+            networkCallback = cb
+            cm.registerDefaultNetworkCallback(cb)
+        } catch (_: Exception) {
+            // Some OEMs throttle callback registrations. Losing the watch costs us the fast reset,
+            // not the tunnel: flows still die off through reapIdleFlows and the app's own timeouts,
+            // which is precisely the behaviour we had before this existed.
+        }
+    }
+
+    private fun onNetworkChanged(id: String) {
+        if (!running || cleaningUp) return
+        val now = System.currentTimeMillis()
+        // Registration fires onAvailable for the current network immediately, and roaming produces
+        // bursts. Debounce both: the first call lands with lastNetworkId still null, which is
+        // harmless because at that point there are no flows to reset.
+        if (id == lastNetworkId && now - lastNetworkChangeAt < NETWORK_DEBOUNCE_MS) return
+        lastNetworkId = id
+        lastNetworkChangeAt = now
+        scope.launch {
+            // Let the new link finish coming up before we invite every app to redial onto it —
+            // resetting into a network that cannot carry the connection yet just spends the app's
+            // first retry, and some back off after it.
+            delay(NETWORK_SETTLE_MS)
+            if (!running || cleaningUp) return@launch
+            resetFlows()
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        try {
+            networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
+        } catch (_: Exception) {}
+        networkCallback = null
+        lastNetworkId = null
+        lastNetworkChangeAt = 0
+    }
+
+    /**
+     * Drop every live flow so the apps behind them redial over the current network.
+     *
+     * TCP is reset rather than closed: the app is told the connection is gone instead of being left
+     * to discover it when its own timeout expires. UDP has nothing to signal with — the association
+     * is just closed, and the app's next datagram opens a fresh one.
+     *
+     * Iterating the ConcurrentHashMaps directly is safe here even though close() calls back into
+     * onConnectionClosed to remove the entry: these views are weakly consistent, so a removal during
+     * traversal is allowed. The explicit remove() after each close covers the one case the callback
+     * cannot — an entry whose close() threw before reaching it.
+     */
+    private fun resetFlows() {
+        for ((k, c) in tcpMap) {
+            try { c.closeWithReset() } catch (_: Exception) {}
+            tcpMap.remove(k)
+        }
+        for ((k, u) in udpMap) {
+            try { u.close() } catch (_: Exception) {}
+            udpMap.remove(k)
+        }
+    }
+
     private fun reapIdleFlows() {
         val now = System.currentTimeMillis()
         for ((k, a) in udpMap) {
@@ -925,6 +1096,9 @@ class DesyncVpnService : VpnService(), Tunnel {
             }
             running = false
             statsJob?.cancel()
+            // Before the maps are emptied: a switch landing mid-teardown must not queue a reset
+            // against flows we are already closing.
+            unregisterNetworkCallback()
             for (c in tcpMap.values) c.close()
             for (u in udpMap.values) u.close()
             tcpMap.clear(); udpMap.clear()

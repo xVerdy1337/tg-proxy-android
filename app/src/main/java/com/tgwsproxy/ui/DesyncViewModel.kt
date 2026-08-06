@@ -1,17 +1,15 @@
 package com.tgwsproxy.ui
 
-import android.Manifest
 import android.app.Application
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.NetworkCapabilities
-import android.net.wifi.WifiManager
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tgwsproxy.R
+import com.tgwsproxy.core.ByeDpiProxy
 import com.tgwsproxy.net.HelloProbe
 import com.tgwsproxy.net.StrategyTester
 import com.tgwsproxy.vpn.ByedpiPresetCatalog
@@ -26,6 +24,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.UnknownHostException
@@ -119,7 +118,22 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
         // entry is tested first and — since every group other than -A behaves exactly as it did —
         // usually wins again, pinning the user to a command whose auto sections can never fire.
         // A new prefix retires those winners instead of letting them re-elect themselves.
-        const val AUTO_TUNE_CACHE_PREFIX = "auto_tune_cache_v2_"
+        //
+        // v3: two changes at once, and both need the old rows gone. The value now carries a
+        // "<millis>\n" stamp, so a v2 row read as v3 has no parseable date and would be dropped by
+        // readAutoTuneCache anyway — but silently, leaving the row behind forever. And the KEY is
+        // now a LinkProperties fingerprint rather than an SSID hash, so a v2 wifi_* row belongs to a
+        // network we can no longer identify: it could never be hit again, and could never be
+        // overwritten either, because nothing will ever compute that key a second time.
+        const val AUTO_TUNE_CACHE_PREFIX = "auto_tune_cache_v3_"
+
+        /**
+         * How long a cached winner stays a hint. Two weeks is chosen against what a stale entry
+         * actually costs — one extra candidate at the front of a sweep the user asked for — rather
+         * than against how fast a network can change, so it errs long: a correct answer thrown away
+         * costs a full re-sweep, which is the expensive mistake here.
+         */
+        const val AUTO_TUNE_CACHE_TTL_MS = 14L * 24 * 60 * 60 * 1000
 
         /**
          * Whole budget for the pre-sweep name lookups. Generous against a working resolver (tens of
@@ -155,6 +169,10 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _excluded = MutableStateFlow(loadExcluded())
     val excluded: StateFlow<Set<String>> = _excluded.asStateFlow()
+
+    /** Packages routed through the bypass in "selected apps only" mode. */
+    private val _targeted = MutableStateFlow(loadTargeted())
+    val targeted: StateFlow<Set<String>> = _targeted.asStateFlow()
 
     val builtInExcluded: Set<String> = DesyncVpnService.EXCLUDED_APPS.toSet()
 
@@ -232,10 +250,21 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
             )
             return
         }
+        // No engine for this ABI → every candidate would "fail" its TLS probe and the sweep would
+        // cache the least-bad of ~28 identical failures as the winner, silently replacing a command
+        // that may be correct. Refuse before scoring anything. This guard also keeps the sweep off
+        // StrategyTester.testStrategy, whose `ByeDpiProxy()` sits outside its try — and runAutoTune's
+        // launch{} has no body-level catch, so a throw from there would take the process down.
+        if (!ByeDpiProxy.nativeAvailable) {
+            _autoTune.value = AutoTuneUiState(
+                finished = true,
+                error = app.getString(R.string.byedpi_native_unavailable, ByeDpiProxy.primaryAbi()),
+            )
+            return
+        }
         val hosts = targets()
         val networkCacheKey = autoTuneNetworkCacheKey()
-        val cached = networkCacheKey
-            ?.let { prefs().getString(AUTO_TUNE_CACHE_PREFIX + it, null) }
+        val cached = networkCacheKey?.let { readAutoTuneCache(it) }
             ?.let { ByedpiPresetCatalog.migrateCommand(it) }
         // Test the currently-saved command first (instant if it still works), then the curated list.
         // Current by construction: repaired once at init for prefs written by an older build, and
@@ -369,7 +398,7 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
             }
             if (found != null) {
                 setByedpiCmd(found.command)
-                networkCacheKey?.let { prefs().edit().putString(AUTO_TUNE_CACHE_PREFIX + it, found.command).apply() }
+                networkCacheKey?.let { writeAutoTuneCache(it, found.command) }
                 _autoTune.value = AutoTuneUiState(
                     finished = true,
                     foundLabel = app.getString(found.labelRes),
@@ -476,11 +505,29 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
         _excluded.value = next
     }
 
+    /**
+     * Add/remove an app from the "selected apps only" allowlist.
+     *
+     * The first write is what turns the built-in [DesyncVpnService.TARGET_APPS] default into an
+     * explicit set — [loadTargeted] has already seeded the flow with it, so unchecking one app saves
+     * "the defaults minus that one" rather than "only the absence of that one". Writing even an empty
+     * set is meaningful and stored as such; see KEY_TARGET_USER for why absent and empty differ.
+     */
+    fun setTargeted(pkg: String, targeted: Boolean) {
+        val next = _targeted.value.toMutableSet()
+        if (targeted) next.add(pkg) else next.remove(pkg)
+        prefs().edit().putStringSet(DesyncVpnService.KEY_TARGET_USER, next).apply()
+        _targeted.value = next
+    }
+
     private fun prefs() =
         getApplication<Application>().getSharedPreferences(DesyncVpnService.PREFS, Context.MODE_PRIVATE)
 
     private fun loadExcluded(): Set<String> =
         prefs().getStringSet(DesyncVpnService.KEY_EXCLUDED_USER, emptySet())?.toSet() ?: emptySet()
+
+    /** Via the service's own resolver, so the picker can never show a list the tunnel won't route. */
+    private fun loadTargeted(): Set<String> = DesyncVpnService.targetPackages(prefs())
 
     /** What a pre-sweep lookup actually established about one host. */
     private enum class DnsOutcome {
@@ -583,29 +630,106 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    /** Stable, privacy-preserving key for the active network; never stores the Wi-Fi name itself. */
+    /**
+     * Stable, privacy-preserving key for the active network. Never stores the Wi-Fi name — and, since
+     * this build, never asks for it either.
+     *
+     * The SSID this used to hash is location data on Android: reading it costs ACCESS_FINE_LOCATION,
+     * which the system presents as "allow Jevio to access this device's precise location". For an app
+     * whose whole proposition is that it does not watch you, that prompt is a bad trade for what the
+     * cache actually buys (see [readAutoTuneCache] — it only reorders the sweep). Worse, the trade
+     * was usually not even made: a user who declined got `null` here and no caching at all, which is
+     * the majority outcome for a permission with no visible connection to the button that triggers it.
+     *
+     * So the network is fingerprinted from [LinkProperties] instead — the default gateway, the IPv4
+     * prefix length and the DNS servers — none of which is location-gated; ACCESS_NETWORK_STATE, which
+     * we already hold for the reconnect watch, is enough. That is strictly less selective than an
+     * SSID: two networks that both sit on 192.168.1.1/24 behind 8.8.8.8 look identical here. Which is
+     * survivable, and deliberately so — the worst a wrong entry can do is put one already-tested
+     * command at the front of the queue, and the TTL in [readAutoTuneCache] bounds how long it can
+     * keep doing that.
+     */
     private fun autoTuneNetworkCacheKey(): String? {
         val app = getApplication<Application>()
         val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return null
+        val network = cm.activeNetwork ?: return null
+        val caps = cm.getNetworkCapabilities(network) ?: return null
         return when {
             caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "mobile"
             caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> {
-                val locationGranted = ContextCompat.checkSelfPermission(
-                    app,
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                ) == PackageManager.PERMISSION_GRANTED
-                if (!locationGranted) return null
-                val wifi = app.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                val ssid = wifi.connectionInfo?.ssid?.trim('"')
-                if (ssid.isNullOrBlank() || ssid == WifiManager.UNKNOWN_SSID) return null
+                val lp = cm.getLinkProperties(network) ?: return null
+                val fingerprint = wifiFingerprint(lp) ?: return null
                 val digest = MessageDigest.getInstance("SHA-256")
-                    .digest(ssid.toByteArray())
+                    .digest(fingerprint.toByteArray())
                     .joinToString("") { "%02x".format(it.toInt() and 0xff) }
                 "wifi_${digest.take(16)}"
             }
             else -> null
         }
+    }
+
+    /**
+     * The parts of a Wi-Fi link that stay put for as long as the user is on the same network, joined
+     * into one string for hashing. Returns null when the link says nothing usable — an empty key
+     * would be shared by every such network, which is the one collision worth refusing outright.
+     *
+     * Deliberately excludes our own IPv4 address and keeps only its prefix length: the address is
+     * handed out by DHCP and changes between visits to the same network, which would make every
+     * reconnect look like a new network and the cache never hit. The gateway is the stable half of
+     * the same subnet, so nothing is lost by dropping the host part.
+     */
+    private fun wifiFingerprint(lp: LinkProperties): String? {
+        val gateways = lp.routes
+            .filter { it.isDefaultRoute }
+            // A directly-connected route reports 0.0.0.0/:: as its "gateway"; that is the absence of
+            // one, and letting it in would be a constant shared across unrelated networks.
+            .mapNotNull { it.gateway?.takeUnless { g -> g.isAnyLocalAddress }?.hostAddress }
+            .sorted()
+        val prefixes = lp.linkAddresses
+            .filter { it.address is Inet4Address }
+            .map { "/${it.prefixLength}" }
+            .sorted()
+        val dns = lp.dnsServers.mapNotNull { it.hostAddress }.sorted()
+        if (gateways.isEmpty() && dns.isEmpty()) return null
+        return (gateways + prefixes + dns).joinToString("|")
+    }
+
+    /**
+     * The command cached for [key], or null if there is none or it has aged out.
+     *
+     * What the cache is: an ordering hint. The value comes back as candidate #0 of the sweep and is
+     * tested like any other — it is never applied on trust — so a stale entry costs one wasted
+     * candidate, not a wrong strategy. That is the honest measure of what the TTL buys, and the
+     * reason it is generous rather than cautious: expiring early would throw away a correct answer
+     * to save nothing.
+     *
+     * What it is worth having anyway: the entry is keyed by a fingerprint that cannot tell two
+     * lookalike home networks apart (see [autoTuneNetworkCacheKey]), and an ISP that re-tunes its DPI
+     * invalidates every answer ever cached against it. Without an expiry both of those would seed the
+     * front of the sweep indefinitely. An expired entry is also dropped on read, so revisiting a
+     * network replaces its row instead of accumulating one per fingerprint the device has ever seen.
+     */
+    private fun readAutoTuneCache(key: String): String? {
+        val raw = prefs().getString(AUTO_TUNE_CACHE_PREFIX + key, null) ?: return null
+        val sep = raw.indexOf('\n')
+        if (sep <= 0) return null // not the timestamped format: unreadable, so not a usable hint
+        val savedAt = raw.substring(0, sep).toLongOrNull() ?: return null
+        val age = System.currentTimeMillis() - savedAt
+        // Negative age = the clock moved backwards (manual change, NTP correction) since the write.
+        // Treated as expired rather than as "fresh forever": an entry we cannot date is exactly the
+        // one the TTL exists to retire.
+        if (age !in 0 until AUTO_TUNE_CACHE_TTL_MS) {
+            prefs().edit().remove(AUTO_TUNE_CACHE_PREFIX + key).apply()
+            return null
+        }
+        return raw.substring(sep + 1).takeIf { it.isNotBlank() }
+    }
+
+    /** Persist [command] as the hint for [key], stamped so [readAutoTuneCache] can age it out. */
+    private fun writeAutoTuneCache(key: String, command: String) {
+        prefs().edit()
+            .putString(AUTO_TUNE_CACHE_PREFIX + key, "${System.currentTimeMillis()}\n$command")
+            .apply()
     }
 
     /**
