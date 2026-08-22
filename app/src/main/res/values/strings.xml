@@ -251,8 +251,11 @@
          hedge is gone and the advice can be acted on. -->
     <string name="byedpi_port_busy">byedpi failed to start — port %1$d is taken. Close ByeByeDPI/other SOCKS apps and try again</string>
     <!-- The start never happened: the single native engine was already claimed and the gate refused,
-         without touching anything. No port to free and no command to fix, so neither is mentioned. -->
-    <string name="byedpi_engine_busy">The bypass engine is already in use by another run. Wait for method tuning to finish, or restart the app if this keeps happening</string>
+         without touching anything. No port to free and no command to fix, so neither is mentioned.
+         Opens with "byedpi failed to start" like every sibling below — this lands in the same
+         diagnostics line under the VPN card, where a message that renamed the subject to "the bypass
+         engine" would read as a different subsystem reporting. -->
+    <string name="byedpi_engine_busy">byedpi failed to start — the engine is already in use by another run. Wait for method tuning to finish, or restart the app if this keeps happening</string>
     <string name="byedpi_exit_code">byedpi exited immediately (code %1$d). Check the byedpi command in settings</string>
     <string name="byedpi_socks_timeout">byedpi SOCKS not responding on 127.0.0.1:%1$d (timeout). Try again</string>
     <string name="byedpi_socks_not_ready">byedpi SOCKS not ready on 127.0.0.1:%1$d</string>
