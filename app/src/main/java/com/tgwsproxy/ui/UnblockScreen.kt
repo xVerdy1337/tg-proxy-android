@@ -359,29 +359,9 @@ private fun HeroUnblockCard(
             textAlign = TextAlign.Center,
             maxLines = 2,
         )
-        // Start/stop failures only. Every one of those arrives as a fresh VpnState with isRunning
-        // false, so the guard costs them nothing — what it excludes is reportError()'s per-flow noise
-        // from a VPN that is otherwise up. One upstream reset used to paint a raw
-        // «upstream SocketException: Connection reset» in alarm red directly under a dial reading ВКЛ
-        // in green: untranslated, unlabelled, and about a single flow the next connection retried
-        // fine. That string already has a home in LiveStatsCard's «Diagnostics» line, which is shown
-        // on exactly the condition this hides on, so no message loses its place.
-        //
-        // Blank and not merely null, matching that same diagnostics line: TcpConnection clears stale
-        // errors with reportError("") rather than with null, and ?.let admits an empty string — so an
-        // empty Text kept the Spacer above it and left a phantom 10dp gap under the hint, permanently,
-        // from the first failed flow onwards.
-        val heroError = state.error
-        if (!running && !heroError.isNullOrBlank()) {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                heroError,
-                style = MaterialTheme.typography.bodySmall,
-                color = Destructive,
-                fontWeight = FontWeight.Medium,
-                textAlign = TextAlign.Center,
-            )
-        }
+        // Start/stop failures only, and blank counts as nothing to say. Both rules live in the shared
+        // composable — see its doc for the per-flow diagnostics they keep out of here.
+        JevioHeroError(error = state.error, running = running)
 
     }
 }
