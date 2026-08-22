@@ -15,6 +15,7 @@ import android.service.quicksettings.TileService
 import androidx.core.app.NotificationCompat
 import com.tgwsproxy.MainActivity
 import com.tgwsproxy.R
+import com.tgwsproxy.core.ByeDpiExit
 import com.tgwsproxy.core.ByeDpiProxy
 import com.tgwsproxy.service.DesyncTileService
 import kotlinx.coroutines.CoroutineScope
@@ -348,6 +349,41 @@ class DesyncVpnService : VpnService(), Tunnel {
             return false
         }
 
+        /**
+         * The message a failed [startByedpi] owes the user: a resource id plus the single argument
+         * that resource formats, since the branches disagree about what that argument is (a port for
+         * the two socket ones, byedpi's own exit code for a run that refused the command, nothing at
+         * all for the shim's own out-of-memory).
+         */
+        internal data class ByedpiFailure(val res: Int, val arg: Any?)
+
+        /**
+         * Pick that message from what the start attempt actually produced.
+         *
+         * A function of its inputs and nothing else so it can be tested: this is the only place the
+         * exit-code contract with native-lib.c is interpreted, every branch tells the user to do
+         * something different, and the wrong branch sends them somewhere they cannot fix anything.
+         * Which was not hypothetical — [ByeDpiExit.ENGINE_BUSY] used to arrive as a plain -1,
+         * indistinguishable from [ByeDpiExit.MAIN_RUN_FAILED], so a start refused because an
+         * auto-tune sweep still held the engine *inside this process* was reported as "port busy,
+         * close ByeByeDPI and other SOCKS apps". There was nothing to close and the advice could not
+         * have worked.
+         *
+         * [alive] outranks [code] deliberately: a thread still inside main() means the engine did come
+         * up and it is the SOCKS handshake that is not answering, whatever an earlier code says.
+         */
+        internal fun byedpiFailure(code: Int?, alive: Boolean, port: Int): ByedpiFailure = when {
+            alive -> ByedpiFailure(R.string.byedpi_socks_timeout, port)
+            code == ByeDpiExit.ENGINE_BUSY -> ByedpiFailure(R.string.byedpi_engine_busy, null)
+            // The gate handed itself straight back, so nothing holds the engine and trying again is
+            // the right advice — but the port is not the problem and must not be blamed for it.
+            code == ByeDpiExit.ARGV_OOM -> ByedpiFailure(R.string.byedpi_start_failed_short, null)
+            code == ByeDpiExit.MAIN_RUN_FAILED -> ByedpiFailure(R.string.byedpi_port_busy, port)
+            // Includes MAIN_BAD_COMMAND: parse_args refused it, so the command is what to look at.
+            code != null -> ByedpiFailure(R.string.byedpi_exit_code, code)
+            else -> ByedpiFailure(R.string.byedpi_socks_not_ready, port)
+        }
+
         private const val NOTIFICATION_ID = 2
         private const val CHANNEL_ID = "desync_vpn_channel"
 
@@ -550,6 +586,15 @@ class DesyncVpnService : VpnService(), Tunnel {
         // on StrategyTester's own ByeDpiProxy and are not tracked by our handles — tearing one down
         // from here is what the ownership test in stopByedpi() exists to prevent.
         stopByedpi()
+        // Someone else's run may still be letting go: an auto-tune sweep's teardown returns as soon
+        // as its joins are satisfied, and the loop thread's native epilogue — the only thing that
+        // lowers the busy flag — runs a hair later. Claiming in that window is refused outright, so
+        // "enable the VPN right after tuning" failed with an error the user could do nothing about
+        // and that a second tap cured. Wait the gap out; a genuinely wedged run outlives this and
+        // still reports itself below, which is the case that actually needs telling apart.
+        if (ByeDpiProxy.isEngineBusy()) {
+            ByeDpiProxy.awaitEngineFree()
+        }
         return try {
             val proxy = ByeDpiProxy()
             byedpiProxy = proxy
@@ -577,16 +622,10 @@ class DesyncVpnService : VpnService(), Tunnel {
             if (!ready) {
                 val code = byedpiExitCode
                 val alive = byedpiThread?.isAlive == true
-                val reason = when {
-                    !alive && code == -1 ->
-                        getString(R.string.byedpi_port_busy, port)
-                    !alive && code != null ->
-                        getString(R.string.byedpi_exit_code, code)
-                    alive ->
-                        getString(R.string.byedpi_socks_timeout, port)
-                    else ->
-                        getString(R.string.byedpi_socks_not_ready, port)
-                }
+                val failure = byedpiFailure(code, alive, port)
+                val reason = failure.arg
+                    ?.let { getString(failure.res, it) }
+                    ?: getString(failure.res)
                 _state.value = VpnState(isRunning = false, isStarting = false, error = reason)
                 // stopByedpi() no-ops when this run no longer owns the engine — see its doc.
                 stopByedpi()

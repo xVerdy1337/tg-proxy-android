@@ -183,6 +183,7 @@
     <string name="current_command">текущая команда</string>
     <string name="auto_tune_none_worked">Ни один метод не пробил блокировку. Попробуй вручную в продвинутых настройках.</string>
     <string name="auto_tune_engine_stuck">Движок обхода не завершился и держит устройство. Перезапусти приложение и запусти автоподбор заново.</string>
+    <string name="auto_tune_engine_taken">Движок обхода забрали посреди проверки, остальные методы так и не проверились. Выключи VPN и запусти подбор заново.</string>
     <string name="auto_tune_cancelling">Останавливаю — жду, пока закончится текущая проверка…</string>
     <string name="auto_tune_cancelled">Подбор остановлен — метод остался прежним.</string>
     <string name="auto_tune_dns_failed">Ни один адрес не разрешается в этой сети — это DNS, а не блокировка, и обходом это не лечится. Смени DNS сети или саму сеть.</string>
@@ -205,7 +206,8 @@
     <string name="vpn_fail_establish_stage">поднять VPN</string>
     <string name="vpn_fail_format">Не удалось %1$s: %2$s: %3$s</string>
     <string name="vpn_fail_no_details">без подробностей</string>
-    <string name="byedpi_port_busy">byedpi не запустился (порт %1$d занят или движок уже работает). Закрой ByeByeDPI/другие SOCKS и попробуй снова</string>
+    <string name="byedpi_port_busy">byedpi не запустился — порт %1$d занят. Закрой ByeByeDPI/другие SOCKS и попробуй снова</string>
+    <string name="byedpi_engine_busy">Движок обхода уже занят другим запуском. Дождись конца подбора метода, а если повторяется — перезапусти приложение</string>
     <string name="byedpi_exit_code">byedpi завершился сразу (код %1$d). Проверь команду byedpi в настройках</string>
     <string name="byedpi_socks_timeout">byedpi SOCKS не отвечает на 127.0.0.1:%1$d (таймаут). Попробуй ещё раз</string>
     <string name="byedpi_socks_not_ready">byedpi SOCKS не готов на 127.0.0.1:%1$d</string>
