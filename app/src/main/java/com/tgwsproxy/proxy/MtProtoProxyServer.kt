@@ -45,6 +45,14 @@ class MtProtoProxyServer(
     @Volatile private var running = false
     private val activeConnections = ConcurrentHashMap.newKeySet<Socket>()
     private val connectionCount = AtomicInteger(0)
+    // Per-connection sequence for log labels: on loopback every client is 127.0.0.1, so the bare
+    // address made all summary lines indistinguishable.
+    private val connectionSeq = AtomicInteger(0)
+    // Negative cache for the direct WS wave: when direct endpoints are hard-blocked, every new
+    // connection was paying the full WS_WAVE_TIMEOUT_MS before racing Cloudflare, and Telegram's
+    // own ~5s patience meant some sessions died as "closed: peer" mid-dial. After a lost wave,
+    // skip direct for a while; a success anywhere clears it.
+    @Volatile private var directWaveFailedAt = 0L
 
     /**
      * Live client count, readable at any moment from any thread.
@@ -235,7 +243,7 @@ class MtProtoProxyServer(
     }
 
     private suspend fun handleClient(clientSocket: Socket) {
-        val label = clientSocket.inetAddress?.hostAddress ?: "?"
+        val label = connectionSeq.incrementAndGet().toString()
         // Per-connection observability: one CONN summary line at close instead of per-phase
         // chatter. Counters are cheap lock-free atomics bumped in the relay hot paths; the
         // close reason is written from relay coroutines, so it needs the atomic reference.
@@ -523,10 +531,19 @@ class MtProtoProxyServer(
         // within a second, so we open ~2-3 TLS handshakes instead of ~18 — a big radio/CPU saver,
         // especially when a network switch forces every session to redial at once. Only if the
         // direct wave fails do we fall back to racing the full Cloudflare pool (wave 2).
-        onLog("[$label] connecting WS: ${directCandidates.size} direct endpoints", LogKind.WS)
-        raceCandidates(directCandidates, WS_WAVE_TIMEOUT_MS, label)?.let { return it }
-
-        onLog("[$label] direct failed — racing ${cfCandidates.size} Cloudflare endpoints", LogKind.CLOUDFLARE)
+        val directFresh = System.currentTimeMillis() - directWaveFailedAt >= DIRECT_WAVE_NEGATIVE_TTL_MS
+        if (directFresh) {
+            onLog("[$label] connecting WS: ${directCandidates.size} direct endpoints", LogKind.WS)
+            val directResult = raceCandidates(directCandidates, WS_WAVE_TIMEOUT_MS, label)
+            if (directResult != null) {
+                directWaveFailedAt = 0L // direct is alive again — keep preferring it
+                return directResult
+            }
+            directWaveFailedAt = System.currentTimeMillis()
+            onLog("[$label] direct failed — racing ${cfCandidates.size} Cloudflare endpoints", LogKind.CLOUDFLARE)
+        } else {
+            onLog("[$label] direct skipped (failed recently) — racing ${cfCandidates.size} Cloudflare endpoints", LogKind.CLOUDFLARE)
+        }
         raceCandidates(cfCandidates, WS_RACE_TIMEOUT_MS, label)?.let { return it }
 
         // Extra tier: user-deployed Cloudflare Worker(s). Each relays a WebSocket to the RAW DC
@@ -954,6 +971,10 @@ class MtProtoProxyServer(
         // First-wave (direct endpoints) budget before falling back to the Cloudflare pool. Short
         // so a failing direct route escalates quickly, long enough for a healthy one to win.
         const val WS_WAVE_TIMEOUT_MS = 4_000L
+        // How long a lost direct wave suppresses it: short enough to notice a network fix within
+        // a couple of minutes, long enough that a hard-blocked direct path stops taxing every
+        // new connection with WS_WAVE_TIMEOUT_MS of dead waiting.
+        const val DIRECT_WAVE_NEGATIVE_TTL_MS = 120_000L
         // One-shot "nothing has ever arrived" check. Well past the worst first-response latency
         // (relayInit + a DC round trip is sub-second even on a bad mobile link), short enough
         // that the redial happens while the user is still looking at the app. Kept at 9s: a dead
