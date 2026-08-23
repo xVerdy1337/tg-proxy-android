@@ -423,22 +423,28 @@ class MtProtoProxyServer(
                         "${formatBytes(up + down)} $arrow ${"%.1f".format(durSec)} s — closed: ${closeReason.get()}",
                     LogKind.CONN
                 )
-                // Evict a half-dead cached WS route: it accepted the connection, then the edge
-                // closed it having delivered nothing (peer-initiated, 0 B down, short life).
-                // A long-lived zero-download session is just an idle spare, not a dud.
+                // Evict a half-dead cached WS route: the edge accepts the connection, then
+                // closes it within seconds having relayed next to nothing (peer-initiated,
+                // short life, <2 KB total — the field logs showed such sessions CAN carry a
+                // few hundred bytes downstream before the edge drops them, so "0 B down" was
+                // too strict a dud test). Long-lived or fat sessions are healthy and reset the
+                // counter; client-gone churn is Telegram's own and never counts.
                 if (route == "ws") {
                     val key = "$connDcId/$connIsMedia"
-                    if (down == 0L && closeReason.get() == "peer" && durSec < 15) {
+                    val dud = closeReason.get() == "peer" && durSec < 15 && up + down < 2048
+                    if (dud) {
                         val strikes = routeStrikes.computeIfAbsent(key) { AtomicInteger(0) }.incrementAndGet()
-                        if (strikes >= 2 && routeCache.remove(key) != null) {
+                        if (strikes >= 2) {
                             routeStrikes.remove(key)
-                            onLog(
-                                "cached WS route for DC$connDcId${if (connIsMedia) " media" else ""} " +
-                                    "delivered nothing twice in a row — evicted, next session re-races",
-                                LogKind.WARNING
-                            )
+                            if (routeCache.remove(key) != null) {
+                                onLog(
+                                    "cached WS route for DC$connDcId${if (connIsMedia) " media" else ""} " +
+                                        "dropped two fresh sessions in a row — evicted, next session re-races",
+                                    LogKind.WARNING
+                                )
+                            }
                         }
-                    } else if (down > 0L) {
+                    } else {
                         routeStrikes.remove(key)
                     }
                 }
