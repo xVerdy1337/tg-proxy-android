@@ -113,8 +113,12 @@ class MtProtoProxyServer(
     // resolves to Cloudflare anycast IPs (NOT Telegram IPs), and Cloudflare proxies the
     // /apiws WebSocket through to Telegram. This is what makes the proxy survive networks
     // that block Telegram's IP ranges directly (DPI / TSPU).
-    // Bundled CF-fronting domain labels are obfuscated in source (Caesar-shifted by CF_SHIFT)
-    // so they don't sit as plaintext strings in the shipped APK; decoded at runtime.
+    // Bundled CF-fronting domain labels are Caesar-shifted (see CF_SHIFT) and decoded at
+    // runtime. This is an anti-scraping measure, NOT anti-reverse (issue #39): the decoder
+    // sits right below, so reversing is trivial and we accept that. The actual goal is to
+    // keep plaintext domains out of the APK string table so censors' bulk APK-scraping bots
+    // can't harvest them via `strings`/grep into automatic blocklists. Real domain rotation
+    // is handled by userCfDomains / cfWorkerDomain, not by this encoding.
     private val encodedCfLabels = listOf(
         "uvzrvtuhkgvy",
         "rhyavzorh",
@@ -127,6 +131,8 @@ class MtProtoProxyServer(
         "vmmzovy"
     )
 
+    // The decoder being trivially invertible is a documented, accepted trade-off — see the
+    // rationale at encodedCfLabels (anti-scraping of APK strings, not anti-reverse).
     private fun decodeCfLabel(s: String): String = buildString {
         for (c in s) append(if (c in 'a'..'z') 'a' + ((c - 'a' + 26 - CF_SHIFT) % 26) else c)
     }
@@ -314,7 +320,7 @@ class MtProtoProxyServer(
                     return
                 }
 
-                val serverHello = FakeTls.buildServerHello(secretBytes, verified.clientRandom, verified.sessionId)
+                val serverHello = FakeTls.buildServerHello(secretBytes, verified)
                 rawOutput.write(serverHello)
                 rawOutput.flush()
 
@@ -1043,7 +1049,8 @@ class MtProtoProxyServer(
         const val MAX_CLIENT_HELLO = 4096
         // Max concurrent client connections (loopback proxy; Telegram needs ~15). Flood guard.
         const val MAX_CLIENTS = 128
-        // Caesar shift used to obfuscate the bundled CF-fronting domain labels in source.
+        // Caesar shift for the bundled CF domain labels. Deliberately weak: it only keeps the
+        // domains out of bulk APK string scrapes (issue #39), it is not a secrecy mechanism.
         const val CF_SHIFT = 7
 
         /** Decode a hex MTProto secret, failing loudly on odd length / non-hex instead of crashing. */

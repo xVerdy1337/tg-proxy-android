@@ -101,14 +101,29 @@ class FakeTlsTest {
      * Build a ClientHello that verifies against [secret], stamped [ageSeconds] in the past.
      * Mirrors the hand-rolled construction above, with the timestamp and the session-id length
      * byte both movable — the latter sits inside the HMAC, so it must be set before signing.
+     * [cipherSuites] are appended as a proper vector after the session id so the parser has
+     * something realistic to read.
      */
-    private fun hello(secret: ByteArray, ageSeconds: Long, withSessionId: Boolean = true): ByteArray {
-        val buf = ByteArray(76)
+    private fun hello(
+        secret: ByteArray,
+        ageSeconds: Long,
+        withSessionId: Boolean = true,
+        cipherSuites: List<Int> = emptyList()
+    ): ByteArray {
+        val sessEnd = if (withSessionId) 76 else 44
+        val buf = ByteArray(sessEnd + 2 + 2 * cipherSuites.size)
         buf[0] = 0x16
         buf[5] = 0x01
         if (withSessionId) {
             buf[43] = 0x20
             for (i in 0 until 32) buf[44 + i] = (i * 5).toByte()
+        }
+        val csLen = 2 * cipherSuites.size
+        buf[sessEnd] = (csLen ushr 8).toByte()
+        buf[sessEnd + 1] = csLen.toByte()
+        cipherSuites.forEachIndexed { i, cs ->
+            buf[sessEnd + 2 + 2 * i] = (cs ushr 8).toByte()
+            buf[sessEnd + 3 + 2 * i] = cs.toByte()
         }
 
         // Signed with the client-random region zeroed, exactly as verifyClientHello recomputes it.
@@ -144,8 +159,8 @@ class FakeTlsTest {
     @Test
     fun verifyClientHelloToleratesAMissingSessionId() {
         // Session id is optional; without one the reply still needs 32 bytes to echo, so verify
-        // hands back a zero-filled placeholder rather than a short array that would overflow
-        // buildServerHello's arraycopy.
+        // hands back a zero-filled placeholder rather than a short array that would produce a
+        // malformed session-id echo in the ServerHello.
         val secret = ByteArray(16) { (it + 1).toByte() }
 
         val res = FakeTls.verifyClientHello(hello(secret, 0, withSessionId = false), secret)
@@ -155,52 +170,192 @@ class FakeTlsTest {
         assertContentEquals(ByteArray(32), res.sessionId)
     }
 
+    /** A verified-hello stand-in for buildServerHello: fixed random/session, movable suites. */
+    private fun clientHello(cipherSuites: List<Int> = listOf(0x1301)) = FakeTls.ClientHello(
+        clientRandom = ByteArray(32) { (it * 3).toByte() },
+        sessionId = ByteArray(32) { (it + 11).toByte() },
+        timestamp = 0L,
+        cipherSuites = cipherSuites
+    )
+
+    /** Parsed view of the ServerHello record at the start of a buildServerHello response. */
+    private data class ParsedSh(
+        val recordEnd: Int, // offset just past the ServerHello record (where CCS should start)
+        val sessionId: ByteArray,
+        val cipherSuite: Int,
+        val extensions: List<Pair<Int, ByteArray>> // extension type to its data bytes
+    )
+
+    /**
+     * Structurally parse the ServerHello. Tests must walk lengths rather than hard-code offsets,
+     * because the record is assembled with shuffled extensions and optional padding — fixed
+     * offsets were exactly the fingerprint this randomization removes.
+     */
+    private fun parseServerHello(resp: ByteArray): ParsedSh {
+        require(u(resp[0]) == 0x16 && u(resp[5]) == 0x02) { "not a ServerHello record" }
+        val recLen = (u(resp[3]) shl 8) or u(resp[4])
+        val hsLen = (u(resp[6]) shl 16) or (u(resp[7]) shl 8) or u(resp[8])
+        // record length = handshake header + handshake body; version(2)+random(32) then follow
+        assertEquals(4 + hsLen, recLen, "record length must match the handshake length")
+        assertEquals(0x03, u(resp[9]))
+        assertEquals(0x03, u(resp[10]))
+
+        val sessLen = u(resp[43])
+        val sessionId = resp.copyOfRange(44, 44 + sessLen)
+        val cipherOff = 44 + sessLen
+        val cipher = (u(resp[cipherOff]) shl 8) or u(resp[cipherOff + 1])
+        assertEquals(0x00, u(resp[cipherOff + 2]), "null compression")
+
+        val extLenOff = cipherOff + 3
+        val extLen = (u(resp[extLenOff]) shl 8) or u(resp[extLenOff + 1])
+        val exts = mutableListOf<Pair<Int, ByteArray>>()
+        var p = extLenOff + 2
+        val extEnd = p + extLen
+        assertEquals(9 + hsLen, extEnd, "extensions must end exactly at the handshake boundary")
+        while (p < extEnd) {
+            assertTrue(p + 4 <= extEnd, "truncated extension header")
+            val type = (u(resp[p]) shl 8) or u(resp[p + 1])
+            val len = (u(resp[p + 2]) shl 8) or u(resp[p + 3])
+            assertTrue(p + 4 + len <= extEnd, "extension overruns the extensions block")
+            exts += type to resp.copyOfRange(p + 4, p + 4 + len)
+            p += 4 + len
+        }
+        assertEquals(extEnd, p, "extension walk must consume the block exactly")
+        return ParsedSh(5 + recLen, sessionId, cipher, exts)
+    }
+
     @Test
     fun serverHelloCarriesTheRandomARealClientWouldCheck() {
         // A genuine client recomputes HMAC(secret, clientRandom + response-with-random-zeroed) and
         // walks away if it does not match the server random. Getting this wrong makes the proxy
         // detectable by anyone who bothers to check, so assert it the way the client does.
         val secret = ByteArray(16) { (it + 7).toByte() }
-        val clientRandom = ByteArray(32) { (it * 3).toByte() }
-        val sessionId = ByteArray(32) { (it + 11).toByte() }
+        val hello = clientHello()
 
-        val resp = FakeTls.buildServerHello(secret, clientRandom, sessionId)
+        val resp = FakeTls.buildServerHello(secret, hello)
+        val sh = parseServerHello(resp)
 
-        assertEquals(0x16, u(resp[0]))
-        assertEquals(0x03, u(resp[1]))
-        assertEquals(0x03, u(resp[2]))
-        assertEquals(122, (u(resp[3]) shl 8) or u(resp[4]))
-        assertContentEquals(sessionId, resp.copyOfRange(44, 76), "the session id must be echoed")
+        assertContentEquals(hello.sessionId, sh.sessionId, "the session id must be echoed")
 
         val zeroed = resp.copyOf()
         for (i in 0 until 32) zeroed[11 + i] = 0
         assertContentEquals(
-            hmac(secret, clientRandom + zeroed).copyOf(32),
+            hmac(secret, hello.clientRandom + zeroed).copyOf(32),
             resp.copyOfRange(11, 43),
             "server random must be HMAC(secret, clientRandom + response)"
         )
 
-        // ServerHello(127) + CCS(6) + app-data header(5) + 1900..2100 random bytes.
-        assertTrue(resp.size in (127 + 6 + 5 + 1900)..(127 + 6 + 5 + 2100), "unexpected size ${resp.size}")
-        assertEquals(0x14, u(resp[127]), "change-cipher-spec must follow the ServerHello")
-        assertEquals(0x17, u(resp[133]), "then a dummy application-data record")
+        // CCS then a dummy app-data record of 1900..2100 bytes, right after the ServerHello.
+        assertEquals(0x14, u(resp[sh.recordEnd]), "change-cipher-spec must follow the ServerHello")
+        val appOff = sh.recordEnd + 6
+        assertEquals(0x17, u(resp[appOff]), "then a dummy application-data record")
+        val appLen = (u(resp[appOff + 3]) shl 8) or u(resp[appOff + 4])
+        assertTrue(appLen in 1900..2100, "unexpected dummy app-data size $appLen")
+        assertEquals(appOff + 5 + appLen, resp.size, "response must end with the app-data record")
     }
 
     @Test
     fun serverHelloUsesAFreshKeySharePerHello() {
-        // The key_share pubkey (offset 89) must be freshly random per hello — a static template
-        // value would make every session fingerprintable.
+        // The key_share pubkey must be freshly random per hello — a static value would make every
+        // session fingerprintable. Located by walking extensions, not by offset.
         val secret = ByteArray(16) { (it + 1).toByte() }
-        val clientRandom = ByteArray(32) { (it * 3).toByte() }
-        val sessionId = ByteArray(32) { (it + 11).toByte() }
 
-        val first = FakeTls.buildServerHello(secret, clientRandom, sessionId)
-        val second = FakeTls.buildServerHello(secret, clientRandom, sessionId)
+        val first = parseServerHello(FakeTls.buildServerHello(secret, clientHello()))
+        val second = parseServerHello(FakeTls.buildServerHello(secret, clientHello()))
 
+        fun keySharePubkey(sh: ParsedSh): ByteArray {
+            val ks = sh.extensions.firstOrNull { it.first == 0x0033 }
+            assertNotNull(ks, "key_share extension must be present")
+            // group(2)=x25519 + length(2)=32 + pubkey(32)
+            assertEquals(36, ks.second.size)
+            assertEquals(0x001d, (u(ks.second[0]) shl 8) or u(ks.second[1]), "x25519 group")
+            return ks.second.copyOfRange(4, 36)
+        }
         assertTrue(
-            !first.copyOfRange(89, 121).contentEquals(second.copyOfRange(89, 121)),
+            !keySharePubkey(first).contentEquals(keySharePubkey(second)),
             "key_share pubkey must differ between hellos"
         )
+    }
+
+    @Test
+    fun serverHelloEchoesTheFirstSupportedClientCipher() {
+        // Real servers pick the first client-preferred suite they support; echoing a constant
+        // 0x1301 regardless of the offer is a trivially checkable tell.
+        val secret = ByteArray(16) { (it + 1).toByte() }
+
+        val resp = FakeTls.buildServerHello(secret, clientHello(listOf(0x1302, 0x1301)))
+        assertEquals(0x1302, parseServerHello(resp).cipherSuite, "client prefers 0x1302, so we answer 0x1302")
+
+        val resp2 = FakeTls.buildServerHello(secret, clientHello(listOf(0x1303, 0x1301, 0x1302)))
+        assertEquals(0x1303, parseServerHello(resp2).cipherSuite)
+
+        // Unsupported suites ahead of a supported one must be skipped, not echoed.
+        val resp3 = FakeTls.buildServerHello(secret, clientHello(listOf(0x009c, 0x1302)))
+        assertEquals(0x1302, parseServerHello(resp3).cipherSuite)
+    }
+
+    @Test
+    fun serverHelloFallsBackToAes128GcmWhenNoCipherMatches() {
+        val secret = ByteArray(16) { (it + 1).toByte() }
+
+        val noneOffered = FakeTls.buildServerHello(secret, clientHello(emptyList()))
+        assertEquals(0x1301, parseServerHello(noneOffered).cipherSuite)
+
+        val nothingSupported = FakeTls.buildServerHello(secret, clientHello(listOf(0x009c, 0x002f)))
+        assertEquals(0x1301, parseServerHello(nothingSupported).cipherSuite)
+    }
+
+    @Test
+    fun serverHelloStructureIsValidWithAndWithoutPadding() {
+        // Padding (~50% chance, 0..16 bytes) and shuffled extension order change the layout on
+        // every call; over enough samples both padded and unpadded shapes must parse cleanly.
+        val secret = ByteArray(16) { (it + 1).toByte() }
+        var sawPadding = false
+        var sawNoPadding = false
+        val sawOrders = mutableSetOf<List<Int>>()
+
+        repeat(60) {
+            val sh = parseServerHello(FakeTls.buildServerHello(secret, clientHello()))
+            val types = sh.extensions.map { it.first }
+            assertTrue(0x0033 in types && 0x002b in types, "key_share and supported_versions required")
+            val sv = sh.extensions.first { it.first == 0x002b }
+            assertContentEquals(byteArrayOf(0x03, 0x04), sv.second, "supported_versions must offer TLS 1.3")
+            if (0x0015 in types) {
+                sawPadding = true
+                val pad = sh.extensions.first { it.first == 0x0015 }
+                assertTrue(pad.second.size in 0..16, "padding length 0..16, got ${pad.second.size}")
+                assertContentEquals(ByteArray(pad.second.size), pad.second, "padding must be zero bytes")
+            } else {
+                sawNoPadding = true
+            }
+            sawOrders += types
+        }
+        assertTrue(sawPadding && sawNoPadding, "60 samples should cover both padding outcomes")
+        assertTrue(sawOrders.size > 1, "extension order must vary across hellos")
+    }
+
+    @Test
+    fun verifyClientHelloParsesTheOfferedCipherSuites() {
+        val secret = ByteArray(16) { (it + 1).toByte() }
+
+        val res = FakeTls.verifyClientHello(hello(secret, 0, cipherSuites = listOf(0x1302, 0x1301)), secret)
+        assertNotNull(res)
+        assertEquals(listOf(0x1302, 0x1301), res.cipherSuites)
+
+        // And the parsed offer drives the ServerHello cipher choice end-to-end.
+        val resp = FakeTls.buildServerHello(secret, res)
+        assertEquals(0x1302, parseServerHello(resp).cipherSuite)
+    }
+
+    @Test
+    fun verifyClientHelloToleratesTruncatedCipherSuites() {
+        // Hostile or truncated hellos must degrade to an empty offer (cipher fallback), never crash.
+        val secret = ByteArray(16) { (it + 1).toByte() }
+
+        // No cipher-suites vector at all (buffer ends right after the session id).
+        val res = FakeTls.verifyClientHello(hello(secret, 0), secret)
+        assertNotNull(res)
+        assertEquals(emptyList(), res.cipherSuites)
     }
 
     @Test
