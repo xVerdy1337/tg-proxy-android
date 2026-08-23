@@ -113,8 +113,12 @@ class MtProtoProxyServer(
     // resolves to Cloudflare anycast IPs (NOT Telegram IPs), and Cloudflare proxies the
     // /apiws WebSocket through to Telegram. This is what makes the proxy survive networks
     // that block Telegram's IP ranges directly (DPI / TSPU).
-    // Bundled CF-fronting domain labels are obfuscated in source (Caesar-shifted by CF_SHIFT)
-    // so they don't sit as plaintext strings in the shipped APK; decoded at runtime.
+    // Bundled CF-fronting domain labels are Caesar-shifted (see CF_SHIFT) and decoded at
+    // runtime. This is an anti-scraping measure, NOT anti-reverse (issue #39): the decoder
+    // sits right below, so reversing is trivial and we accept that. The actual goal is to
+    // keep plaintext domains out of the APK string table so censors' bulk APK-scraping bots
+    // can't harvest them via `strings`/grep into automatic blocklists. Real domain rotation
+    // is handled by userCfDomains / cfWorkerDomain, not by this encoding.
     private val encodedCfLabels = listOf(
         "uvzrvtuhkgvy",
         "rhyavzorh",
@@ -127,6 +131,8 @@ class MtProtoProxyServer(
         "vmmzovy"
     )
 
+    // The decoder being trivially invertible is a documented, accepted trade-off — see the
+    // rationale at encodedCfLabels (anti-scraping of APK strings, not anti-reverse).
     private fun decodeCfLabel(s: String): String = buildString {
         for (c in s) append(if (c in 'a'..'z') 'a' + ((c - 'a' + 26 - CF_SHIFT) % 26) else c)
     }
@@ -314,7 +320,7 @@ class MtProtoProxyServer(
                     return
                 }
 
-                val serverHello = FakeTls.buildServerHello(secretBytes, verified.clientRandom, verified.sessionId)
+                val serverHello = FakeTls.buildServerHello(secretBytes, verified)
                 rawOutput.write(serverHello)
                 rawOutput.flush()
 
@@ -417,6 +423,25 @@ class MtProtoProxyServer(
                         "${formatBytes(up + down)} $arrow ${"%.1f".format(durSec)} s — closed: ${closeReason.get()}",
                     LogKind.CONN
                 )
+                // Evict a half-dead cached WS route: it accepted the connection, then the edge
+                // closed it having delivered nothing (peer-initiated, 0 B down, short life).
+                // A long-lived zero-download session is just an idle spare, not a dud.
+                if (route == "ws") {
+                    val key = "$connDcId/$connIsMedia"
+                    if (down == 0L && closeReason.get() == "peer" && durSec < 15) {
+                        val strikes = routeStrikes.computeIfAbsent(key) { AtomicInteger(0) }.incrementAndGet()
+                        if (strikes >= 2 && routeCache.remove(key) != null) {
+                            routeStrikes.remove(key)
+                            onLog(
+                                "cached WS route for DC$connDcId${if (connIsMedia) " media" else ""} " +
+                                    "delivered nothing twice in a row — evicted, next session re-races",
+                                LogKind.WARNING
+                            )
+                        }
+                    } else if (down > 0L) {
+                        routeStrikes.remove(key)
+                    }
+                }
             }
         }
     }
@@ -508,6 +533,11 @@ class MtProtoProxyServer(
     // "connected but dead" route never closes and Telegram hangs on "connecting". Caching only
     // proven routes + the stall watchdog in bridgeData prevents that.
     private val routeCache = ConcurrentHashMap<String, WsCandidate>()
+    // Strikes against a cached WS route that connects fine but closes having relayed nothing.
+    // connect() succeeds for such a half-dead edge, so without this it would stay cached forever
+    // and every session to that DC would die the same ~5s "closed: peer" death in a loop.
+    // Two consecutive dud sessions evict the route, forcing the next connect to re-race the pool.
+    private val routeStrikes = ConcurrentHashMap<String, AtomicInteger>()
 
     private suspend fun connectAnyWs(dcId: Int, isMedia: Boolean, label: String): Pair<WebSocketBridge, WsCandidate>? {
         val cacheKey = "$dcId/$isMedia"
@@ -863,7 +893,10 @@ class MtProtoProxyServer(
                 while (running && !clientSocket.isClosed) {
                     val data = wsBridge.receive()
                     if (data == null) {
-                        closeReason.compareAndSet("client-gone", "peer") // upstream EOF
+                        // Upstream EOF. Only blame the peer when the client is still with us:
+                        // when Telegram hangs up first, select() returns and closes this bridge
+                        // under us, so receive() returns null for a close we initiated ourselves.
+                        if (!clientSocket.isClosed) closeReason.compareAndSet("client-gone", "peer")
                         break
                     }
                     // First bytes back prove the route carries Telegram traffic → cache it.
@@ -1043,7 +1076,8 @@ class MtProtoProxyServer(
         const val MAX_CLIENT_HELLO = 4096
         // Max concurrent client connections (loopback proxy; Telegram needs ~15). Flood guard.
         const val MAX_CLIENTS = 128
-        // Caesar shift used to obfuscate the bundled CF-fronting domain labels in source.
+        // Caesar shift for the bundled CF domain labels. Deliberately weak: it only keeps the
+        // domains out of bulk APK string scrapes (issue #39), it is not a secrecy mechanism.
         const val CF_SHIFT = 7
 
         /** Decode a hex MTProto secret, failing loudly on odd length / non-hex instead of crashing. */
