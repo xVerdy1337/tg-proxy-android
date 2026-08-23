@@ -356,10 +356,9 @@ class MtProtoProxyServer(
                 onLog("[$label] WS connection failed, trying TCP fallback", LogKind.WARNING)
                 val fallbackIp = dcDefaultIps[result.dcId] ?: dcDefaultIps[2]!!
                 route = "tcp"
-                val fallbackOk = tcpFallback(clientSocket, clientInput, clientOutput, cryptoCtx, relayInit, fallbackIp, connUp, connDown, closeReason)
-                if (!fallbackOk) {
-                    onLog("[$label] TCP fallback failed", LogKind.ERROR)
-                }
+                // tcpFallback logs its own detailed error line ("failed to connect to … after
+                // 5000ms"); a second bare "fallback failed" line here only doubled the noise.
+                tcpFallback(clientSocket, clientInput, clientOutput, cryptoCtx, relayInit, fallbackIp, connUp, connDown, closeReason)
                 return
             }
 
@@ -569,10 +568,18 @@ class MtProtoProxyServer(
         // whole Cloudflare wave's worth per race, on every reconnect.
         val winner = kotlinx.coroutines.CompletableDeferred<Pair<WebSocketBridge, WsCandidate>?>()
 
+        // Per-candidate failure classes, collected so a lost race can say WHY (timeout vs reset
+        // vs DNS) instead of a bare "failed". Class name only: exception messages carry
+        // per-attempt ports/IPs, which would defeat both the grouping here and the ×N log
+        // folding downstream.
+        val failures = java.util.concurrent.ConcurrentLinkedQueue<String>()
         val jobs = candidates.map { c ->
             serverScope.launch {
                 val b = WebSocketBridge()
-                val ok = try { b.connect(c.pinnedIp, c.host, c.path) } catch (_: Exception) { false }
+                val ok = try { b.connect(c.pinnedIp, c.host, c.path) } catch (e: Exception) {
+                    failures.add(e.javaClass.simpleName)
+                    false
+                }
                 if (ok && winner.complete(Pair(b, c))) {
                     lastRoute = c.kind
                     onLog("[$label] WS connected via ${c.host} (${c.kind})", LogKind.WS)
@@ -615,6 +622,11 @@ class MtProtoProxyServer(
             }
         }
         // Note: caching happens in bridgeData once the route actually carries data, not here.
+        if (result == null && failures.isNotEmpty()) {
+            val summary = failures.groupingBy { it }.eachCount()
+                .entries.joinToString(", ") { (klass, n) -> if (n > 1) "$klass ×$n" else klass }
+            onLog("[$label] all ${candidates.size} endpoint(s) failed: $summary", LogKind.WARNING)
+        }
         return result
     }
 
