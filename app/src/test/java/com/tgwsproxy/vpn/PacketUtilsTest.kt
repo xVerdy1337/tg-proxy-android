@@ -4,6 +4,7 @@ import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -86,18 +87,25 @@ class PacketUtilsTest {
 
     @Test
     fun flowKeyDistinguishesTuples() {
-        val a = PacketUtils.flowKey(1000, 0x0A000001, 443)
-        val b = PacketUtils.flowKey(1001, 0x0A000001, 443)
-        val c = PacketUtils.flowKey(1000, 0x0A000002, 443)
-        val d = PacketUtils.flowKey(1000, 0x0A000001, 444)
-        assertEquals(4, setOf(a, b, c, d).size)
-        assertEquals(a, PacketUtils.flowKey(1000, 0x0A000001, 443)) // stable
+        val a = PacketUtils.flowKey(0x0A000002, 1000, 0x0A000001, 443)
+        val b = PacketUtils.flowKey(0x0A000002, 1001, 0x0A000001, 443)
+        val c = PacketUtils.flowKey(0x0A000002, 1000, 0x0A000002, 443)
+        val d = PacketUtils.flowKey(0x0A000002, 1000, 0x0A000001, 444)
+        val e = PacketUtils.flowKey(0x0A000003, 1000, 0x0A000001, 443) // same ports/dst, different srcIp
+        assertEquals(5, setOf(a, b, c, d, e).size)
+        assertEquals(a, PacketUtils.flowKey(0x0A000002, 1000, 0x0A000001, 443)) // stable
     }
 
     @Test
     fun ipToStringFormatsUnsigned() {
         assertEquals("142.250.1.78", PacketUtils.ipToString(DST))
         assertEquals("255.255.255.255", PacketUtils.ipToString(byteArrayOf(-1, -1, -1, -1)))
+    }
+
+    @Test
+    fun ipToStringRejectsNonFourByteInput() {
+        assertFailsWith<IllegalArgumentException> { PacketUtils.ipToString(byteArrayOf(1, 2, 3)) }
+        assertFailsWith<IllegalArgumentException> { PacketUtils.ipToString(ByteArray(0)) }
     }
 
     // ---- isWellFormedIpv4L4: explicit malformed cases ----
@@ -123,8 +131,32 @@ class PacketUtilsTest {
         // valid-looking IPv4+TCP length-wise, but TCP data offset < 5 words (invalid)
         val p = ByteArray(40)
         p[0] = 0x45; p[9] = 6
+        p[3] = 40                        // totalLength must pass its own check to reach the dataOffset one
         p[20 + 12] = (3 shl 4).toByte() // data offset = 3 words = 12 bytes (< 20)
         assertFalse(PacketUtils.isWellFormedIpv4L4(p))
+    }
+
+    @Test
+    fun wellFormedRejectsInconsistentTcpTotalLength() {
+        val p = ByteArray(40)
+        p[0] = 0x45; p[9] = 6
+        p[20 + 12] = (5 shl 4).toByte() // data offset = 5 words = 20 bytes
+        p[3] = 30                        // totalLength = 30 < ihl(20) + dataOff(20)
+        assertFalse(PacketUtils.isWellFormedIpv4L4(p))
+        p[3] = 60                        // totalLength beyond the buffer end
+        assertFalse(PacketUtils.isWellFormedIpv4L4(p))
+        p[3] = 40                        // exact fit is accepted
+        assertTrue(PacketUtils.isWellFormedIpv4L4(p))
+    }
+
+    @Test
+    fun wellFormedRejectsUdpWithTruncatedTotalLength() {
+        val p = ByteArray(28)            // 20 IPv4 + 8 UDP
+        p[0] = 0x45; p[9] = 17
+        p[3] = 24                        // totalLength = 24 < ihl(20) + UDP header(8)
+        assertFalse(PacketUtils.isWellFormedIpv4L4(p))
+        p[3] = 28                        // exact fit is accepted
+        assertTrue(PacketUtils.isWellFormedIpv4L4(p))
     }
 
     // ---- isWellFormedIpv4L4: fuzz — must never throw, guards every L4 accessor ----

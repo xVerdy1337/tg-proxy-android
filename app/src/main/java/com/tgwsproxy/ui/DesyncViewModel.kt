@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
+import android.os.Build
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -506,7 +507,12 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                 val pm = getApplication<Application>().packageManager
                 val self = getApplication<Application>().packageName
                 val launchable = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-                val resolved = pm.queryIntentActivities(launchable, 0)
+                val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    pm.queryIntentActivities(launchable, PackageManager.ResolveInfoFlags.of(0L))
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.queryIntentActivities(launchable, 0)
+                }
                 resolved.asSequence()
                     .map { it.activityInfo.packageName }
                     .filter { it != self }

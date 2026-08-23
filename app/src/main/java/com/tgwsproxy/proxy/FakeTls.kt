@@ -27,6 +27,9 @@ object FakeTls {
     private const val CLIENT_RANDOM_LEN = 32
     private const val SESSION_ID_OFFSET = 44
     private const val SESSION_ID_LEN = 32
+    // Replay-tolerance window for the ClientHello timestamp, seconds. Protocol property, not a
+    // tunable: a captured hello stays valid for 120s (needed to absorb clock skew on mobile
+    // devices), and shortening it would break legit clients before it meaningfully hurt replay.
     private const val TIMESTAMP_TOLERANCE = 120
     private const val TLS_APPDATA_MAX = 16384
 

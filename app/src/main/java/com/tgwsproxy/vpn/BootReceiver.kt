@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import androidx.core.content.ContextCompat
+import com.tgwsproxy.service.ProxyService
 
 /**
  * Re-enables the desync VPN after a reboot if it was running before — so the user (or grandma)
@@ -20,6 +21,13 @@ class BootReceiver : BroadcastReceiver() {
         // intentionally drop the unprotected QUICKBOOT_POWERON, which any app could spoof to
         // start the VPN service without the user's involvement.
         if (action != Intent.ACTION_BOOT_COMPLETED) return
+
+        // The proxy never restarts itself on boot, but its KEY_RUNNING flag survives one — reset it
+        // here so the Quick Settings tile doesn't show "running" for a service that isn't.
+        context.getSharedPreferences(ProxyService.PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(ProxyService.KEY_RUNNING, false)
+            .apply()
 
         val wasRunning = context
             .getSharedPreferences(DesyncVpnService.PREFS, Context.MODE_PRIVATE)

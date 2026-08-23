@@ -9,7 +9,7 @@ import java.net.InetSocketAddress
  * One UDP flow (mostly DNS) relayed over a protected [DatagramSocket]. QUIC (UDP:443) is never
  * routed here — the service drops it so apps fall back to TCP/TLS where the desync applies.
  *
- * Kept intentionally simple: one protected socket per (srcPort,dst,dstPort) tuple, a reader thread
+ * Kept intentionally simple: one protected socket per (srcIp,srcPort,dst,dstPort) tuple, a reader thread
  * that pushes replies back into the TUN, and an idle timeout reaped by the service. The socket is
  * pinned to its single peer, because everything it receives is handed to the app as if that peer
  * had sent it.
@@ -53,7 +53,12 @@ class UdpAssociation(
         try { socket.connect(dst) } catch (_: Exception) { close(); return false }
         val dstAddr: InetAddress = dst.address
         tunnel.relayExecutor.execute {
-            val buf = ByteArray(65535)
+            // 65535 is the theoretical UDP max, but everything we deliver must fit through the
+            // MTU-sized TUN (see buildUdp/writeToTun), and one reader buffer is held per live
+            // association — hundreds of idle DNS flows would each pin 64 KiB. 16 KiB is generous
+            // headroom over the MTU and over EDNS-sized DNS (~4 KiB); a rare oversized datagram is
+            // truncated by receive(), which the app's resolver handles like any truncated reply.
+            val buf = ByteArray(16 * 1024)
             try {
                 while (!closed) {
                     val dp = DatagramPacket(buf, buf.size)

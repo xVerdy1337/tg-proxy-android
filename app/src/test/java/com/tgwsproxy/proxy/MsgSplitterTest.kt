@@ -96,6 +96,20 @@ class MsgSplitterTest {
     }
 
     @Test
+    fun abridgedAcceptsTheFFMarkerAsAnExtendedLengthHeader() {
+        // 0xFF takes the same 4-byte long-header branch as 0x7F (1 word = 4 payload bytes).
+        val splitter = MsgSplitter(relayInit, MtProtoConstants.PROTO_ABRIDGED_INT)
+        val plain = byteArrayOf(0xFF.toByte(), 1, 0, 0) + ByteArray(4) { 8 }
+        val cipher = encryptor().update(plain)
+
+        val parts = splitter.split(cipher)
+
+        assertEquals(1, parts.size)
+        assertEquals(8, parts[0].size)
+        assertContentEquals(cipher, parts[0])
+    }
+
+    @Test
     fun abridgedStripsTheQuickAckBitFromShortHeaders() {
         val splitter = MsgSplitter(relayInit, MtProtoConstants.PROTO_ABRIDGED_INT)
         // The high bit marks a quick-ack request; the length lives in the low 7 bits. Reading the

@@ -5,6 +5,8 @@ plugins {
 
 android {
     namespace = "com.tgwsproxy"
+    // compileSdk 35 with AGP 8.2.2 (tested up to 34) is deliberate: AGP emits an "untested
+    // compileSdk" warning, which we accept in exchange for API-35 platform attributes.
     compileSdk = 35
 
     defaultConfig {
@@ -41,10 +43,22 @@ android {
             // isNullOrEmpty: an unset secret arrives as "" (empty), and file("") throws
             // "path may not be null or empty" — treat empty the same as absent (unsigned release).
             if (!ksPath.isNullOrEmpty() && file(ksPath).exists()) {
+                val storePw = System.getenv("KEYSTORE_PASSWORD")
+                val alias = System.getenv("KEY_ALIAS")
+                val keyPw = System.getenv("KEY_PASSWORD")
+                // A keystore that exists while its credentials are missing otherwise surfaces
+                // as a cryptic signing failure deep in the build; fail here with the cause.
+                if (storePw.isNullOrEmpty() || alias.isNullOrEmpty() || keyPw.isNullOrEmpty()) {
+                    gradle.error(
+                        "KEYSTORE_PATH points to an existing keystore, but one or more of " +
+                        "KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD is missing or empty. " +
+                        "Set all four variables, or unset KEYSTORE_PATH for an unsigned release."
+                    )
+                }
                 storeFile = file(ksPath)
-                storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
-                keyPassword = System.getenv("KEY_PASSWORD")
+                storePassword = storePw
+                keyAlias = alias
+                keyPassword = keyPw
             }
         }
     }

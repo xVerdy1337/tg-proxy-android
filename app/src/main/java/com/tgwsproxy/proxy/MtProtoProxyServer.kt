@@ -3,24 +3,29 @@ package com.tgwsproxy.proxy
 import android.content.Context
 import android.os.SystemClock
 import com.tgwsproxy.R
+import com.tgwsproxy.service.LogKind
 import kotlinx.coroutines.*
 import kotlinx.coroutines.selects.select
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 class MtProtoProxyServer(
     private val appContext: Context,
     private val host: String,
     private val port: Int,
     private val secret: String,
-    private val onLog: (String) -> Unit,
+    private val onLog: (String, LogKind) -> Unit,
     private val onConnectionChange: (Int) -> Unit,
     // Optional user-supplied Cloudflare-proxy domain(s), separated by comma / space / semicolon
     // (e.g. "mydomain.com, other.com"). When set they are tried FIRST in the CF fallback, in the
@@ -52,7 +57,13 @@ class MtProtoProxyServer(
      * count must read this instead of trusting the payload.
      */
     val connections: Int get() = connectionCount.get()
-    private val serverScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    // Blocking read()/write() calls pin the thread they run on, so the shared Dispatchers.IO
+    // pool would be drained by a full house of clients (~2-3 parked threads per client x
+    // MAX_CLIENTS, plus the WS race). Give the server its own cached pool instead: threads are
+    // created on demand, reclaimed when idle, and shut down together with the scope in stop().
+    // Both are recreated in start() so the instance stays restartable after stop().
+    private var serverDispatcher = Executors.newCachedThreadPool().asCoroutineDispatcher()
+    private var serverScope = CoroutineScope(serverDispatcher + SupervisorJob())
     private val secretBytes = parseSecret(secret)
 
     // === Live traffic stats (read by the service for the UI) ===
@@ -125,9 +136,23 @@ class MtProtoProxyServer(
 
     fun start() {
         running = true
-        serverSocket = ServerSocket(port, 50, java.net.InetAddress.getByName(host))
+        // Recreate scope + dispatcher: stop() cancels the scope and shuts the pool down, and a
+        // cancelled SupervisorJob would silently drop every coroutine launched after a restart.
+        serverDispatcher = Executors.newCachedThreadPool().asCoroutineDispatcher()
+        serverScope = CoroutineScope(serverDispatcher + SupervisorJob())
+        try {
+            serverSocket = ServerSocket(port, 50, java.net.InetAddress.getByName(host))
+        } catch (e: Exception) {
+            // Bind failed (port busy, bad address): leave no half-started state behind —
+            // undo the fresh scope/dispatcher, clear `running`, and let the caller see it.
+            running = false
+            serverScope.cancel()
+            serverDispatcher.close()
+            onLog("Failed to bind $host:$port: ${e.message}", LogKind.ERROR)
+            throw e
+        }
         serverSocket?.receiveBufferSize = 256 * 1024
-        onLog(appContext.getString(R.string.proxy_listening, host, port))
+        onLog(appContext.getString(R.string.proxy_listening, host, port), LogKind.PLAIN)
 
         while (running) {
             try {
@@ -156,11 +181,14 @@ class MtProtoProxyServer(
                 }
             } catch (e: SocketException) {
                 if (running) {
-                    onLog("Socket error: ${e.message}")
+                    // Listener died without stop() being called — reflect that in `running`
+                    // instead of leaving it stuck at true with no accept loop behind it.
+                    running = false
+                    onLog("Socket error: ${e.message}", LogKind.ERROR)
                 }
                 break
             } catch (e: IOException) {
-                onLog("IO error: ${e.message}")
+                onLog("IO error: ${e.message}", LogKind.WARNING)
             }
         }
     }
@@ -168,11 +196,14 @@ class MtProtoProxyServer(
     fun stop() {
         running = false
         serverScope.cancel()
+        // Shut the dedicated pool down with the scope; start() creates a fresh pair, so the
+        // instance remains restartable.
+        serverDispatcher.close()
         routeCache.clear()
         activeConnections.forEach { try { it.close() } catch (_: Exception) {} }
         activeConnections.clear()
         try { serverSocket?.close() } catch (_: Exception) {}
-        onLog(appContext.getString(R.string.proxy_stopped_log))
+        onLog(appContext.getString(R.string.proxy_stopped_log), LogKind.PLAIN)
     }
 
     /**
@@ -189,7 +220,7 @@ class MtProtoProxyServer(
         // Re-evaluate routes on the new network: an endpoint that worked on Wi-Fi may be
         // blocked on mobile (or vice-versa), so drop the cache and let the next connect race.
         routeCache.clear()
-        if (n > 0) onLog(appContext.getString(R.string.network_changed, n))
+        if (n > 0) onLog(appContext.getString(R.string.network_changed, n), LogKind.PLAIN)
     }
 
     private fun readFully(input: InputStream, n: Int): ByteArray? {
@@ -205,6 +236,17 @@ class MtProtoProxyServer(
 
     private suspend fun handleClient(clientSocket: Socket) {
         val label = clientSocket.inetAddress?.hostAddress ?: "?"
+        // Per-connection observability: one CONN summary line at close instead of per-phase
+        // chatter. Counters are cheap lock-free atomics bumped in the relay hot paths; the
+        // close reason is written from relay coroutines, so it needs the atomic reference.
+        val startTime = System.currentTimeMillis()
+        val connUp = AtomicLong(0)
+        val connDown = AtomicLong(0)
+        val closeReason = AtomicReference("client-gone")
+        var handshakeDone = false
+        var connDcId = 0
+        var connIsMedia = false
+        var route = ""
         try {
             clientSocket.tcpNoDelay = true
             clientSocket.keepAlive = true
@@ -223,29 +265,35 @@ class MtProtoProxyServer(
             // Read the first byte to tell a TLS ClientHello (Fake TLS) from a raw obfs2 init.
             val firstByte = readFully(rawInput, 1)
             if (firstByte == null) {
-                onLog("[$label] disconnected before handshake")
+                onLog("[$label] disconnected before handshake", LogKind.DEBUG)
                 return
             }
 
             val handshake: ByteArray
+            // Fake-TLS detection keys on the TLS record type byte 0x16. A raw obfs2 init starts
+            // with 64 random bytes, so its first byte collides with 0x16 in ~1/256 of cases and
+            // such a connection would be misclassified as Fake TLS. Inherent protocol property,
+            // accepted: when fakeTlsDomain is set clients are expected to use an `ee...` secret,
+            // and a misclassified raw attempt just fails verify and is relayed to the masking
+            // domain (see maskingRelay).
             if (fakeTlsDomain.isNotEmpty() && (firstByte[0].toInt() and 0xFF) == FakeTls.TLS_RECORD_HANDSHAKE) {
                 // --- Fake TLS path ---
                 val hdrRest = readFully(rawInput, 4)
-                if (hdrRest == null) { onLog("[$label] incomplete TLS header"); return }
+                if (hdrRest == null) { onLog("[$label] incomplete TLS header", LogKind.DEBUG); return }
                 val recLen = ((hdrRest[2].toInt() and 0xFF) shl 8) or (hdrRest[3].toInt() and 0xFF)
                 // Cap the pre-auth allocation: a real TLS ClientHello is well under 4 KiB, so reject
                 // anything larger before allocating — stops an unauthenticated peer from forcing a
                 // 64 KiB buffer + HMAC per connection (memory/CPU amplification).
-                if (recLen > MAX_CLIENT_HELLO) { onLog("[$label] TLS record too large ($recLen)"); return }
+                if (recLen > MAX_CLIENT_HELLO) { onLog("[$label] TLS record too large ($recLen)", LogKind.DEBUG); return }
                 val body = readFully(rawInput, recLen)
-                if (body == null) { onLog("[$label] incomplete TLS body"); return }
+                if (body == null) { onLog("[$label] incomplete TLS body", LogKind.DEBUG); return }
                 val clientHello = firstByte + hdrRest + body
 
                 val verified = FakeTls.verifyClientHello(clientHello, secretBytes)
                 if (verified == null) {
                     // Probe / wrong secret — relay to the real masking domain so we look benign.
-                    onLog("[$label] Fake TLS verify failed → masking")
-                    maskingRelay(clientSocket, rawInput, rawOutput, clientHello)
+                    onLog("[$label] Fake TLS verify failed → masking", LogKind.DEBUG)
+                    maskingRelay(clientSocket, rawInput, rawOutput, clientHello, connUp, connDown)
                     return
                 }
 
@@ -257,20 +305,21 @@ class MtProtoProxyServer(
                 clientOutput = FakeTlsOutputStream(rawOutput)
 
                 val inner = readFully(clientInput, MtProtoConstants.HANDSHAKE_LEN)
-                if (inner == null) { onLog("[$label] incomplete obfs2 init inside TLS"); return }
+                if (inner == null) { onLog("[$label] incomplete obfs2 init inside TLS", LogKind.DEBUG); return }
                 handshake = inner
-                onLog("[$label] Fake TLS handshake ok")
+                // Per-connection noise: the HANDSHAKE line below already marks every real session.
+                onLog("[$label] Fake TLS handshake ok", LogKind.DEBUG)
             } else {
                 // --- Raw obfuscated2 path: first byte + remaining 63. ---
                 val rest = readFully(rawInput, MtProtoConstants.HANDSHAKE_LEN - 1)
-                if (rest == null) { onLog("[$label] disconnected before handshake"); return }
+                if (rest == null) { onLog("[$label] disconnected before handshake", LogKind.DEBUG); return }
                 handshake = firstByte + rest
             }
 
             // Try handshake
             val result = MtProtoHandshake.tryHandshake(handshake, secretBytes)
             if (result == null) {
-                onLog("[$label] bad handshake (wrong secret or proto)")
+                onLog("[$label] bad handshake (wrong secret or proto)", LogKind.DEBUG)
                 // Bad handshake: close immediately. Do NOT skip() — reading from a silent peer
                 // could block forever (DoS); the finally block closes the socket.
                 return
@@ -285,7 +334,11 @@ class MtProtoProxyServer(
             }
 
             val dcIdx = if (result.isMedia) -result.dcId else result.dcId
-            onLog("[$label] handshake ok: DC${result.dcId}${if (result.isMedia) " media" else ""} proto=0x${protoInt.toString(16)}")
+            onLog("[$label] handshake ok: DC${result.dcId}${if (result.isMedia) " media" else ""} proto=0x${protoInt.toString(16)}", LogKind.HANDSHAKE)
+            // Session identity for the CONN summary logged in finally.
+            connDcId = result.dcId
+            connIsMedia = result.isMedia
+            handshakeDone = true
 
             // relayInit is the TELEGRAM-side obfuscation header — sent to Telegram only.
             val relayInit = MtProtoHandshake.generateRelayInit(result.protoTag, dcIdx)
@@ -300,29 +353,55 @@ class MtProtoProxyServer(
             val wsConn = connectAnyWs(result.dcId, result.isMedia, label)
 
             if (wsConn == null) {
-                onLog("[$label] WS connection failed, trying TCP fallback")
+                onLog("[$label] WS connection failed, trying TCP fallback", LogKind.WARNING)
                 val fallbackIp = dcDefaultIps[result.dcId] ?: dcDefaultIps[2]!!
-                val fallbackOk = tcpFallback(clientSocket, clientInput, clientOutput, cryptoCtx, relayInit, fallbackIp)
+                route = "tcp"
+                val fallbackOk = tcpFallback(clientSocket, clientInput, clientOutput, cryptoCtx, relayInit, fallbackIp, connUp, connDown, closeReason)
                 if (!fallbackOk) {
-                    onLog("[$label] TCP fallback failed")
+                    onLog("[$label] TCP fallback failed", LogKind.ERROR)
                 }
                 return
             }
 
             val (bridge, candidate) = wsConn
+            route = "ws"
 
             // Hand Telegram the relay obfuscation init as the very first WS frame.
-            bridge.send(relayInit)
+            // Fail fast if it can't be enqueued: the session is useless without it and the
+            // finally block would otherwise only close the socket after a pointless wait.
+            if (!bridge.send(relayInit)) {
+                onLog("[$label] WS bridge closed before relay init — dropping client", LogKind.WARNING)
+                try { bridge.close() } catch (_: Exception) {}
+                return
+            }
 
-            bridgeData(clientSocket, clientInput, clientOutput, bridge, cryptoCtx, relayInit, protoInt, label, result.dcId, result.isMedia, candidate)
+            bridgeData(clientSocket, clientInput, clientOutput, bridge, cryptoCtx, relayInit, protoInt, label, result.dcId, result.isMedia, candidate, connUp, connDown, closeReason)
 
+        } catch (e: CancellationException) {
+            // Never swallow cancellation — it is how stop()/resetConnections() tears sessions down.
+            throw e
         } catch (e: Exception) {
-            onLog("[$label] error: ${e.message}")
+            closeReason.compareAndSet("client-gone", "error:${e.message}")
+            onLog("[$label] error: ${e.message}", LogKind.ERROR)
         } finally {
             try { clientSocket.close() } catch (_: Exception) {}
             activeConnections.remove(clientSocket)
             val count = connectionCount.decrementAndGet()
             onConnectionChange(count)
+            // One summary per real session — the entry point for media-connection diagnostics.
+            // Connections that died before the handshake are probes/scans; their per-phase
+            // lines above are DEBUG noise and get no summary.
+            if (handshakeDone) {
+                val up = connUp.get()
+                val down = connDown.get()
+                val durSec = (System.currentTimeMillis() - startTime) / 1000.0
+                val arrow = if (down >= up) "↓" else "↑"
+                onLog(
+                    "[#$label] DC$connDcId${if (connIsMedia) " media" else ""} ${route.ifEmpty { "?" }} " +
+                        "${formatBytes(up + down)} $arrow ${"%.1f".format(durSec)} s — closed: ${closeReason.get()}",
+                    LogKind.CONN
+                )
+            }
         }
     }
 
@@ -334,10 +413,16 @@ class MtProtoProxyServer(
         clientSocket: Socket,
         clientInput: InputStream,
         clientOutput: OutputStream,
-        initialData: ByteArray
+        initialData: ByteArray,
+        connUp: AtomicLong,
+        connDown: AtomicLong
     ) {
         try {
-            val up = Socket(fakeTlsDomain, 443)
+            // Relaying ANY TLS-looking ClientHello (probe or wrong secret) to the real masking
+            // domain is a deliberate part of the camouflage: a censor's active probe gets a
+            // genuine HTTPS session with the legit site, indistinguishable from a normal server.
+            // Bounded connect so a dead/unreachable masking domain can't pin this coroutine.
+            val up = Socket().apply { connect(InetSocketAddress(fakeTlsDomain, 443), UPSTREAM_CONNECT_TIMEOUT_MS) }
             try {
                 up.tcpNoDelay = true
                 up.soTimeout = RELAY_IO_TIMEOUT_MS
@@ -351,6 +436,7 @@ class MtProtoProxyServer(
                         val b = ByteArray(16384)
                         while (!clientSocket.isClosed) {
                             val r = clientInput.read(b); if (r <= 0) break
+                            connUp.addAndGet(r.toLong())
                             upOut.write(b, 0, r); upOut.flush()
                         }
                     } catch (_: Exception) {}
@@ -360,6 +446,7 @@ class MtProtoProxyServer(
                         val b = ByteArray(16384)
                         while (!up.isClosed) {
                             val r = upIn.read(b); if (r <= 0) break
+                            connDown.addAndGet(r.toLong())
                             clientOutput.write(b, 0, r); clientOutput.flush()
                         }
                     } catch (_: Exception) {}
@@ -378,6 +465,19 @@ class MtProtoProxyServer(
             }
         } catch (_: Exception) {}
     }
+
+    /** Human-readable byte total for the CONN summary line. */
+    private fun formatBytes(b: Long): String = when {
+        b >= 1L shl 30 -> "%.1f GB".format(b.toDouble() / (1L shl 30))
+        b >= 1L shl 20 -> "%.1f MB".format(b.toDouble() / (1L shl 20))
+        b >= 1L shl 10 -> "%.1f KB".format(b.toDouble() / (1L shl 10))
+        else -> "$b B"
+    }
+
+    // Map a relay-loop failure to a close cause for the CONN summary: SO_TIMEOUT means the
+    // peer went silent mid-session; anything else keeps its message for diagnosis.
+    private fun classifyRelayError(e: Exception): String =
+        if (e is SocketTimeoutException) "timeout" else "error:${e.message ?: e.javaClass.simpleName}"
 
     private data class WsCandidate(val pinnedIp: String?, val host: String, val kind: String, val path: String = "/apiws")
 
@@ -401,7 +501,7 @@ class MtProtoProxyServer(
             val ok = try { b.connect(cached.pinnedIp, cached.host, cached.path) } catch (_: Exception) { false }
             if (ok) {
                 lastRoute = cached.kind
-                onLog("[$label] WS reconnected via ${cached.host} (${cached.kind}, cached)")
+                onLog("[$label] WS reconnected via ${cached.host} (${cached.kind}, cached)", LogKind.WS)
                 return Pair(b, cached)
             }
             try { b.close() } catch (_: Exception) {}
@@ -424,10 +524,10 @@ class MtProtoProxyServer(
         // within a second, so we open ~2-3 TLS handshakes instead of ~18 — a big radio/CPU saver,
         // especially when a network switch forces every session to redial at once. Only if the
         // direct wave fails do we fall back to racing the full Cloudflare pool (wave 2).
-        onLog("[$label] connecting WS: ${directCandidates.size} direct endpoints")
+        onLog("[$label] connecting WS: ${directCandidates.size} direct endpoints", LogKind.WS)
         raceCandidates(directCandidates, WS_WAVE_TIMEOUT_MS, label)?.let { return it }
 
-        onLog("[$label] direct failed — racing ${cfCandidates.size} Cloudflare endpoints")
+        onLog("[$label] direct failed — racing ${cfCandidates.size} Cloudflare endpoints", LogKind.CLOUDFLARE)
         raceCandidates(cfCandidates, WS_RACE_TIMEOUT_MS, label)?.let { return it }
 
         // Extra tier: user-deployed Cloudflare Worker(s). Each relays a WebSocket to the RAW DC
@@ -442,7 +542,7 @@ class MtProtoProxyServer(
                     WsCandidate(null, worker, "cf_worker", "/apiws?dst=$dcIp&dc=$dcId")
                 )
             }
-            onLog("[$label] Cloudflare failed — racing ${workerCandidates.size} CF Worker endpoint(s)")
+            onLog("[$label] Cloudflare failed — racing ${workerCandidates.size} CF Worker endpoint(s)", LogKind.CLOUDFLARE)
             return raceCandidates(workerCandidates, WS_RACE_TIMEOUT_MS, label)
         }
         return null
@@ -475,7 +575,7 @@ class MtProtoProxyServer(
                 val ok = try { b.connect(c.pinnedIp, c.host, c.path) } catch (_: Exception) { false }
                 if (ok && winner.complete(Pair(b, c))) {
                     lastRoute = c.kind
-                    onLog("[$label] WS connected via ${c.host} (${c.kind})")
+                    onLog("[$label] WS connected via ${c.host} (${c.kind})", LogKind.WS)
                 } else {
                     try { b.close() } catch (_: Exception) {}
                 }
@@ -529,14 +629,16 @@ class MtProtoProxyServer(
         label: String,
         dc: Int,
         isMedia: Boolean,
-        candidate: WsCandidate
+        candidate: WsCandidate,
+        connUp: AtomicLong,
+        connDown: AtomicLong,
+        closeReason: AtomicReference<String>
     ) {
         val splitter = try { MsgSplitter(relayInit, protoInt) } catch (_: Exception) { null }
         val cacheKey = "$dc/$isMedia"
 
-        // Per-connection traffic, used to decide whether this route actually works.
-        val localUp = AtomicLong(0)
-        val localDown = AtomicLong(0)
+        // Per-connection traffic lives in the caller's counters: the same numbers feed the
+        // stall watchdog below and the CONN summary logged by handleClient when we return.
         // When the last byte moved in each direction. uptimeMillis (not wall clock, not
         // elapsedRealtime) because it is the same monotonic clock delay() runs on and, like
         // delay(), it stops during deep sleep — so a doze period cannot be mistaken for silence.
@@ -613,7 +715,7 @@ class MtProtoProxyServer(
         val watchdog = serverScope.async {
             try {
                 kotlinx.coroutines.delay(STALL_FIRST_BYTE_MS)
-                var stalled = localDown.get() == 0L && localUp.get() > 0L &&
+                var stalled = connDown.get() == 0L && connUp.get() > 0L &&
                     wsBridge.queueSize() == 0L
                 var confirmations = 0
                 // Silence is measured from the later of the last byte back and the last poll that
@@ -646,7 +748,10 @@ class MtProtoProxyServer(
                     stalled = confirmations >= STALL_CONFIRMATIONS
                 }
                 routeCache.remove(cacheKey)
-                onLog("[$label] route stalled (no data back) — dropping & reconnecting")
+                // Set the cause BEFORE closing the sockets: the relay loops fail on the closed
+                // sockets right after, and only the first reason wins the compareAndSet.
+                closeReason.compareAndSet("client-gone", "watchdog")
+                onLog("[$label] route stalled (no data back) — dropping & reconnecting", LogKind.WARNING)
                 try { wsBridge.close() } catch (_: Exception) {}
                 try { clientSocket.close() } catch (_: Exception) {}
             } catch (_: Exception) {}
@@ -655,13 +760,16 @@ class MtProtoProxyServer(
         val clientToWs = serverScope.async {
             try {
                 val buffer = ByteArray(65536)
-                while (running && clientSocket.isConnected && !clientSocket.isClosed) {
+                // isConnected only means "connect() once succeeded" — it stays true past the
+                // peer's disconnect, so it can't guard the loop; !isClosed and the read result can.
+                while (running && !clientSocket.isClosed) {
                     val read = clientInput.read(buffer)
                     if (read <= 0) {
                         splitter?.flush()?.forEach { wsBridge.send(it) }
+                        closeReason.compareAndSet("client-gone", "peer") // clean EOF from the client
                         break
                     }
-                    localUp.addAndGet(read.toLong())
+                    connUp.addAndGet(read.toLong())
                     lastUpAt.set(SystemClock.uptimeMillis())
                     bytesUp.addAndGet(read.toLong())
                     val chunk = buffer.copyOfRange(0, read)
@@ -673,21 +781,33 @@ class MtProtoProxyServer(
                         for (p in parts) {
                             if (!wsBridge.send(p)) { ok = false; break }
                         }
-                        if (!ok) break
+                        if (!ok) {
+                            closeReason.compareAndSet("client-gone", "peer") // upstream stopped accepting
+                            break
+                        }
                     } else {
-                        if (!wsBridge.send(reenc)) break
+                        if (!wsBridge.send(reenc)) {
+                            closeReason.compareAndSet("client-gone", "peer") // upstream stopped accepting
+                            break
+                        }
                     }
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                // Watchdog/stop() close the sockets under us; only a live socket's failure is a cause.
+                if (!clientSocket.isClosed) closeReason.compareAndSet("client-gone", classifyRelayError(e))
             }
         }
 
         val wsToClient = serverScope.async {
             try {
-                while (running && clientSocket.isConnected && !clientSocket.isClosed) {
-                    val data = wsBridge.receive() ?: break
+                while (running && !clientSocket.isClosed) {
+                    val data = wsBridge.receive()
+                    if (data == null) {
+                        closeReason.compareAndSet("client-gone", "peer") // upstream EOF
+                        break
+                    }
                     // First bytes back prove the route carries Telegram traffic → cache it.
-                    if (localDown.getAndAdd(data.size.toLong()) == 0L) {
+                    if (connDown.getAndAdd(data.size.toLong()) == 0L) {
                         routeCache[cacheKey] = candidate
                     }
                     lastDownAt.set(SystemClock.uptimeMillis())
@@ -697,7 +817,9 @@ class MtProtoProxyServer(
                     clientOutput.write(encrypted)
                     clientOutput.flush()
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                // Watchdog/stop() close the sockets under us; only a live socket's failure is a cause.
+                if (!clientSocket.isClosed) closeReason.compareAndSet("client-gone", classifyRelayError(e))
             }
         }
 
@@ -709,11 +831,14 @@ class MtProtoProxyServer(
             try { clientSocket.close() } catch (_: Exception) {}
             wsBridge.close()
             clientToWs.cancel(); wsToClient.cancel()
+        } catch (e: CancellationException) {
+            // Never swallow cancellation — it is how stop()/resetConnections() tears sessions down.
+            throw e
         } catch (_: Exception) {
         } finally {
             watchdog.cancel()
             wsBridge.close()
-            onLog("[$label] DC${dc}${if (isMedia) "m" else ""} session closed")
+            // No per-session log here: handleClient emits the single CONN summary line.
         }
     }
 
@@ -723,10 +848,15 @@ class MtProtoProxyServer(
         clientOutput: OutputStream,
         ctx: CryptoContext,
         relayInit: ByteArray,
-        targetIp: String
+        targetIp: String,
+        connUp: AtomicLong,
+        connDown: AtomicLong,
+        closeReason: AtomicReference<String>
     ): Boolean {
         return try {
-            val remoteSocket = Socket(targetIp, 443)
+            // Socket(host, port) blocks in connect() with no timeout — a blackholed DC IP would
+            // pin the coroutine for the full kernel SYN timeout. Bound it explicitly.
+            val remoteSocket = Socket().apply { connect(InetSocketAddress(targetIp, 443), UPSTREAM_CONNECT_TIMEOUT_MS) }
             try {
                 remoteSocket.tcpNoDelay = true
                 remoteSocket.keepAlive = true
@@ -742,7 +872,11 @@ class MtProtoProxyServer(
                         val buffer = ByteArray(65536)
                         while (running && !clientSocket.isClosed) {
                             val read = clientInput.read(buffer)
-                            if (read <= 0) break
+                            if (read <= 0) {
+                                closeReason.compareAndSet("client-gone", "peer") // clean EOF from the client
+                                break
+                            }
+                            connUp.addAndGet(read.toLong())
                             bytesUp.addAndGet(read.toLong())
                             val chunk = buffer.copyOfRange(0, read)
                             val plain = ctx.cltDecryptor.update(chunk)
@@ -750,7 +884,11 @@ class MtProtoProxyServer(
                             remoteOutput.write(reenc)
                             remoteOutput.flush()
                         }
-                    } catch (_: Exception) {}
+                    } catch (e: Exception) {
+                        // Sockets closed under us (stop()/watchdog) carry no information.
+                        if (!clientSocket.isClosed && !remoteSocket.isClosed)
+                            closeReason.compareAndSet("client-gone", classifyRelayError(e))
+                    }
                 }
 
                 val remoteToClient = serverScope.async {
@@ -758,7 +896,11 @@ class MtProtoProxyServer(
                         val buffer = ByteArray(65536)
                         while (running && !remoteSocket.isClosed) {
                             val read = remoteInput.read(buffer)
-                            if (read <= 0) break
+                            if (read <= 0) {
+                                closeReason.compareAndSet("client-gone", "peer") // upstream EOF
+                                break
+                            }
+                            connDown.addAndGet(read.toLong())
                             bytesDown.addAndGet(read.toLong())
                             val chunk = buffer.copyOfRange(0, read)
                             val plain = ctx.tgDecryptor.update(chunk)
@@ -766,7 +908,11 @@ class MtProtoProxyServer(
                             clientOutput.write(encrypted)
                             clientOutput.flush()
                         }
-                    } catch (_: Exception) {}
+                    } catch (e: Exception) {
+                        // Sockets closed under us (stop()/watchdog) carry no information.
+                        if (!clientSocket.isClosed && !remoteSocket.isClosed)
+                            closeReason.compareAndSet("client-gone", classifyRelayError(e))
+                    }
                 }
 
                 select<Unit> {
@@ -780,8 +926,11 @@ class MtProtoProxyServer(
             } finally {
                 try { remoteSocket.close() } catch (_: Exception) {}
             }
+        } catch (e: CancellationException) {
+            // Never swallow cancellation — it is how stop()/resetConnections() tears sessions down.
+            throw e
         } catch (e: Exception) {
-            onLog("TCP fallback error: ${e.message}")
+            onLog("TCP fallback error: ${e.message}", LogKind.ERROR)
             false
         }
     }
@@ -818,6 +967,9 @@ class MtProtoProxyServer(
         // to this DC. 90s + 2 x 15s means a route that dies mid-session is dropped ~2 min in,
         // while the common dead-on-arrival case is already caught at 9s.
         const val STALL_CONFIRMATIONS = 2
+        // Connect timeout for raw upstream dials (TCP fallback DC, masking-relay domain).
+        // Short: both are best-effort/last-resort paths and a dead target must fail fast.
+        const val UPSTREAM_CONNECT_TIMEOUT_MS = 5_000
         // Idle I/O timeout on the benign masking relay so a silent peer can't hang it forever.
         const val RELAY_IO_TIMEOUT_MS = 15_000
         // Max accepted Fake-TLS ClientHello record length — bounds the pre-auth allocation.
@@ -833,6 +985,12 @@ class MtProtoProxyServer(
             require(hex.isNotEmpty() && hex.length % 2 == 0 &&
                 hex.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }) {
                 "Invalid secret: expected an even-length hex string"
+            }
+            // 32 hex chars = 16-byte base secret; 34 = 17 bytes with a dd/ee prefix byte.
+            // Anything else decodes to a key of the wrong size and fails much later and
+            // much more obscurely (HMAC/AES with a bad key length), so reject it here.
+            require(hex.length == 32 || hex.length == 34) {
+                "Invalid secret: expected 32 or 34 hex characters, got ${hex.length}"
             }
             return hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
         }

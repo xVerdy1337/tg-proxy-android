@@ -8,16 +8,10 @@ import org.junit.Test
 
 class DesyncEngineTest {
 
-    /** Build a minimal but structurally-valid TLS ClientHello carrying an SNI for [host]. */
-    private fun clientHello(host: String): ByteArray {
-        val h = host.toByteArray(Charsets.US_ASCII)
-        fun be16(v: Int) = byteArrayOf(((v ushr 8) and 0xFF).toByte(), (v and 0xFF).toByte())
+    private fun be16(v: Int) = byteArrayOf(((v ushr 8) and 0xFF).toByte(), (v and 0xFF).toByte())
 
-        val nameEntry = byteArrayOf(0x00) + be16(h.size) + h          // host_name type + len + host
-        val sniList = be16(nameEntry.size) + nameEntry
-        val extSni = be16(0x0000) + be16(sniList.size) + sniList
-        val extDummy = be16(0x002b) + be16(2) + byteArrayOf(0x03, 0x04) // a second ext before SNI
-        val exts = extDummy + extSni
+    /** Assemble a minimal but structurally-valid ClientHello record around a ready extensions block. */
+    private fun clientHelloWithExts(exts: ByteArray): ByteArray {
         val extBlock = be16(exts.size) + exts
 
         var body = byteArrayOf(0x03, 0x03) + ByteArray(32) { 0x11 }   // version + random
@@ -32,6 +26,16 @@ class DesyncEngineTest {
             ((hsLen ushr 8) and 0xFF).toByte(),
             (hsLen and 0xFF).toByte()) + body
         return byteArrayOf(0x16, 0x03, 0x01) + be16(handshake.size) + handshake
+    }
+
+    /** Build a minimal but structurally-valid TLS ClientHello carrying an SNI for [host]. */
+    private fun clientHello(host: String): ByteArray {
+        val h = host.toByteArray(Charsets.US_ASCII)
+        val nameEntry = byteArrayOf(0x00) + be16(h.size) + h          // host_name type + len + host
+        val sniList = be16(nameEntry.size) + nameEntry
+        val extSni = be16(0x0000) + be16(sniList.size) + sniList
+        val extDummy = be16(0x002b) + be16(2) + byteArrayOf(0x03, 0x04) // a second ext before SNI
+        return clientHelloWithExts(extDummy + extSni)
     }
 
     @Test
@@ -79,12 +83,44 @@ class DesyncEngineTest {
     }
 
     @Test
-    fun disorderEmitsSecondSegmentFirst() {
-        val ch = clientHello("instagram.com")
-        val split = DesyncEngine.plan(ch, DesyncEngine.Method.SPLIT)
-        val dis = DesyncEngine.plan(ch, DesyncEngine.Method.DISORDER)
-        assertArrayEquals(split.chunks[0], dis.chunks[1])
-        assertArrayEquals(split.chunks[1], dis.chunks[0])
+    fun tlsRecFragmentsRefuseBoundarySplits() {
+        val ch = clientHello("discord.com")
+        // splitAt <= 5 would leave the first record's payload empty, >= size the second's:
+        // there is nothing to fragment, so the record must come back untouched.
+        for (bad in listOf(0, 5, ch.size, ch.size + 1)) {
+            val recs = DesyncEngine.tlsRecordFragments(ch, bad)
+            assertEquals(1, recs.size)
+            assertArrayEquals(ch, recs[0])
+        }
+    }
+
+    @Test
+    fun validClientHelloWithoutSniIsLeftUnchanged() {
+        val extDummy = be16(0x002b) + be16(2) + byteArrayOf(0x03, 0x04)
+        val ch = clientHelloWithExts(extDummy)
+        assertTrue(DesyncEngine.isClientHello(ch))
+        assertNull(DesyncEngine.sniHostnameOffset(ch))
+        for (m in DesyncEngine.Method.values()) {
+            val plan = DesyncEngine.plan(ch, m)
+            assertEquals(1, plan.chunks.size)
+            assertArrayEquals(ch, plan.chunks[0])
+        }
+    }
+
+    @Test
+    fun sniHostnameOverrunningItsOwnExtensionIsRejected() {
+        // name_len claims 10 bytes but only 3 fit before the extension body ends; the padding
+        // extension after it makes the RECORD long enough that a bounds check against data.size
+        // (instead of the extension end) would accept the walk and split inside the padding.
+        val nameEntry = byteArrayOf(0x00) + be16(10) + "abc".toByteArray(Charsets.US_ASCII)
+        val sniList = be16(nameEntry.size) + nameEntry
+        val extSni = be16(0x0000) + be16(sniList.size) + sniList
+        val extPad = be16(0x0015) + be16(12) + ByteArray(12)
+        val ch = clientHelloWithExts(extSni + extPad)
+        assertNull(DesyncEngine.sniHostnameOffset(ch))
+        val plan = DesyncEngine.plan(ch, DesyncEngine.Method.SPLIT)
+        assertEquals(1, plan.chunks.size)
+        assertArrayEquals(ch, plan.chunks[0])
     }
 
     @Test

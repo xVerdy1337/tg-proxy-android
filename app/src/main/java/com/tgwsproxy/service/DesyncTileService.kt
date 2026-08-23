@@ -8,6 +8,7 @@ import android.net.VpnService
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
+import android.util.Log
 import com.tgwsproxy.MainActivity
 import com.tgwsproxy.R
 import com.tgwsproxy.vpn.DesyncVpnService
@@ -52,7 +53,11 @@ class DesyncTileService : TileService() {
             }
         } else {
             val start = Intent(this, DesyncVpnService::class.java).apply { action = DesyncVpnService.ACTION_START }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(start) else startService(start)
+            // A failed start would otherwise crash the tile process; the tile re-syncs from real
+            // state via requestListeningState() on the next persistRunning().
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(start) else startService(start)
+            }.onFailure { Log.w("DesyncTileService", "Failed to start DesyncVpnService from tile", it) }
         }
     }
 

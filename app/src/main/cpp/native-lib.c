@@ -2,8 +2,6 @@
 
 #include <jni.h>
 #include <getopt.h>
-#include <signal.h>
-#include <setjmp.h>
 #include <stdlib.h>
 
 #include "byedpi/error.h"
@@ -94,8 +92,18 @@ Java_com_tgwsproxy_core_ByeDpiProxy_jniStartProxy(JNIEnv *env, __attribute__((un
     clear_server_fd();
     unsigned generation = __atomic_add_fetch(&g_proxy_generation, 1u, __ATOMIC_SEQ_CST);
 
+    // A NULL args array only reaches here from a caller bug; GetArrayLength on NULL is UB, so
+    // refuse before touching it.
+    if (!args) {
+        LOG(LOG_S, "args array is null");
+        __atomic_store_n(&g_proxy_running, 0, __ATOMIC_SEQ_CST);
+        return -1;
+    }
+
     int argc = (*env)->GetArrayLength(env, args);
-    char **argv = calloc(argc, sizeof(char *));
+    // argc + 1 so argv[argc] stays NULL per the POSIX convention: byedpi stops at argc, but any
+    // code that scans argv to the NULL terminator would read past the allocation otherwise.
+    char **argv = calloc(argc + 1, sizeof(char *));
 
     if (!argv) {
         LOG(LOG_S, "failed to allocate memory for argv");
@@ -105,22 +113,56 @@ Java_com_tgwsproxy_core_ByeDpiProxy_jniStartProxy(JNIEnv *env, __attribute__((un
         return BYEDPI_ARGV_OOM;
     }
 
+    // Any failure in this loop must abort the whole start, not leave a hole in argv: a NULL
+    // entry goes straight into main()/getopt_long and dereferences as a segfault. A pending JNI
+    // exception additionally forbids arbitrary JNI calls, so check for and clear it before
+    // unwinding (ExceptionCheck/ExceptionClear/DeleteLocalRef are legal with one pending).
+    int marshal_failed = 0;
     for (int i = 0; i < argc; i++) {
         jstring arg = (jstring) (*env)->GetObjectArrayElement(env, args, i);
-
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            if (arg) (*env)->DeleteLocalRef(env, arg);
+            marshal_failed = 1;
+            break;
+        }
         if (!arg) {
-            argv[i] = NULL;
-            continue;
+            marshal_failed = 1;
+            break;
         }
 
         const char *arg_str = (*env)->GetStringUTFChars(env, arg, 0);
-        argv[i] = arg_str ? strdup(arg_str) : NULL;
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            (*env)->DeleteLocalRef(env, arg);
+            marshal_failed = 1;
+            break;
+        }
+        if (!arg_str) {
+            (*env)->DeleteLocalRef(env, arg);
+            marshal_failed = 1;
+            break;
+        }
 
-        if (arg_str) (*env)->ReleaseStringUTFChars(env, arg, arg_str);
-
+        argv[i] = strdup(arg_str);
+        (*env)->ReleaseStringUTFChars(env, arg, arg_str);
         (*env)->DeleteLocalRef(env, arg);
+
+        if (!argv[i]) {
+            marshal_failed = 1;
+            break;
+        }
     }
-    
+
+    if (marshal_failed) {
+        LOG(LOG_S, "failed to marshal args");
+        for (int i = 0; i < argc; i++) free(argv[i]);
+        free(argv);
+        // Same as the calloc failure above: main() never runs, so give the gate back here.
+        __atomic_store_n(&g_proxy_running, 0, __ATOMIC_SEQ_CST);
+        return -1;
+    }
+
     LOG(LOG_S, "starting proxy with %d args", argc);
     reset_params();
     optind = 1;
@@ -174,15 +216,19 @@ Java_com_tgwsproxy_core_ByeDpiProxy_jniStopProxy(__attribute__((unused)) JNIEnv 
     }
 
     // The flag alone is not proof of a listener: it is raised before main() even parses argv, so a
-    // run that bails on a bad command leaves us here with no socket to shut down.
-    int fd = __atomic_load_n(&server_fd, __ATOMIC_SEQ_CST);
+    // run that bails on a bad command leaves us here with no socket to shut down. Take and
+    // invalidate the descriptor in a single exchange: between a plain load and the shutdown() the
+    // event pool could close the fd and the kernel reissue the number to an unrelated socket,
+    // which we would then shut down (the TOCTOU jniForceClose already guards this way).
+    // shutdown() does not free the descriptor — the pool's own close() still owns that — and
+    // destroy_pool() never reads server_fd, so invalidating here cannot double-close; it only
+    // turns a later jniForceClose into a harmless no-op.
+    int fd = __atomic_exchange_n(&server_fd, -1, __ATOMIC_SEQ_CST);
     if (fd <= 0) {
         LOG(LOG_S, "no listening socket to shut down");
         return -1;
     }
 
-    // Deliberately not invalidating: shutdown() only unblocks accept(), the descriptor stays owned
-    // by the event pool, and callers escalate to jniForceClose if the loop does not unwind in time.
     shutdown(fd, SHUT_RDWR);
     return 0;
 }

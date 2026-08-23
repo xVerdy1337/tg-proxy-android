@@ -187,6 +187,23 @@ class FakeTlsTest {
     }
 
     @Test
+    fun serverHelloUsesAFreshKeySharePerHello() {
+        // The key_share pubkey (offset 89) must be freshly random per hello — a static template
+        // value would make every session fingerprintable.
+        val secret = ByteArray(16) { (it + 1).toByte() }
+        val clientRandom = ByteArray(32) { (it * 3).toByte() }
+        val sessionId = ByteArray(32) { (it + 11).toByte() }
+
+        val first = FakeTls.buildServerHello(secret, clientRandom, sessionId)
+        val second = FakeTls.buildServerHello(secret, clientRandom, sessionId)
+
+        assertTrue(
+            !first.copyOfRange(89, 121).contentEquals(second.copyOfRange(89, 121)),
+            "key_share pubkey must differ between hellos"
+        )
+    }
+
+    @Test
     fun inputStreamEndsTheStreamOnANonAppDataRecord() {
         // A TLS alert (or anything else) means the session is over. Treating it as payload would
         // splice record bytes into the obfuscated2 stream and desynchronise the keystream.

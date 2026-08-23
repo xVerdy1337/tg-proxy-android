@@ -5,6 +5,7 @@
     <string name="proxy_stopped">Прокси остановлен</string>
     <string name="proxy_notification_title">Jevio Unblocker включён</string>
     <string name="proxy_notification_text">Telegram разблокирован — нажми, чтобы открыть</string>
+    <string name="proxy_notification_channel_name">Jevio Unblocker</string>
     <string name="proxy_notification_channel_desc">Статус работы прокси Jevio Unblocker</string>
     <string name="notification_disable">Отключить</string>
     <string name="connect_telegram">Подключить Telegram</string>
@@ -43,6 +44,9 @@
     <string name="tab_sites">Сайты</string>
     <string name="hide_logs">Скрыть логи</string>
     <string name="show_logs">Показать логи</string>
+    <string name="log_filter_all">Все</string>
+    <string name="log_filter_connections">Соединения</string>
+    <string name="log_filter_problems">Проблемы</string>
     <string name="state_stopping">Остановка…</string>
     <string name="state_starting">Запуск…</string>
     <string name="state_active">Активен</string>

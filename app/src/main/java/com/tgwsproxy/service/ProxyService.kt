@@ -41,10 +41,11 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Colour role of a log line, decided once — when the line is created. The log pane draws the whole
- * (200-line capped) log as a single list item, so deriving this in composition meant re-scanning
- * every line for seven keywords on every arriving line.
+ * (300-line capped) log as a single list item, so deriving this in composition meant re-scanning
+ * every line for seven keywords on every arriving line. MtProtoProxyServer reports the kind
+ * explicitly through its onLog callback; [classifyLog] only guesses for our own string-only calls.
  */
-enum class LogKind { ERROR, WARNING, HANDSHAKE, FAKE_TLS, CLOUDFLARE, WS, PLAIN }
+enum class LogKind { ERROR, WARNING, HANDSHAKE, FAKE_TLS, CLOUDFLARE, WS, PLAIN, DEBUG, CONN }
 
 /**
  * One log line plus what the UI needs to draw and track it. [seq] never repeats, which is the only
@@ -78,6 +79,13 @@ class ProxyService : Service() {
         const val KEY_SECRET = "proxy_secret"
         // Shared with ProxyTileService so the Quick Settings tile reflects live state.
         const val KEY_RUNNING = "proxy_running"
+
+        /**
+         * Cap on the on-screen log buffer. The pane draws the whole list as a single item, so this
+         * bounds both memory and the recomposition cost of every appended line; 300 instead of 200
+         * because repeat-collapsing in addLog keeps the extra entries useful rather than flooded.
+         */
+        private const val MAX_LOG_LINES = 300
 
         const val DEFAULT_HOST = "127.0.0.1"
         const val DEFAULT_PORT = 1443
@@ -161,6 +169,21 @@ class ProxyService : Service() {
 
     /** Only ever increases; see [LogLine.seq]. */
     private val logSeq = AtomicLong(0)
+
+    /**
+     * Repeat-collapse state, guarded by [logMergeGate]. The proxy floods identical lines on
+     * reconnect loops, and each one used to push a real entry into the capped buffer, burying
+     * anything interesting within seconds. Instead of appending, a repeat rewrites the previous
+     * entry in place with a " ×N" suffix — see [addLog]. [lastLogBaseText] keeps the entry's
+     * original timestamped text so the suffix replaces the old one instead of stacking on it, and
+     * [lastLogEntrySeq] anchors the merge to a specific entry so a clearLogs() that raced a flood
+     * cannot glue a repeat onto an unrelated line.
+     */
+    private val logMergeGate = Any()
+    private var lastRawLogLine: String? = null
+    private var lastLogBaseText = ""
+    private var lastLogEntrySeq = 0L
+    private var lastLogRepeat = 0
 
     // True while the UI is bound to us. The 1s stats pump is only useful when someone is
     // actually watching the screen; when the app is closed we poll far less often to avoid
@@ -368,6 +391,12 @@ class ProxyService : Service() {
         val fakeTlsDomain = _serviceState.value.fakeTlsDomain
         val proxyLink = buildProxyLink(host, port, secret, fakeTlsDomain)
 
+        // Stamped outside update() like every other line — see newLogLine for why the seq must
+        // not be re-taken per lambda retry. Classified explicitly: addLog's keyword fallback
+        // exists for one-line calls, not for entries built by hand.
+        val startingText = getString(R.string.proxy_starting)
+        val startingEntry = newLogLine(startingText, classifyLog(startingText))
+
         _serviceState.update {
             it.copy(
                 isRunning = true,
@@ -383,7 +412,7 @@ class ProxyService : Service() {
                 // A fresh attempt retires the previous verdict: whatever last time failed with is
                 // no longer what the screen is showing.
                 error = null,
-                logs = listOf(newLogLine(getString(R.string.proxy_starting)))
+                logs = listOf(startingEntry)
             )
         }
         persistRunning(true)
@@ -416,7 +445,7 @@ class ProxyService : Service() {
                     host = host,
                     port = port,
                     secret = secret,
-                    onLog = { logLine -> addLog(logLine) },
+                    onLog = { line, kind -> addLog(line, kind) },
                     onConnectionChange = { count -> onConnectionsChanged(generation, count) },
                     cfDomain = _serviceState.value.cfDomain,
                     cfWorkerDomain = _serviceState.value.cfWorkerDomain,
@@ -427,6 +456,13 @@ class ProxyService : Service() {
                 // The raw exception text stays in the log for support; the state carries the
                 // version the user can act on.
                 addLog(getString(R.string.error_with_message, e.message))
+                // Retire the half-started run: start() may have bound the listener before throwing,
+                // and leaving the reference and generation as-is would keep a zombie socket holding
+                // the port and let this run's late connection callbacks touch wake locks that no
+                // longer belong to it.
+                runCatching { proxyServer?.stop() }
+                proxyServer = null
+                proxyGeneration.incrementAndGet()
                 _serviceState.update { it.copy(isRunning = false, error = startFailureMessage(e, port)) }
                 persistRunning(false)
                 releaseWakeLocks()
@@ -548,8 +584,11 @@ class ProxyService : Service() {
             wifiLock = wm.createWifiLock(mode, "Jevio:ProxyWifiLock").apply {
                 setReferenceCounted(false)
             }
-        } catch (_: Exception) {
-            // Best-effort: a null lock simply means acquire/release are no-ops.
+        } catch (e: Exception) {
+            // Best-effort: a null lock simply means acquire/release are no-ops. Logged because the
+            // usual cause — a SecurityException from createWifiLock — is otherwise invisible and the
+            // relay then dies on screen-off with no trace.
+            addLog("Wake lock setup failed: ${e.message}")
         }
     }
 
@@ -725,6 +764,12 @@ class ProxyService : Service() {
     }
 
     fun clearLogs() {
+        // Also drop the collapse anchor: after a clear there is no previous entry to rewrite,
+        // and a stale one would only force addLog down its re-anchor fallback on the next repeat.
+        synchronized(logMergeGate) {
+            lastRawLogLine = null
+            lastLogRepeat = 0
+        }
         _serviceState.update { it.copy(logs = emptyList()) }
     }
 
@@ -735,13 +780,56 @@ class ProxyService : Service() {
      * purpose — update() re-runs its lambda under contention, and a line has to be stamped exactly
      * once rather than renumbered and re-classified per retry.
      */
-    private fun newLogLine(text: String) = LogLine(logSeq.incrementAndGet(), text, classifyLog(text))
+    private fun newLogLine(text: String, kind: LogKind) = LogLine(logSeq.incrementAndGet(), text, kind)
 
-    private fun addLog(line: String) {
+    /**
+     * Append a line, or fold it into the previous one when it repeats verbatim.
+     *
+     * [kind] comes from the caller — MtProtoProxyServer knows what it is logging and says so
+     * explicitly. Passing nothing keeps the old keyword-guessing via [classifyLog] as a fallback
+     * for this service's own string-only calls.
+     */
+    fun addLog(line: String, kind: LogKind? = null) {
+        val resolvedKind = kind ?: classifyLog(line)
         val timestamp = LocalTime.now().format(logTimeFormatter)
-        val entry = newLogLine("[$timestamp] $line")
+        val text = "[$timestamp] $line"
+        // Stamped and the repeat decision taken outside update(): its lambda re-runs under CAS
+        // contention, and both the seq and the repeat counter must move exactly once per line.
+        val entry = newLogLine(text, resolvedKind)
+        val repeat: Int
+        synchronized(logMergeGate) {
+            if (line == lastRawLogLine) {
+                lastLogRepeat += 1
+            } else {
+                lastRawLogLine = line
+                lastLogBaseText = text
+                lastLogEntrySeq = entry.seq
+                lastLogRepeat = 1
+            }
+            repeat = lastLogRepeat
+        }
         _serviceState.update { state ->
-            state.copy(logs = (state.logs + entry).takeLast(200))
+            val last = state.logs.lastOrNull()
+            if (repeat > 1 && last != null && last.seq == lastLogEntrySeq) {
+                // Same line again: rewrite the previous entry with a " ×N" suffix instead of
+                // appending. The seq must not change — the log pane's autoscroll keys on the last
+                // entry's seq, and a fresh seq per repeat would make it jump on every flooded
+                // line. Rebuilt from the stored base text so the suffix replaces, never stacks.
+                val merged = last.copy(text = "$lastLogBaseText ×$repeat")
+                state.copy(logs = state.logs.dropLast(1) + merged)
+            } else {
+                if (repeat > 1) {
+                    // A repeat whose anchor entry vanished (clearLogs raced a flood). Append it
+                    // fresh and re-anchor onto the new entry; the assignments are idempotent, so
+                    // update() re-running this lambda under contention cannot corrupt them.
+                    synchronized(logMergeGate) {
+                        lastRawLogLine = line
+                        lastLogBaseText = text
+                        lastLogEntrySeq = entry.seq
+                    }
+                }
+                state.copy(logs = (state.logs + entry).takeLast(MAX_LOG_LINES))
+            }
         }
     }
 
@@ -755,7 +843,9 @@ class ProxyService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Jevio Unblocker",
+                // The system caches the name of an already-created channel, so existing users keep
+                // the old label until the channel is reset — the resource only governs new installs.
+                getString(R.string.proxy_notification_channel_name),
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = getString(R.string.proxy_notification_channel_desc)

@@ -49,23 +49,31 @@ object StrategyTester {
 
     data class Strategy(val command: String, @StringRes val labelRes: Int)
 
+    /**
+     * The sweep entry for a catalog preset, looked up by id instead of re-spelled here. This list
+     * used to hard-code its own copy of several catalog commands and one had already drifted a
+     * token apart ("auto-oob" grew a trailing -a1) — a strategy that tests differently from how
+     * the VPN later runs it is worse than no auto-tune, so the catalog is the single source.
+     */
+    private fun fromCatalog(id: String): Strategy {
+        val preset = ByedpiPresetCatalog.byId(id) ?: error("ByedpiPresetCatalog is missing preset '$id'")
+        return Strategy(preset.command, preset.labelRes)
+    }
+
     /** Curated byedpi strategies, strongest / most-proven first. No {sni} placeholders. */
     val STRATEGIES: List<Strategy> = (listOf(
-        Strategy("-d1 -s1+s -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1", R.string.strategy_cascade_disorder_split),
-        Strategy("-d1 -s1+s -r1+s -f-1 -t8 -a1", R.string.strategy_split_tlsrec_fake),
+        fromCatalog(DesyncVpnService.PRESET_AUTO),
+        fromCatalog(DesyncVpnService.PRESET_TLSREC),
         Strategy("-f1+nme -t6 -a1", R.string.strategy_fake_split_ttl6),
-        Strategy("-d1 -s1+s -s3+s -s6+s -s9+s -s12+s -s15+s -s20+s -s30+s -a1", R.string.strategy_cascade_split),
-        // Every -A entry in this list carries -T for the reason documented on ByedpiPresetCatalog's
-        // "tlsrec-double": nothing but case 'T' (byedpi/main.c) sets the timeouts, and without them
-        // -A's t/r/s detectors have no trigger at all against a silent SNI drop. Keep the value in
-        // sync with the catalog — a strategy that tests differently from how it later runs is worse
-        // than no auto-tune — and its first field under TLS_TIMEOUT_MS above, or the strategies it
-        // is meant to rescue go back to failing every sweep.
-        Strategy("-T2:2:2:64 -o1 -a1 -At,r,s -d1 -a1", R.string.strategy_oob_auto),
-        Strategy("-d6+s -q4+hm -o2 -a1", R.string.strategy_disorder_oob),
+        fromCatalog(DesyncVpnService.PRESET_SPLIT),
+        // The -A entries carry -T for the reason documented on ByedpiPresetCatalog's
+        // "tlsrec-double", with the first field bounded by TLS_TIMEOUT_MS above; ByedpiArgsTest
+        // pins both, and fails if these entries ever drift from the catalog again.
+        fromCatalog("auto-oob"),
+        fromCatalog("disorder-oob"),
         Strategy("-f-1 -t8 -s1+s -a1", R.string.strategy_fake_ttl8_split),
         Strategy("-d2 -s1+s -d5+s -s10+s -d20+s -a1", R.string.strategy_cascade_step2),
-        Strategy("-T2:2:2:64 -r5+s -s25+s -a1 -At,r,s -s50 -r5+s -s50+s -a1", R.string.strategy_tlsrec_split_double),
+        fromCatalog("tlsrec-double"),
         Strategy("-d1 -s4 -d8 -s1+s -d5+s -s10+s -d20+s -a1", R.string.strategy_mix_disorder_split),
     ) + ByedpiPresetCatalog.autotunePresets.map { preset ->
         Strategy(preset.command, preset.labelRes)
@@ -241,6 +249,13 @@ object StrategyTester {
             // reported yet it may still be on its way into start_event_loop(), and then the engine
             // is ours. On the normal path startProxy() is still blocked in main() at this point,
             // so the teardown below is what makes it return.
+            //
+            // The reverse race is the micro-window between startProxy() returning and
+            // returned.set(true): this check can still read false while the engine has already
+            // released its globals, so the stop/force-close below fire at a released engine.
+            // That is survivable only because jniStopProxy and jniForceClose are REQUIRED to be
+            // idempotent no-ops once the globals are free — otherwise tearing down a finished
+            // run could kill the next run that legitimately claimed the engine.
             if (!returned.get()) {
                 try { proxy.stopProxy() } catch (_: Throwable) {}
                 try { loop?.join(1500) } catch (_: Throwable) {}

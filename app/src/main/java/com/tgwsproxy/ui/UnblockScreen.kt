@@ -3,10 +3,6 @@ package com.tgwsproxy.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -74,12 +70,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -112,7 +105,6 @@ import com.tgwsproxy.ui.theme.GlassSurfaceMuted
 import com.tgwsproxy.ui.theme.Mauve
 import com.tgwsproxy.ui.theme.OnAccent
 import com.tgwsproxy.ui.theme.Primary
-import com.tgwsproxy.ui.theme.Signal
 import com.tgwsproxy.ui.theme.Success
 import com.tgwsproxy.ui.theme.Surface
 import com.tgwsproxy.ui.theme.SurfaceVariant
@@ -1015,7 +1007,7 @@ private fun UnblockSettingsCard(
                 .clip(RoundedCornerShape(14.dp))
                 .background(Surface)
                 .border(1.dp, Border, RoundedCornerShape(14.dp))
-                .clickable { open = !open }
+                .clickable(role = Role.Button) { open = !open }
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1086,7 +1078,7 @@ private fun UnblockSettingsCard(
                         .clip(RoundedCornerShape(14.dp))
                         .background(Surface)
                         .border(1.dp, Border, RoundedCornerShape(14.dp))
-                        .clickable { onOpenExclusions() }
+                        .clickable(role = Role.Button) { onOpenExclusions() }
                         .padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {

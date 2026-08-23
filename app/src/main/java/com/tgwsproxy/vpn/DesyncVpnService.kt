@@ -458,7 +458,7 @@ class DesyncVpnService : VpnService(), Tunnel {
     private var byedpiArgs: Array<String> = arrayOf("ciadpi")
     private var socksPort: Int = DEFAULT_SOCKS_PORT
 
-    // All three cross threads and all three feed stopByedpi()'s ownership test: the writer is the
+    // These handles cross threads and the first three feed stopByedpi()'s ownership test: the writer is the
     // startVpn coroutine, the readers are a different Dispatchers.IO worker (ACTION_STOP), the main
     // thread (onDestroy/onRevoke) and the tun-read thread. Nothing establishes happens-before
     // between them — startVpn's synchronized block ends before startByedpi() is even called — so a
@@ -466,6 +466,10 @@ class DesyncVpnService : VpnService(), Tunnel {
     @Volatile private var byedpiProxy: ByeDpiProxy? = null
     @Volatile private var byedpiThread: Thread? = null
     @Volatile private var byedpiExitCode: Int? = null
+    // Message of the Throwable that killed startProxy, if any. Every engine crash surfaces as
+    // exit code -1, so without this we cannot tell "bind failed, port busy" apart from any
+    // other startup exception when reporting the failure.
+    @Volatile private var byedpiStartError: String? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var readThread: Thread? = null
@@ -599,6 +603,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             val proxy = ByeDpiProxy()
             byedpiProxy = proxy
             byedpiExitCode = null
+            byedpiStartError = null
             val args = byedpiArgs
             val port = socksPort
             // Publish the handle BEFORE starting the thread. kotlin.concurrent.thread() starts it
@@ -608,7 +613,12 @@ class DesyncVpnService : VpnService(), Tunnel {
             // nothing can ever stop again (the native gate then refuses every later start).
             val t = Thread({
                 try { byedpiExitCode = proxy.startProxy(args) }
-                catch (_: Throwable) { byedpiExitCode = -1 }
+                catch (e: Throwable) {
+                    // Keep the failure detail: exit code -1 alone is indistinguishable from a lost
+                    // bind race, and the two need different user-facing messages (see startVpn).
+                    byedpiStartError = e.message ?: e.javaClass.simpleName
+                    byedpiExitCode = -1
+                }
             }, "byedpi-loop")
             t.isDaemon = true
             byedpiThread = t
@@ -622,10 +632,27 @@ class DesyncVpnService : VpnService(), Tunnel {
             if (!ready) {
                 val code = byedpiExitCode
                 val alive = byedpiThread?.isAlive == true
-                val failure = byedpiFailure(code, alive, port)
-                val reason = failure.arg
-                    ?.let { getString(failure.res, it) }
-                    ?: getString(failure.res)
+                val reason = if (!alive && code == -1) {
+                    // Code -1 means startProxy threw before the engine reported an exit code.
+                    // Only blame the port when the failure actually looks like a lost bind; any
+                    // other exception gets the generic message with the real cause instead of a
+                    // misleading "port busy". Everything else goes through the structured
+                    // byedpiFailure() mapping.
+                    val err = byedpiStartError
+                    if (err != null && isBindFailure(err)) {
+                        getString(R.string.byedpi_port_busy, port)
+                    } else {
+                        getString(
+                            R.string.byedpi_start_failed,
+                            err ?: getString(R.string.vpn_fail_no_details),
+                        )
+                    }
+                } else {
+                    val failure = byedpiFailure(code, alive, port)
+                    failure.arg
+                        ?.let { getString(failure.res, it) }
+                        ?: getString(failure.res)
+                }
                 _state.value = VpnState(isRunning = false, isStarting = false, error = reason)
                 // stopByedpi() no-ops when this run no longer owns the engine — see its doc.
                 stopByedpi()
@@ -678,6 +705,18 @@ class DesyncVpnService : VpnService(), Tunnel {
         byedpiProxy = null
         byedpiThread = null
         byedpiExitCode = null
+        byedpiStartError = null
+    }
+
+    /**
+     * True if a startProxy failure looks like the listen bind losing the race (EADDRINUSE & co).
+     * byedpi reports every startup crash identically — the engine thread dies with exit code -1 —
+     * so the exception message is the only signal we have to tell "port busy" apart from a bad
+     * argument or a native crash.
+     */
+    private fun isBindFailure(msg: String): Boolean {
+        val m = msg.lowercase()
+        return "eaddrinuse" in m || "address already in use" in m || "bind" in m
     }
 
     private fun startVpn() {
@@ -749,6 +788,16 @@ class DesyncVpnService : VpnService(), Tunnel {
 
         try {
             val fd = builder.establish() ?: throw IllegalStateException("establish() returned null")
+            // establish() can block in the system VPN stack long enough for a stop to run
+            // stopEverything() to completion — the check before the builder cannot see that.
+            // Committing the fd now would resurrect the tunnel after the user turned it off, so
+            // roll back instead: drop the fresh interface and our byedpi run, and leave the
+            // persisted "running" flag alone (the stop already wrote false).
+            if (cleaningUp || !_state.value.isStarting) {
+                try { fd.close() } catch (_: Exception) {}
+                stopByedpi()
+                return
+            }
             pfd = fd
             tunIn = FileInputStream(fd.fileDescriptor)
             tunOut = FileOutputStream(fd.fileDescriptor)
@@ -759,6 +808,18 @@ class DesyncVpnService : VpnService(), Tunnel {
             return
         }
 
+        // Second gate right before the point of no return: a stop landing between the check above
+        // and here would be overwritten by running=true + persistRunning(true), re-enabling the
+        // VPN behind the user's back and stranding the engine (stopEverything already dropped its
+        // handles). Roll back the interface and byedpi; do NOT persist — the stop owns the flag.
+        if (cleaningUp || !_state.value.isStarting) {
+            try { tunIn?.close() } catch (_: Exception) {}
+            try { tunOut?.close() } catch (_: Exception) {}
+            try { pfd?.close() } catch (_: Exception) {}
+            tunIn = null; tunOut = null; pfd = null
+            stopByedpi()
+            return
+        }
         running = true
         relayPool = newRelayPool()
         persistRunning(true)
@@ -805,17 +866,19 @@ class DesyncVpnService : VpnService(), Tunnel {
         val srcPort = PacketUtils.srcPort(packet)
         val dstIpInt = PacketUtils.dstIpInt(packet)
         val dstPort = PacketUtils.dstPort(packet)
-        val key = PacketUtils.flowKey(srcPort, dstIpInt, dstPort)
+        val key = PacketUtils.flowKey(PacketUtils.srcIpInt(packet), srcPort, dstIpInt, dstPort)
         val flags = PacketUtils.tcpFlags(packet)
         val seq = PacketUtils.tcpSeq(packet)
         val ack = PacketUtils.tcpAck(packet)
         val win = PacketUtils.tcpWindow(packet)
         val payload = PacketUtils.tcpPayload(packet)
-        // Count the whole IP packet (matches bytesDown in writeToTun) so the UI stats are symmetric.
-        bytesUp.addAndGet(packet.size.toLong())
 
         val existing = tcpMap[key]
         if (existing != null) {
+            // Count the whole IP packet (matches bytesDown in writeToTun) so the UI stats are
+            // symmetric — but only once we know the packet is accepted; dropped packets are not
+            // upload traffic and must not inflate the counter.
+            bytesUp.addAndGet(packet.size.toLong())
             existing.onPacket(seq, ack, flags, win, payload)
             return
         }
@@ -824,6 +887,9 @@ class DesyncVpnService : VpnService(), Tunnel {
             // Cap concurrent flows: drop the SYN if we're at the limit so a local flood can't
             // exhaust threads/memory. The client simply retries/times out — no resources spent.
             if (tcpMap.size >= MAX_TCP_FLOWS) return
+            // Counted only past the drop checks, like handleUdp: a flood of stale or rejected
+            // packets would otherwise show up as upload traffic that never went anywhere.
+            bytesUp.addAndGet(packet.size.toLong())
             val conn = TcpConnection(
                 clientIp = PacketUtils.srcIp(packet), clientPort = srcPort,
                 serverIp = PacketUtils.dstIp(packet), serverPort = dstPort,
@@ -849,8 +915,9 @@ class DesyncVpnService : VpnService(), Tunnel {
 
         val srcPort = PacketUtils.srcPort(packet)
         val dstIpInt = PacketUtils.dstIpInt(packet)
-        // UDP and TCP live in separate maps, so the raw flow key is enough here.
-        val key = PacketUtils.flowKey(srcPort, dstIpInt, dstPort)
+        // UDP and TCP live in separate maps, so no protocol tag is needed; srcIp is part of the
+        // key so two source addresses reusing a srcPort for the same destination stay apart.
+        val key = PacketUtils.flowKey(PacketUtils.srcIpInt(packet), srcPort, dstIpInt, dstPort)
         val payload = PacketUtils.udpPayload(packet)
         if (payload.isEmpty()) return
         bytesUp.addAndGet(packet.size.toLong())
@@ -926,8 +993,11 @@ class DesyncVpnService : VpnService(), Tunnel {
                         activeUdp = udpMap.size,
                         bytesUp = bytesUp.get(),
                         bytesDown = bytesDown.get(),
-                        connOk = connOk.get().toInt(),
-                        connFail = connFail.get().toInt(),
+                        // VpnState keeps these as Int because the UI data class is its public
+                        // shape; clamp instead of a raw toInt() so a counter past 2^31 shows a
+                        // saturated value rather than wrapping negative.
+                        connOk = connOk.get().coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                        connFail = connFail.get().coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
                     )
                 }
                 delay(interval)
@@ -984,14 +1054,20 @@ class DesyncVpnService : VpnService(), Tunnel {
     }
 
     override fun onDestroy() {
-        stopEverything(stopService = false, preserveExistingError = true)
+        // stopEverything() blocks up to ~3.5s in stopByedpi()'s joins, and onDestroy runs on the
+        // main thread — that freeze is an ANR risk while the system is tearing us down. scope is
+        // cancelled right after, so the heavy teardown goes on a plain daemon thread instead.
+        thread(name = "vpn-destroy", isDaemon = true) {
+            stopEverything(stopService = false, preserveExistingError = true)
+        }
         scope.cancel()
         super.onDestroy()
     }
 
     override fun onRevoke() {
-        // User turned us off in system VPN settings.
-        stopEverything()
+        // User turned us off in system VPN settings. Same main-thread constraint as onDestroy:
+        // keep the blocking native teardown off it.
+        thread(name = "vpn-revoke", isDaemon = true) { stopEverything() }
         super.onRevoke()
     }
 
