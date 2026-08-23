@@ -27,14 +27,19 @@ object PacketUtils {
         if (((p[0].toInt() ushr 4) and 0x0F) != 4) return false
         val ihl = ihl(p)
         if (ihl < 20 || ihl > p.size) return false
+        // The IPv4 total length field must cover the IP header and fit the buffer: the payload
+        // accessors (tcpPayload/udpPayload) slice by it, so a lying totalLength corrupts parsing
+        // just as much as a truncated buffer would.
+        val total = totalLength(p)
+        if (total < ihl || total > p.size) return false
         return when (protocol(p)) {
             PROTO_TCP -> {
                 // need fixed TCP header (20B) for flags/seq/ack/window/dataOffset
                 if (ihl + 20 > p.size) return false
                 val dataOff = ((p[ihl + 12].toInt() ushr 4) and 0x0F) * 4
-                dataOff >= 20 && ihl + dataOff <= p.size
+                dataOff >= 20 && ihl + dataOff <= total
             }
-            PROTO_UDP -> ihl + 8 <= p.size // fixed UDP header
+            PROTO_UDP -> ihl + 8 <= total // fixed UDP header within the IP payload
             else -> false
         }
     }
@@ -230,10 +235,24 @@ object PacketUtils {
         b[i + 3] = (v and 0xFF).toByte()
     }
 
-    fun ipToString(ip: ByteArray): String =
-        "${ip[0].toInt() and 0xFF}.${ip[1].toInt() and 0xFF}.${ip[2].toInt() and 0xFF}.${ip[3].toInt() and 0xFF}"
+    fun ipToString(ip: ByteArray): String {
+        require(ip.size == 4) { "IPv4 address must be 4 bytes, got ${ip.size}" }
+        return "${ip[0].toInt() and 0xFF}.${ip[1].toInt() and 0xFF}.${ip[2].toInt() and 0xFF}.${ip[3].toInt() and 0xFF}"
+    }
 
-    /** 4-byte key packed into a long for NAT maps: (ip<<16)|port is not unique enough; use full tuple hash. */
-    fun flowKey(srcPort: Int, dstIp: Int, dstPort: Int): Long =
-        ((srcPort.toLong() and 0xFFFF) shl 48) or ((dstPort.toLong() and 0xFFFF) shl 32) or (dstIp.toLong() and 0xFFFFFFFFL)
+    /**
+     * NAT-map key for a flow. (srcPort, dstPort, dstIp) already fills all 64 bits of the long, so
+     * srcIp can only be folded in as a hash — a 2^64/φ multiplicative mix (the constant is
+     * 0x9E3779B97F4A7C15 as a signed long). With a single TUN address srcIp is constant and the
+     * result stays injective in the packed tuple, but once several source addresses exist (per-app
+     * addressing, tethered clients) two sources that picked the same srcPort for the same
+     * destination must not merge into one map entry — a single association/connection would then
+     * receive both flows' replies.
+     */
+    fun flowKey(srcIp: Int, srcPort: Int, dstIp: Int, dstPort: Int): Long {
+        val packed = ((srcPort.toLong() and 0xFFFF) shl 48) or
+            ((dstPort.toLong() and 0xFFFF) shl 32) or
+            (dstIp.toLong() and 0xFFFFFFFFL)
+        return packed xor ((srcIp.toLong() and 0xFFFFFFFFL) * -7046029254386353131L)
+    }
 }

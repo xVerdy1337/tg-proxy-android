@@ -9,11 +9,15 @@ class ByedpiPresetCatalogTest {
 
     @Test
     fun catalogHasUniqueIdsAndCommands() {
+        val all = ByedpiPresetCatalog.presets
         val runnable = ByedpiPresetCatalog.autotunePresets
 
         assertTrue(runnable.size >= 20)
-        assertEquals(runnable.size, runnable.map { it.id }.toSet().size)
-        assertEquals(runnable.size, runnable.map { it.command }.toSet().size)
+        // Ids and commands are checked on the FULL list: a collision involving the diagnostic
+        // "off" entry is invisible to an autotunePresets-only check but still corrupts byId /
+        // byCommand lookups.
+        assertEquals(all.size, all.map { it.id }.toSet().size)
+        assertEquals(all.size, all.map { it.command }.toSet().size)
         assertTrue(runnable.all { it.command.isNotBlank() })
     }
 

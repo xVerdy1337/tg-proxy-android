@@ -9,6 +9,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 
 /**
@@ -43,6 +44,25 @@ object HelloProbe {
     private const val READ_TIMEOUT_MS = 3500
 
     /**
+     * One DNS answer per host for the length of a probe pass: a pass asks for the same host once
+     * per [Method], and InetAddress.getByName carries no timeout of its own, so on a network
+     * where the resolver stalls every repeat lookup paid that stall again (3x per host per pass).
+     * The short TTL keeps a DNS or route change BETWEEN passes visible without costing anything
+     * inside one. (withTimeout can't help a blocking lookup — it abandons the coroutine but
+     * leaves the resolver thread parked, so caching is the effective fix here.)
+     */
+    private const val DNS_CACHE_TTL_MS = 60_000L
+    private val dnsCache = ConcurrentHashMap<String, Pair<InetAddress, Long>>()
+
+    private fun resolve(host: String): InetAddress {
+        val now = System.currentTimeMillis()
+        dnsCache[host]?.let { (addr, at) -> if (now - at < DNS_CACHE_TTL_MS) return addr }
+        val addr = InetAddress.getByName(host)          // direct DNS
+        dnsCache[host] = addr to now
+        return addr
+    }
+
+    /**
      * Run one probe: connect, send the (maybe re-framed) ClientHello, classify the reaction.
      *
      * PASS is granted ONLY when the server replies with a real TLS handshake record (first byte
@@ -67,7 +87,7 @@ object HelloProbe {
         var sentNs = startNs
         var sock: Socket? = null
         try {
-            val addr = InetAddress.getByName(host)            // direct DNS
+            val addr = resolve(host)
             sock = Socket()
             sock.tcpNoDelay = true
             sock.connect(InetSocketAddress(addr, port), CONNECT_TIMEOUT_MS)
@@ -85,7 +105,13 @@ object HelloProbe {
                         out.write(chunk); out.flush()
                         // Keep the segments apart so the SNI is genuinely split on the wire, but
                         // do it BEFORE we start the RTT clock so it never pollutes latencyMs.
-                        if (i < plan.chunks.size - 1) try { Thread.sleep(8) } catch (_: InterruptedException) {}
+                        if (i < plan.chunks.size - 1) try {
+                            Thread.sleep(8)
+                        } catch (_: InterruptedException) {
+                            // Re-arm the flag we just consumed, as awaitSocksReady does: callers
+                            // abort a probe pass by interrupting, and swallowing it strands them.
+                            Thread.currentThread().interrupt()
+                        }
                     }
                 }
             }
@@ -138,6 +164,10 @@ object HelloProbe {
      * psk_key_exchange_modes, ALPN(h2/http1.1).
      */
     fun buildClientHello(sni: String): ByteArray {
+        // US_ASCII silently rewrites non-ASCII to '?', which would put a different SNI on the
+        // wire than the caller asked to probe; refuse instead so probe() reports ERROR. Android
+        // has no java.net.IDN, so punycode conversion is the caller's responsibility.
+        require(sni.all { it.code < 0x80 }) { "non-ASCII SNI: $sni" }
         val host = sni.toByteArray(Charsets.US_ASCII)
 
         // ---- extensions ----

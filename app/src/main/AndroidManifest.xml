@@ -12,6 +12,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Keep the CPU/Wi-Fi awake so the relay survives Doze / screen-off. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- createWifiLock() fails with a swallowed SecurityException without this one. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <!-- Ask the OS to exempt Jevio from battery optimization so OEM killers
          (MIUI/EMUI/Samsung) don't kill the proxy service in the background. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -75,7 +77,7 @@
         <service
             android:name=".service.ProxyTileService"
             android:exported="true"
-            android:icon="@drawable/ic_tile_shield"
+            android:icon="@drawable/ic_tile_jevio"
             android:label="@string/tile_label"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>

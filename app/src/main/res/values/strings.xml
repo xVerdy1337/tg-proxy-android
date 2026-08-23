@@ -5,6 +5,7 @@
     <string name="proxy_stopped">Proxy stopped</string>
     <string name="proxy_notification_title">Jevio Unblocker is on</string>
     <string name="proxy_notification_text">Telegram unblocked — tap to open</string>
+    <string name="proxy_notification_channel_name">Jevio Unblocker</string>
     <string name="proxy_notification_channel_desc">Jevio Unblocker proxy status</string>
     <string name="notification_disable">Disable</string>
     <string name="connect_telegram">Connect Telegram</string>
@@ -45,6 +46,9 @@
     <string name="tab_sites">Sites</string>
     <string name="hide_logs">Hide logs</string>
     <string name="show_logs">Show logs</string>
+    <string name="log_filter_all">All</string>
+    <string name="log_filter_connections">Connections</string>
+    <string name="log_filter_problems">Problems</string>
     <string name="state_stopping">Stopping…</string>
     <string name="state_starting">Starting…</string>
     <string name="state_active">Active</string>
@@ -62,7 +66,7 @@
     <string name="local_proxy_for_telegram">Local proxy for Telegram</string>
     <string name="one_tap_telegram">One tap — Telegram without blocks</string>
     <string name="stat_uptime">Uptime</string>
-    <string name="stat_connections">Links</string>
+    <string name="stat_connections">Connections</string>
     <string name="stat_up">Up</string>
     <string name="stat_down">Down</string>
     <string name="tg_settings_subtitle">Server, secret, Fake TLS, Cloudflare</string>

@@ -16,14 +16,18 @@ package com.tgwsproxy.desync
  * Methods implemented:
  *  - SPLIT    : cut the TCP payload into two segments inside the SNI → two write()s.
  *  - TLSREC   : re-fragment the single TLS record into two valid TLS records at the SNI.
- *  - DISORDER : like SPLIT but the second segment is emitted first (caller sends out of order).
+ *
+ * There is deliberately no DISORDER: [Plan] promises an ordered list of chunks to write, so a
+ * plan emitting the second segment first would reassemble the bytes in the wrong order on a
+ * plain stream socket. Real disordering needs a routing layer that holds and flushes segments
+ * itself (byedpi's -d does exactly that natively), which is outside this class's contract.
  *
  * FAKE (a poisoning packet with a low TTL/bad checksum) needs raw-socket / TTL control and is
  * therefore handled at the routing layer, not here.
  */
 object DesyncEngine {
 
-    enum class Method { SPLIT, TLSREC, DISORDER }
+    enum class Method { SPLIT, TLSREC }
 
     private const val TLS_RECORD_HANDSHAKE = 0x16
     private const val TLS_HANDSHAKE_CLIENT_HELLO = 0x01
@@ -77,15 +81,19 @@ object DesyncEngine {
                 val len = u16(data, p + 2)
                 val body = p + 4
                 if (type == EXT_SERVER_NAME) {
+                    // Bounds run against the end of THIS extension's body, not the whole record:
+                    // a length field that overstates its body must not let the SNI walk read a
+                    // hostname out of whatever extension follows.
+                    val extBodyEnd = minOf(body + len, data.size)
                     // server_name_list length(2)
                     var q = body + 2
                     // entry: name_type(1) + name_len(2) + host
-                    if (q + 3 > data.size) return null
+                    if (q + 3 > extBodyEnd) return null
                     val nameType = u8(data, q)
                     val nameLen = u16(data, q + 1)
                     if (nameType != SNI_TYPE_HOSTNAME) return null
                     val hostStart = q + 3
-                    if (hostStart + nameLen > data.size) return null
+                    if (hostStart + nameLen > extBodyEnd) return null
                     return hostStart
                 }
                 p = body + len
@@ -107,7 +115,6 @@ object DesyncEngine {
         val splitAt = (hostOff + 1).coerceIn(1, data.size - 1)
         return when (method) {
             Method.SPLIT -> Plan(listOf(data.copyOfRange(0, splitAt), data.copyOfRange(splitAt, data.size)))
-            Method.DISORDER -> Plan(listOf(data.copyOfRange(splitAt, data.size), data.copyOfRange(0, splitAt)))
             Method.TLSREC -> Plan(tlsRecordFragments(data, splitAt))
         }
     }

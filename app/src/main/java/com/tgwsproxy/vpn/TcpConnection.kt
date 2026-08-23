@@ -1,6 +1,8 @@
 package com.tgwsproxy.vpn
 
+import androidx.annotation.VisibleForTesting
 import java.io.DataInputStream
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
@@ -44,12 +46,17 @@ class TcpConnection(
     private var rcvNxt = 0L            // next client seq we expect
     private var sndNxt = 0L            // our next seq to send to client
     private var clientWindow = 65535
+    private var clientAck = 0L         // latest ACK from the client (for window clamping)
+    private var seenClientAck = false
 
     private var upstream: Socket? = null
     private var upOut: OutputStream? = null
     @Volatile private var connected = false
     private val pendingToUpstream = ArrayList<ByteArray>()
     private var pendingToUpstreamBytes = 0
+    // Single-writer handoff for upstream writes: blocking socket I/O runs outside the lock,
+    // one writer at a time, so queued chunks keep their order.
+    private var upstreamWriterActive = false
 
     companion object {
         private const val MSS = 1400
@@ -57,17 +64,22 @@ class TcpConnection(
         // Max wait for the local byedpi SOCKS5 reply before giving up (frees the relay thread).
         private const val SOCKS_HANDSHAKE_TIMEOUT_MS = 10_000
         private const val MAX_PENDING_UPSTREAM_BYTES = 512 * 1024
+        // Downstream window clamping: poll interval, and max wait before sending anyway.
+        private const val WINDOW_POLL_MS = 10L
+        private const val MAX_WINDOW_WAIT_MS = 1_000
     }
 
     /** Called by the service when the initial SYN for this flow arrives. */
     fun onSyn(clientSeq: Long, window: Int) {
-        synchronized(lock) {
+        val synAck = synchronized(lock) {
             rcvNxt = (clientSeq + 1) and 0xFFFFFFFFL
             sndNxt = (Random.nextLong() and 0xFFFFFFFFL)
             clientWindow = window
-            sendSegment(PacketUtils.TcpFlag.SYN or PacketUtils.TcpFlag.ACK, ByteArray(0), mss = MSS)
+            val pkt = buildSegmentLocked(PacketUtils.TcpFlag.SYN or PacketUtils.TcpFlag.ACK, ByteArray(0), mss = MSS)
             sndNxt = (sndNxt + 1) and 0xFFFFFFFFL
+            pkt
         }
+        tunnel.writeToTun(synAck)
         connectUpstream()
     }
 
@@ -104,15 +116,30 @@ class TcpConnection(
                     reset(); return@execute
                 }
                 try { s.soTimeout = 0 } catch (_: Exception) {} // back to blocking for the relay
+                // Keepalive as a backstop against dead peers; actual teardown of idle flows still
+                // relies on the service's reaper — SO_KEEPALIVE's default ~2h cadence is far too
+                // slow to reclaim a mobile VPN's relay threads.
+                try { s.keepAlive = true } catch (_: Exception) {}
 
                 tunnel.onConnectResult(true)
+                val toUpstream = ArrayList<ByteArray>()
+                var closedEarly = false
                 synchronized(lock) {
-                    upstream = s
-                    upOut = s.getOutputStream()
-                    connected = true
-                    flushPendingLocked()
+                    if (state == State.CLOSED) {
+                        closedEarly = true // the client gave up while the SOCKS handshake ran
+                    } else {
+                        upstream = s
+                        upOut = s.getOutputStream()
+                        connected = true
+                        drainUpstreamLocked(toUpstream)
+                    }
+                }
+                if (closedEarly) {
+                    try { s.close() } catch (_: Exception) {}
+                    return@execute
                 }
                 tunnel.reportError("") // a flow reached the real server → clear stale diagnostics
+                if (toUpstream.isNotEmpty()) writeUpstream(toUpstream)
                 pumpDownstream(s.getInputStream())
             } catch (e: Exception) {
                 tunnel.reportError("upstream ${e.javaClass.simpleName}: ${e.message}")
@@ -125,7 +152,8 @@ class TcpConnection(
      * Minimal SOCKS5 client: no-auth greeting + CONNECT to an IPv4 destination. Returns true on a
      * success reply (REP == 0x00).
      */
-    private fun socks5Connect(rawIn: InputStream, out: OutputStream, ip: ByteArray, port: Int): Boolean {
+    @VisibleForTesting
+    internal fun socks5Connect(rawIn: InputStream, out: OutputStream, ip: ByteArray, port: Int): Boolean {
         val din = DataInputStream(rawIn)
         // Greeting: VER=5, NMETHODS=1, METHOD=0 (no auth)
         out.write(byteArrayOf(0x05, 0x01, 0x00)); out.flush()
@@ -156,73 +184,143 @@ class TcpConnection(
 
     /** Called by the service for every non-SYN TCP packet belonging to this flow. */
     fun onPacket(seq: Long, ack: Long, flags: Int, window: Int, payload: ByteArray) {
+        val toTun = ArrayList<ByteArray>(2)
+        val toUpstream = ArrayList<ByteArray>(1)
         synchronized(lock) {
-            if (state == State.CLOSED) return
-            lastUsed = System.currentTimeMillis()
-            clientWindow = window
+            onPacketLocked(seq, ack, flags, window, payload, toTun, toUpstream)
+        }
+        // Blocking writes (TUN + upstream socket) run outside the lock so a slow write can't
+        // stall packet handling; ordering is fixed by the build/queue order under the lock.
+        writeAllToTun(toTun)
+        if (toUpstream.isNotEmpty()) writeUpstream(toUpstream)
+    }
 
-            if (flags and PacketUtils.TcpFlag.RST != 0) { closeLocked(sendRst = false); return }
-            if (flags and PacketUtils.TcpFlag.SYN != 0) {
-                val saved = sndNxt
-                sndNxt = (sndNxt - 1) and 0xFFFFFFFFL
-                sendSegment(PacketUtils.TcpFlag.SYN or PacketUtils.TcpFlag.ACK, ByteArray(0))
-                sndNxt = saved
-                return
+    private fun onPacketLocked(
+        seq: Long, ack: Long, flags: Int, window: Int, payload: ByteArray,
+        toTun: MutableList<ByteArray>, toUpstream: MutableList<ByteArray>,
+    ) {
+        if (state == State.CLOSED) return
+        lastUsed = System.currentTimeMillis()
+        clientWindow = window
+        if (flags and PacketUtils.TcpFlag.ACK != 0) {
+            clientAck = ack
+            seenClientAck = true
+        }
+
+        if (flags and PacketUtils.TcpFlag.RST != 0) { closeLocked(sendRst = false, toTun); return }
+        if (flags and PacketUtils.TcpFlag.SYN != 0) {
+            // Client retransmitted its SYN — resend the SYN-ACK (with the MSS option, same as
+            // the original sent in onSyn) without consuming a sequence number.
+            val saved = sndNxt
+            sndNxt = (sndNxt - 1) and 0xFFFFFFFFL
+            toTun.add(buildSegmentLocked(PacketUtils.TcpFlag.SYN or PacketUtils.TcpFlag.ACK, ByteArray(0), mss = MSS))
+            sndNxt = saved
+            return
+        }
+        if (state == State.SYN_RECEIVED) state = State.ESTABLISHED
+
+        if (payload.isNotEmpty()) {
+            when {
+                seq == rcvNxt -> {
+                    if (queueToUpstreamLocked(payload, toUpstream)) {
+                        rcvNxt = (rcvNxt + payload.size) and 0xFFFFFFFFL
+                        toTun.add(buildSegmentLocked(PacketUtils.TcpFlag.ACK, ByteArray(0)))
+                    } else {
+                        closeLocked(sendRst = true, toTun)
+                    }
+                }
+                else -> {
+                    toTun.add(buildSegmentLocked(PacketUtils.TcpFlag.ACK, ByteArray(0)))
+                }
             }
-            if (state == State.SYN_RECEIVED) state = State.ESTABLISHED
+        }
 
-            if (payload.isNotEmpty()) {
-                when {
-                    seq == rcvNxt -> {
-                        if (queueToUpstreamLocked(payload)) {
-                            rcvNxt = (rcvNxt + payload.size) and 0xFFFFFFFFL
-                            sendSegment(PacketUtils.TcpFlag.ACK, ByteArray(0))
-                        } else {
-                            closeLocked(sendRst = true)
+        if (flags and PacketUtils.TcpFlag.FIN != 0) {
+            // A FIN consumes one sequence number, so accept it only in-sequence — an early /
+            // out-of-order FIN must not advance rcvNxt or half-close the upstream.
+            if (seq + payload.size == rcvNxt) {
+                rcvNxt = (rcvNxt + 1) and 0xFFFFFFFFL
+                toTun.add(buildSegmentLocked(PacketUtils.TcpFlag.ACK, ByteArray(0)))
+                try { upstream?.shutdownOutput() } catch (_: Exception) {}
+            }
+        }
+
+        // pumpDownstream moved us to CLOSING after sending its FIN; the client's ACK covering
+        // that FIN (ack == sndNxt) ends the flow now instead of waiting for the reaper.
+        if (state == State.CLOSING && flags and PacketUtils.TcpFlag.ACK != 0 && ack == sndNxt) {
+            closeLocked(sendRst = false, toTun)
+        }
+    }
+
+    /**
+     * Queues [data] for the upstream socket and, if no writer is active, drains the queue into
+     * [out] for the caller to write after releasing the lock. Returns false when the pending
+     * buffer cap is exceeded (the caller then resets the flow).
+     */
+    private fun queueToUpstreamLocked(data: ByteArray, out: MutableList<ByteArray>): Boolean {
+        if (pendingToUpstreamBytes + data.size > MAX_PENDING_UPSTREAM_BYTES) return false
+        pendingToUpstream.add(data)
+        pendingToUpstreamBytes += data.size
+        drainUpstreamLocked(out)
+        return true
+    }
+
+    /** Moves queued upstream bytes into [out] and marks this thread as the active writer. */
+    private fun drainUpstreamLocked(out: MutableList<ByteArray>) {
+        if (!connected || upstreamWriterActive || pendingToUpstream.isEmpty()) return
+        upstreamWriterActive = true
+        while (pendingToUpstream.isNotEmpty()) {
+            val chunk = pendingToUpstream.removeAt(0)
+            pendingToUpstreamBytes -= chunk.size
+            out.add(chunk)
+        }
+    }
+
+    /**
+     * Writes drained chunks to the upstream socket OUTSIDE [lock] — a blocking socket write under
+     * the lock would stall all packet handling for this flow. Only one writer runs at a time
+     * ([upstreamWriterActive] handoff), which preserves chunk order; after each batch the queue
+     * is re-drained until empty. A failed write resets the flow.
+     */
+    private fun writeUpstream(first: List<ByteArray>) {
+        var chunks = first
+        try {
+            while (true) {
+                var stream: OutputStream? = null
+                var closed = false
+                synchronized(lock) {
+                    if (state == State.CLOSED) {
+                        upstreamWriterActive = false
+                        closed = true
+                    } else {
+                        stream = upOut
+                    }
+                }
+                if (closed) return
+                // connected implies upOut was published under the same lock we just held.
+                val out = stream ?: throw IOException("upstream stream missing")
+                // No Kotlin-side desync: byedpi reframes/fakes the ClientHello on its outbound socket.
+                for (chunk in chunks) out.write(chunk)
+                var done = false
+                val more = ArrayList<ByteArray>()
+                synchronized(lock) {
+                    if (pendingToUpstream.isEmpty()) {
+                        upstreamWriterActive = false
+                        done = true
+                    } else {
+                        while (pendingToUpstream.isNotEmpty()) {
+                            val chunk = pendingToUpstream.removeAt(0)
+                            pendingToUpstreamBytes -= chunk.size
+                            more.add(chunk)
                         }
                     }
-                    else -> {
-                        sendSegment(PacketUtils.TcpFlag.ACK, ByteArray(0))
-                    }
                 }
+                if (done) return
+                chunks = more
             }
-
-            if (flags and PacketUtils.TcpFlag.FIN != 0) {
-                if (seq + payload.size == rcvNxt || payload.isEmpty()) {
-                    rcvNxt = (rcvNxt + 1) and 0xFFFFFFFFL
-                    sendSegment(PacketUtils.TcpFlag.ACK, ByteArray(0))
-                    try { upstream?.shutdownOutput() } catch (_: Exception) {}
-                }
-            }
-        }
-    }
-
-    private fun queueToUpstreamLocked(data: ByteArray): Boolean {
-        if (!connected) {
-            if (pendingToUpstreamBytes + data.size > MAX_PENDING_UPSTREAM_BYTES) return false
-            pendingToUpstream.add(data)
-            pendingToUpstreamBytes += data.size
-            return true
-        }
-        return writeUpstreamLocked(data)
-    }
-
-    private fun flushPendingLocked() {
-        val copy = ArrayList(pendingToUpstream)
-        pendingToUpstream.clear()
-        pendingToUpstreamBytes = 0
-        for (chunk in copy) if (!writeUpstreamLocked(chunk)) break
-    }
-
-    private fun writeUpstreamLocked(data: ByteArray): Boolean {
-        val out = upOut ?: return false
-        // No Kotlin-side desync: byedpi reframes/fakes the ClientHello on its outbound socket.
-        return try {
-            out.write(data)
-            true
-        } catch (_: Exception) {
-            closeLocked(sendRst = true)
-            false
+        } catch (e: Exception) {
+            synchronized(lock) { upstreamWriterActive = false }
+            reset()
         }
     }
 
@@ -235,42 +333,83 @@ class TcpConnection(
                 if (n < 0) break
                 if (n == 0) continue
                 val chunk = buf.copyOf(n)
-                synchronized(lock) {
-                    if (state == State.CLOSED) return
-                    lastUsed = System.currentTimeMillis()
-                    sendSegment(PacketUtils.TcpFlag.ACK or PacketUtils.TcpFlag.PSH, chunk)
-                    sndNxt = (sndNxt + chunk.size) and 0xFFFFFFFFL
+                var sent = 0
+                var waitedMs = 0L
+                while (sent < chunk.size) {
+                    val seg = synchronized(lock) {
+                        if (state == State.CLOSED) return
+                        lastUsed = System.currentTimeMillis()
+                        // Honor the client-advertised receive window with simple clamping:
+                        // in-flight (sent-but-unacked) bytes stay below clientWindow. If the
+                        // window is full, poll briefly outside the lock; after
+                        // MAX_WINDOW_WAIT_MS send anyway — a stuck/zero window must not
+                        // deadlock the pump (the TUN write to the local client is reliable,
+                        // see the class doc).
+                        val inFlight = (sndNxt - clientAck) and 0xFFFFFFFFL
+                        val avail = if (seenClientAck) clientWindow.toLong() - inFlight else Long.MAX_VALUE
+                        if (avail > 0 || waitedMs >= MAX_WINDOW_WAIT_MS) {
+                            val take = minOf((chunk.size - sent).toLong(), avail).toInt()
+                            val pkt = buildSegmentLocked(
+                                PacketUtils.TcpFlag.ACK or PacketUtils.TcpFlag.PSH,
+                                chunk.copyOfRange(sent, sent + take),
+                            )
+                            sndNxt = (sndNxt + take) and 0xFFFFFFFFL
+                            sent += take
+                            waitedMs = 0L
+                            pkt
+                        } else {
+                            null
+                        }
+                    }
+                    if (seg != null) {
+                        tunnel.writeToTun(seg)
+                    } else {
+                        try { Thread.sleep(WINDOW_POLL_MS) } catch (_: InterruptedException) { reset(); return }
+                        waitedMs += WINDOW_POLL_MS
+                    }
                 }
             }
-            synchronized(lock) {
+            val fin = synchronized(lock) {
                 if (state != State.CLOSED) {
-                    sendSegment(PacketUtils.TcpFlag.ACK or PacketUtils.TcpFlag.FIN, ByteArray(0))
+                    val pkt = buildSegmentLocked(PacketUtils.TcpFlag.ACK or PacketUtils.TcpFlag.FIN, ByteArray(0))
                     sndNxt = (sndNxt + 1) and 0xFFFFFFFFL
                     state = State.CLOSING
+                    pkt
+                } else {
+                    null
                 }
             }
+            if (fin != null) tunnel.writeToTun(fin)
         } catch (_: Exception) {
             reset()
         }
     }
 
-    private fun sendSegment(flags: Int, payload: ByteArray, mss: Int = 0) {
-        val pkt = PacketUtils.buildTcp(
+    /**
+     * Builds the next outbound segment. Call only under [lock]; the caller writes the packet to
+     * the TUN after releasing the lock (writeToTun may block and must not run under the lock).
+     */
+    private fun buildSegmentLocked(flags: Int, payload: ByteArray, mss: Int = 0): ByteArray =
+        PacketUtils.buildTcp(
             src = serverIp, srcPort = serverPort,
             dst = clientIp, dstPort = clientPort,
             seq = sndNxt, ack = rcvNxt, flags = flags, window = WIN, payload = payload, mss = mss
         )
-        tunnel.writeToTun(pkt)
+
+    private fun writeAllToTun(pkts: List<ByteArray>) {
+        for (pkt in pkts) tunnel.writeToTun(pkt)
     }
 
     private fun reset() {
-        synchronized(lock) { closeLocked(sendRst = true) }
+        val toTun = ArrayList<ByteArray>(1)
+        synchronized(lock) { closeLocked(sendRst = true, toTun) }
+        writeAllToTun(toTun)
     }
 
-    private fun closeLocked(sendRst: Boolean) {
+    private fun closeLocked(sendRst: Boolean, toTun: MutableList<ByteArray>) {
         if (state == State.CLOSED) return
         if (sendRst) {
-            try { sendSegment(PacketUtils.TcpFlag.RST or PacketUtils.TcpFlag.ACK, ByteArray(0)) } catch (_: Exception) {}
+            try { toTun.add(buildSegmentLocked(PacketUtils.TcpFlag.RST or PacketUtils.TcpFlag.ACK, ByteArray(0))) } catch (_: Exception) {}
         }
         state = State.CLOSED
         pendingToUpstream.clear()
@@ -279,5 +418,9 @@ class TcpConnection(
         tunnel.onConnectionClosed(key, udp = false)
     }
 
-    fun close() = synchronized(lock) { closeLocked(sendRst = false) }
+    fun close() {
+        val toTun = ArrayList<ByteArray>(1)
+        synchronized(lock) { closeLocked(sendRst = false, toTun) }
+        writeAllToTun(toTun)
+    }
 }

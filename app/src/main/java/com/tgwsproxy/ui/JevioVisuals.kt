@@ -38,8 +38,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -54,6 +57,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -64,6 +68,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.tgwsproxy.ui.theme.AccentDark
 import com.tgwsproxy.ui.theme.Background
 import com.tgwsproxy.ui.theme.Destructive
@@ -78,17 +84,33 @@ import com.tgwsproxy.ui.theme.SurfaceElevated
 /** Shared motion curve: quick response with a soft, natural finish. */
 internal val JevioEaseOut = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
 
-/** Honor the Android system setting that disables animator motion. */
+/**
+ * Honor the Android system setting that disables animator motion. Re-checked on every resume:
+ * the developer setting can flip while the process is alive, and the value frozen by a bare
+ * remember{} at first composition would keep stale motion behaviour for the rest of the session.
+ */
 @Composable
 internal fun reducedMotionEnabled(): Boolean {
     val context = LocalContext.current
-    return remember {
-        Settings.Global.getFloat(
-            context.contentResolver,
-            Settings.Global.ANIMATOR_DURATION_SCALE,
-            1f,
-        ) == 0f
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    fun isReduced(): Boolean = Settings.Global.getFloat(
+        context.contentResolver,
+        Settings.Global.ANIMATOR_DURATION_SCALE,
+        1f,
+    ) == 0f
+
+    var reduced by remember { mutableStateOf(isReduced()) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) reduced = isReduced()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+
+    return reduced
 }
 
 /** Stable, interruptible press feedback shared by every pill button. */

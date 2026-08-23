@@ -8,6 +8,8 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.tgwsproxy.R
+import com.tgwsproxy.service.LogKind
 import com.tgwsproxy.service.LogLine
 import com.tgwsproxy.service.ProxyService
 import kotlinx.coroutines.Job
@@ -15,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.security.SecureRandom
 
 class ProxyViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -95,7 +98,23 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
     private fun bindService() {
         val context = getApplication<Application>()
         val intent = Intent(context, ProxyService::class.java)
-        context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        // bindService can decline (return false) instead of throwing when the service cannot be
+        // created — without a check the UI would sit in its seeded state forever with no signal.
+        val failure: String? = try {
+            if (context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)) {
+                null
+            } else {
+                "service unavailable"
+            }
+        } catch (error: RuntimeException) {
+            error.localizedMessage ?: error.javaClass.simpleName
+        }
+        if (failure != null) {
+            _uiState.value = _uiState.value.copy(
+                isLoading = false,
+                error = context.getString(R.string.proxy_error_start_failed, failure)
+            )
+        }
     }
 
     private fun collectServiceState() {
@@ -121,7 +140,10 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
                     // This rebuilds from scratch rather than copy()ing, so anything the service owns
                     // has to be mapped here or it is silently dropped on the next emission — and the
                     // service is exactly who knows why a start failed.
-                    error = serviceState.error
+                    error = serviceState.error,
+                    // The filter is UI-owned, not service-owned: carry it over explicitly or every
+                    // service emission would snap the chips back to All.
+                    logFilter = _uiState.value.logFilter
                 )
             }
         }
@@ -149,35 +171,82 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
                 context.startForegroundService(intent)
             }
         } catch (error: RuntimeException) {
-            _uiState.value = _uiState.value.copy(isLoading = false)
-            throw error
+            // A Compose click must never crash the app: startForegroundService throws
+            // ForegroundServiceStartNotAllowedException on Android 12+ (or SecurityException where
+            // the FGS permission is missing). Surface it through the same error slot the service
+            // uses, which the dial already renders under the state label.
+            _uiState.value = _uiState.value.copy(
+                isLoading = false,
+                error = context.getString(
+                    R.string.proxy_error_start_failed,
+                    error.localizedMessage ?: error.javaClass.simpleName
+                )
+            )
         }
-    }
-
-    fun clearLogs() {
-        proxyService?.clearLogs()
     }
 
     /** Rotate the proxy secret (only effective while the proxy is stopped). */
     fun regenerateSecret() {
-        proxyService?.regenerateSecret()
+        val service = proxyService
+        if (service != null) {
+            service.regenerateSecret()
+            return
+        }
+        // The service bind is async, so a tap can land before onServiceConnected — the call used
+        // to be dropped silently. Write the same prefs the service itself writes; they are the
+        // source of truth it reads on the next start.
+        if (_uiState.value.isRunning) return
+        val bytes = ByteArray(16)
+        SecureRandom().nextBytes(bytes)
+        val secret = bytes.joinToString("") { "%02x".format(it) }
+        prefs().edit().putString(ProxyService.KEY_SECRET, secret).apply()
+        val state = _uiState.value
+        _uiState.value = state.copy(
+            secret = secret,
+            proxyLink = ProxyService.buildProxyLink(state.host, state.port, secret, state.fakeTlsDomain),
+            // Rotating the key retires a pending "bad secret" failure the same way the service does.
+            error = null
+        )
     }
 
     fun setCfDomain(domain: String) {
         // Optimistically reflect in the UI even before the service flow emits.
         _uiState.value = _uiState.value.copy(cfDomain = domain)
-        proxyService?.setCfDomain(domain)
+        val service = proxyService
+        if (service != null) {
+            service.setCfDomain(domain)
+        } else {
+            // Same async-bind gap as regenerateSecret(): persist directly so the write is not lost.
+            prefs().edit().putString(ProxyService.KEY_CF_DOMAIN, domain.trim()).apply()
+        }
     }
 
     fun setCfWorkerDomain(domain: String) {
         _uiState.value = _uiState.value.copy(cfWorkerDomain = domain)
-        proxyService?.setCfWorkerDomain(domain)
+        val service = proxyService
+        if (service != null) {
+            service.setCfWorkerDomain(domain)
+        } else {
+            prefs().edit().putString(ProxyService.KEY_CF_WORKER_DOMAIN, domain.trim()).apply()
+        }
     }
 
     fun setFakeTlsDomain(domain: String) {
         _uiState.value = _uiState.value.copy(fakeTlsDomain = domain)
-        proxyService?.setFakeTlsDomain(domain)
+        val service = proxyService
+        if (service != null) {
+            service.setFakeTlsDomain(domain)
+        } else {
+            prefs().edit().putString(ProxyService.KEY_FAKE_TLS_DOMAIN, domain.trim()).apply()
+        }
     }
+
+    fun setLogFilter(filter: LogFilter) {
+        _uiState.value = _uiState.value.copy(logFilter = filter)
+    }
+
+    private fun prefs() =
+        getApplication<Application>().getSharedPreferences(ProxyService.PREFS, Context.MODE_PRIVATE)
 
     override fun onCleared() {
         super.onCleared()
@@ -206,5 +275,26 @@ data class ProxyUiState(
     val startedAt: Long = 0,
     val route: String = "",
     /** Localized, actionable reason the last start attempt failed; null = nothing to show. */
-    val error: String? = null
+    val error: String? = null,
+    /** Which log lines the log section renders; UI-owned, survives service state rebuilds. */
+    val logFilter: LogFilter = LogFilter.ALL
 )
+
+/** Log scopes offered above the log list. */
+enum class LogFilter { ALL, CONNECTIONS, PROBLEMS }
+
+private val CONNECTION_KINDS = setOf(
+    LogKind.CONN, LogKind.HANDSHAKE, LogKind.FAKE_TLS, LogKind.CLOUDFLARE, LogKind.WS, LogKind.PLAIN
+)
+
+/**
+ * The log the UI actually shows. DEBUG lines never pass any scope on purpose: they are written for
+ * a future verbose mode, and a toggle now would just bury the signal the filters exist to surface.
+ */
+fun List<LogLine>.visibleLogs(scope: LogFilter): List<LogLine> = filter { line ->
+    line.kind != LogKind.DEBUG && when (scope) {
+        LogFilter.ALL -> true
+        LogFilter.CONNECTIONS -> line.kind in CONNECTION_KINDS
+        LogFilter.PROBLEMS -> line.kind == LogKind.ERROR || line.kind == LogKind.WARNING
+    }
+}

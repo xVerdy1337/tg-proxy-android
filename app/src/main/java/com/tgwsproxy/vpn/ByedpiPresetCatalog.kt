@@ -32,6 +32,13 @@ data class ByedpiPreset(
 object ByedpiPresetCatalog {
 
     /**
+     * The timeout token every -A command carries; see the note on the "tlsrec-double" preset.
+     * Declared above `presets` because the preset commands below are built from it — the literal
+     * must exist exactly once, or a sweep-tested string and a shipped string can drift apart.
+     */
+    const val AUTO_DETECT_TIMEOUT = "-T2:2:2:64"
+
+    /**
      * The order is intentional: cheaper and more common strategies run first during auto-tune.
      * Keep the list deterministic so progress and support reports are reproducible.
      */
@@ -136,7 +143,7 @@ object ByedpiPresetCatalog {
             // on a kept-alive H2 socket), turning an ACK blackout Linux would ride out into either
             // a RST with no retry (sq_buff already freed → can_reconn false) or, earlier, a bogus
             // DETECT_TORST cached against that IP for later connections to start from.
-            command = "-T2:2:2:64 -r1+s -s25+s -a1 -At,r,s -s50 -r1+s -s50+s -a1",
+            command = "$AUTO_DETECT_TIMEOUT -r1+s -s25+s -a1 -At,r,s -s50 -r1+s -s50+s -a1",
             group = ByedpiPresetGroup.BALANCED,
         ),
         ByedpiPreset(
@@ -146,7 +153,7 @@ object ByedpiPresetCatalog {
             // -T for the reason spelled out on tlsrec-double: -A's detectors are inert without it,
             // field 1 is bounded by StrategyTester.TLS_TIMEOUT_MS and field 4 keeps the socket
             // timeout off live connections. Keep the value identical to tlsrec-double's.
-            command = "-T2:2:2:64 -o1 -a1 -At,r,s -d1",
+            command = "$AUTO_DETECT_TIMEOUT -o1 -a1 -At,r,s -d1",
             group = ByedpiPresetGroup.AGGRESSIVE,
         ),
         ByedpiPreset(
@@ -223,9 +230,6 @@ object ByedpiPresetCatalog {
     )
 
     val autotunePresets: List<ByedpiPreset> = presets.filterNot { it.diagnostic }
-
-    /** The timeout token every -A command carries; see the note on the "tlsrec-double" preset. */
-    const val AUTO_DETECT_TIMEOUT = "-T2:2:2:64"
 
     /**
      * Bring a persisted command up to the current spelling.

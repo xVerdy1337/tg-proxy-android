@@ -33,8 +33,15 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     private val autoTuneLocationPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-            desyncVm.runAutoTune()
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+            if (isGranted) {
+                desyncVm.runAutoTune()
+            } else {
+                // Denial is not fatal: the sweep still runs, it just caches strategies without a
+                // per-network key (the cache lookup treats a missing grant as a null key). Branch
+                // on the grant explicitly so the result is visibly consumed, not dropped.
+                desyncVm.runAutoTune()
+            }
         }
 
     // System VPN consent dialog ("Разрешить Jevio создать VPN-подключение?"). On approval we

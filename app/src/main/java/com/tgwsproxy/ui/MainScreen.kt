@@ -1,22 +1,19 @@
 package com.tgwsproxy.ui
 
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.PersistableBundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -37,7 +34,6 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -59,7 +55,6 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ExpandLess
@@ -67,7 +62,6 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Send
@@ -107,7 +101,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
@@ -151,7 +144,6 @@ import com.tgwsproxy.ui.theme.Primary
 import com.tgwsproxy.ui.theme.Signal
 import com.tgwsproxy.ui.theme.Success
 import com.tgwsproxy.ui.theme.Surface
-import com.tgwsproxy.ui.theme.SurfaceElevated
 import com.tgwsproxy.ui.theme.SurfaceVariant
 import com.tgwsproxy.ui.theme.TextMuted
 import com.tgwsproxy.ui.theme.TextPrimary
@@ -163,9 +155,17 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
-private fun copyToClipboard(context: Context, label: String, text: String, toast: String) {
+private fun copyToClipboard(context: Context, label: String, text: String, toast: String, sensitive: Boolean = false) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+    val clip = ClipData.newPlainText(label, text)
+    // API 31+ censors clips flagged sensitive in the clipboard preview and the paste overlay —
+    // without the flag the proxy secret flashes on screen in plain text after every copy.
+    if (sensitive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        clip.description.extras = PersistableBundle().apply {
+            putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+        }
+    }
+    clipboard.setPrimaryClip(clip)
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
         Toast.makeText(context, toast, Toast.LENGTH_SHORT).show()
     }
@@ -207,6 +207,11 @@ fun MainScreen(
     onDisableVpn: () -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    // Filtered once per state emission, not per LogItem: the whole log recomposes on every
+    // arriving line, so doing the predicate inside the lazy item would redo it 200× per line.
+    val visibleLogs = remember(uiState.logs, uiState.logFilter) {
+        uiState.logs.visibleLogs(uiState.logFilter)
+    }
     val context = LocalContext.current
     val listState = rememberLazyListState()
     var tab by remember { mutableStateOf(MainTab.Telegram) }
@@ -218,7 +223,7 @@ fun MainScreen(
     // here: the list spaces its items by a fixed 16dp, which an item collects even when its content
     // draws nothing, so "return early inside the composable" leaves a gap behind. Hoisting the
     // update probe also stops it re-firing every time the banner's item leaves the lazy window.
-    val updateUrl = rememberUpdateUrl(context)
+    val updateUrl = rememberUpdateUrl()
     val batteryRestricted = !batteryOptimizationsIgnored()
 
     if (showOnboarding) {
@@ -244,13 +249,16 @@ fun MainScreen(
         listState.scrollToItem(0)
     }
 
-    // Keyed on the newest line's sequence number, not on the log's size: the log is capped at 200,
-    // so once it fills up the size stops changing and a size key would freeze the auto-follow for
-    // the rest of the session. seq keeps moving for every line that arrives, cap or no cap.
-    LaunchedEffect(uiState.logs.lastOrNull()?.seq) {
+    // Keyed on the newest visible line's sequence number, not on the log's size: the log is
+    // capped at 200, so once it fills up the size stops changing and a size key would freeze the
+    // auto-follow for the rest of the session. seq keeps moving for every line that arrives, cap
+    // or no cap. The filtered list, not the raw one: a hidden line (DEBUG, or outside the active
+    // scope) must not scroll the view the user is looking at.
+    LaunchedEffect(visibleLogs.lastOrNull()?.seq) {
         if (tab != MainTab.Telegram) return@LaunchedEffect
         val totalItems = listState.layoutInfo.totalItemsCount
-        if (isAtBottom && totalItems > 0) {
+        // An in-flight drag means the user is reading history above — don't yank them back down.
+        if (isAtBottom && totalItems > 0 && !listState.isScrollInProgress) {
             listState.animateScrollToItem(totalItems - 1)
         }
     }
@@ -324,7 +332,7 @@ fun MainScreen(
                     contentPadding = PaddingValues(top = 4.dp, bottom = 32.dp)
                 ) {
                     if (updateUrl != null) {
-                        item(key = "update-banner") { UpdateBanner(context = context, url = updateUrl) }
+                        item(key = "update-banner") { UpdateBanner(url = updateUrl) }
                     }
                     item(key = "main-tabs") {
                         MainTabRow(selected = tab, onSelect = { tab = it })
@@ -337,8 +345,14 @@ fun MainScreen(
                                     uiState = uiState,
                                     onToggle = { viewModel.toggleProxy() },
                                     onOpenTelegram = {
-                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uiState.proxyLink))
-                                        context.startActivity(intent)
+                                        // No handler answers tg:// when Telegram is not installed,
+                                        // and an unguarded ACTION_VIEW then crashes the click with
+                                        // ActivityNotFoundException. Same guard as the channel card.
+                                        try {
+                                            context.startActivity(
+                                                Intent(Intent.ACTION_VIEW, Uri.parse(uiState.proxyLink))
+                                            )
+                                        } catch (_: Exception) {}
                                     },
                                 )
                             }
@@ -352,7 +366,6 @@ fun MainScreen(
                                     expanded = tgAdvancedOpen,
                                     onToggle = { tgAdvancedOpen = !tgAdvancedOpen },
                                     uiState = uiState,
-                                    context = context,
                                     onRegenerateSecret = { viewModel.regenerateSecret() },
                                     onSaveFakeTls = { viewModel.setFakeTlsDomain(it) },
                                     onSaveCfDomain = { viewModel.setCfDomain(it) },
@@ -369,7 +382,7 @@ fun MainScreen(
                                             .fillMaxWidth()
                                             .heightIn(min = 48.dp)
                                             .clip(RoundedCornerShape(12.dp))
-                                            .clickable { logsExpanded = !logsExpanded }
+                                            .clickable(role = Role.Button) { logsExpanded = !logsExpanded }
                                             .padding(vertical = 4.dp)
                                     ) {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -380,10 +393,12 @@ fun MainScreen(
                                             )
                                             Spacer(Modifier.width(8.dp))
                                             Text(
-                                                text = "${uiState.logs.size}",
+                                                text = "${visibleLogs.size}",
                                                 // tnum, like every other live number here: the count
                                                 // climbs to 200 and proportional digits would resize
                                                 // the pill under it on almost every log line.
+                                                // Post-filter, not raw: the number must match the
+                                                // list the chips below are shaping.
                                                 style = MaterialTheme.typography.labelSmall.copy(
                                                     fontFeatureSettings = "tnum"
                                                 ),
@@ -403,6 +418,29 @@ fun MainScreen(
                                 }
 
                                 if (logsExpanded) {
+                                    item(key = "logs-filters") {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            LogFilterChip(
+                                                label = stringResource(R.string.log_filter_all),
+                                                value = LogFilter.ALL,
+                                                current = uiState.logFilter,
+                                                onSelect = { viewModel.setLogFilter(it) },
+                                            )
+                                            LogFilterChip(
+                                                label = stringResource(R.string.log_filter_connections),
+                                                value = LogFilter.CONNECTIONS,
+                                                current = uiState.logFilter,
+                                                onSelect = { viewModel.setLogFilter(it) },
+                                            )
+                                            LogFilterChip(
+                                                label = stringResource(R.string.log_filter_problems),
+                                                value = LogFilter.PROBLEMS,
+                                                current = uiState.logFilter,
+                                                onSelect = { viewModel.setLogFilter(it) },
+                                            )
+                                        }
+                                    }
+
                                     // One item, not one per line: as top-level entries the lines
                                     // inherited the list's 16dp page gap, and LogItem is drawn to
                                     // sit flush — 200 of them turned the log into a ladder that was
@@ -411,13 +449,13 @@ fun MainScreen(
                                     // is cheap next to reading a log full of holes.
                                     item(key = "logs-body") {
                                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                            uiState.logs.forEach { log -> LogItem(log) }
+                                            visibleLogs.forEach { log -> LogItem(log) }
                                         }
                                     }
                                 }
                             }
 
-                            item(key = "tg-channel") { TelegramChannelCard(context) }
+                            item(key = "tg-channel") { TelegramChannelCard() }
                         }
 
                         MainTab.Sites -> {
@@ -427,7 +465,7 @@ fun MainScreen(
                                 onEnable = onEnableVpn,
                                 onDisable = onDisableVpn,
                             )
-                            item(key = "tg-channel-sites") { TelegramChannelCard(context) }
+                            item(key = "tg-channel-sites") { TelegramChannelCard() }
                         }
                     }
                 }
@@ -475,6 +513,7 @@ private fun MainTabRow(selected: MainTab, onSelect: (MainTab) -> Unit) {
 
             Row(modifier = Modifier.fillMaxSize()) {
                 MainTabButton(
+                    // Brand, not localizable copy: the tab names the Telegram product itself.
                     label = "Telegram",
                     selected = selected == MainTab.Telegram,
                     onClick = { onSelect(MainTab.Telegram) },
@@ -828,7 +867,6 @@ private fun TgAdvancedCard(
     expanded: Boolean,
     onToggle: () -> Unit,
     uiState: ProxyUiState,
-    context: Context,
     onRegenerateSecret: () -> Unit,
     onSaveFakeTls: (String) -> Unit,
     onSaveCfDomain: (String) -> Unit,
@@ -841,7 +879,7 @@ private fun TgAdvancedCard(
                 .clip(RoundedCornerShape(14.dp))
                 .background(Surface)
                 .border(1.dp, Border, RoundedCornerShape(14.dp))
-                .clickable { onToggle() }
+                .clickable(role = Role.Button) { onToggle() }
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -868,7 +906,6 @@ private fun TgAdvancedCard(
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 ProxyInfoCard(
                     uiState = uiState,
-                    context = context,
                     onRegenerateSecret = onRegenerateSecret
                 )
                 FakeTlsCard(uiState, onSave = onSaveFakeTls)
@@ -885,9 +922,9 @@ private fun TgAdvancedCard(
 @Composable
 private fun ProxyInfoCard(
     uiState: ProxyUiState,
-    context: Context,
     onRegenerateSecret: () -> Unit
 ) {
+    val context = LocalContext.current
     var secretRevealed by remember { mutableStateOf(false) }
 
     Card(
@@ -954,7 +991,7 @@ private fun ProxyInfoCard(
                             )
                         }
                         IconButton(onClick = {
-                            copyToClipboard(context, context.getString(R.string.secret), uiState.secret, context.getString(R.string.secret_copied))
+                            copyToClipboard(context, context.getString(R.string.secret), uiState.secret, context.getString(R.string.secret_copied), sensitive = true)
                         }) {
                             Icon(
                                 imageVector = Icons.Default.ContentCopy,
@@ -1313,8 +1350,8 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
 
 /**
  * Colour per log role. Only a lookup: the keyword matching that decides the role happens once, when
- * the line is created, because the whole 200-line log recomposes on every arriving line and seven
- * case-insensitive scans × 200 lines per line was ~1400 substring searches for one new entry.
+ * the line is created, because the whole 200-line log recomposes on every arriving line and nine
+ * case-insensitive scans × 200 lines per line was ~1800 substring searches for one new entry.
  */
 private fun logColor(kind: LogKind): Color = when (kind) {
     LogKind.ERROR -> Destructive
@@ -1324,6 +1361,41 @@ private fun logColor(kind: LogKind): Color = when (kind) {
     LogKind.CLOUDFLARE -> Info
     LogKind.WS -> Info
     LogKind.PLAIN -> TextSecondary
+    // Connection lifecycle gets the accent so open/close events stand out from the plain traffic
+    // chatter without masquerading as either an error or a successful handshake.
+    LogKind.CONN -> Accent
+    // DEBUG never renders today (filtered out upstream), but the branch keeps the when exhaustive.
+    LogKind.DEBUG -> TextMuted
+}
+
+@Composable
+private fun LogFilterChip(
+    label: String,
+    value: LogFilter,
+    current: LogFilter,
+    onSelect: (LogFilter) -> Unit,
+) {
+    val selected = current == value
+    Box(
+        modifier = Modifier
+            .heightIn(min = 32.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (selected) Accent else SurfaceVariant)
+            // selectable with a radio role: the three chips are mutually exclusive options, and a
+            // plain clickable would read as three identical buttons with the active one unnamed.
+            .selectable(selected = selected, role = Role.RadioButton) { onSelect(value) }
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            label,
+            color = if (selected) OnAccent else TextSecondary,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            softWrap = false,
+        )
+    }
 }
 
 @Composable
@@ -1345,7 +1417,8 @@ private fun LogItem(log: LogLine) {
 }
 
 @Composable
-private fun TelegramChannelCard(context: Context) {
+private fun TelegramChannelCard() {
+    val context = LocalContext.current
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -1594,7 +1667,8 @@ private fun OnboardingRow(icon: ImageVector, title: String, body: String) {
  * caller uses it to decide whether the banner's list item exists at all; see [MainScreen].
  */
 @Composable
-private fun rememberUpdateUrl(context: Context): String? {
+private fun rememberUpdateUrl(): String? {
+    val context = LocalContext.current
     var updateUrl by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         updateUrl = withContext(Dispatchers.IO) { checkForUpdate(context) }
@@ -1603,7 +1677,8 @@ private fun rememberUpdateUrl(context: Context): String? {
 }
 
 @Composable
-private fun UpdateBanner(context: Context, url: String) {
+private fun UpdateBanner(url: String) {
+    val context = LocalContext.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1655,15 +1730,17 @@ private fun isNewer(latest: String, current: String): Boolean {
 }
 
 private fun checkForUpdate(context: Context): String? {
+    var conn: java.net.HttpURLConnection? = null
     return try {
         val url = java.net.URL("https://api.github.com/repos/xVerdy1337/tg-proxy-android/releases/latest")
-        val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+        val c = (url.openConnection() as java.net.HttpURLConnection).apply {
             connectTimeout = 4000; readTimeout = 4000
             setRequestProperty("Accept", "application/vnd.github+json")
             setRequestProperty("User-Agent", "JevioUnblocker")
         }
-        if (conn.responseCode != 200) return null
-        val text = conn.inputStream.bufferedReader().use { it.readText() }
+        conn = c
+        if (c.responseCode != 200) return null
+        val text = c.inputStream.bufferedReader().use { it.readText() }
         val json = org.json.JSONObject(text)
         val tag = json.optString("tag_name", "")
         val safeReleasesUrl = "https://github.com/xVerdy1337/tg-proxy-android/releases/latest"
@@ -1673,7 +1750,11 @@ private fun checkForUpdate(context: Context): String? {
         // us an intent:// or arbitrary-scheme URI. Fall back to the known-good releases page.
         val openUrl = if (isTrustedGithubUrl(htmlUrl)) htmlUrl else safeReleasesUrl
         if (tag.isNotEmpty() && isNewer(tag, currentVersionName(context))) openUrl else null
-    } catch (e: Exception) { null }
+    } catch (e: Exception) { null } finally {
+        // Free the socket on every path — the early return and the catch both otherwise leak the
+        // connection, and this probe runs on every cold open of the screen.
+        conn?.disconnect()
+    }
 }
 
 /** True only for https://github.com/... URLs (host exactly github.com or a subdomain). */
@@ -1845,7 +1926,6 @@ private fun FullMainScreenPreview() {
                     expanded = false,
                     onToggle = {},
                     uiState = proxyState,
-                    context = LocalContext.current,
                     onRegenerateSecret = {},
                     onSaveFakeTls = {},
                     onSaveCfDomain = {},
