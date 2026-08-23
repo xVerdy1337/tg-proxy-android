@@ -49,7 +49,7 @@ android {
                 // A keystore that exists while its credentials are missing otherwise surfaces
                 // as a cryptic signing failure deep in the build; fail here with the cause.
                 if (storePw.isNullOrEmpty() || alias.isNullOrEmpty() || keyPw.isNullOrEmpty()) {
-                    gradle.error(
+                    throw GradleException(
                         "KEYSTORE_PATH points to an existing keystore, but one or more of " +
                         "KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD is missing or empty. " +
                         "Set all four variables, or unset KEYSTORE_PATH for an unsigned release."
