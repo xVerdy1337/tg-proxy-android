@@ -16,6 +16,7 @@ import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -53,6 +54,14 @@ class MtProtoProxyServer(
     // own ~5s patience meant some sessions died as "closed: peer" mid-dial. After a lost wave,
     // skip direct for a while; a success anywhere clears it.
     @Volatile private var directWaveFailedAt = 0L
+    // Single-flight re-probe: when the negative cache expires, exactly ONE connection re-tests the
+    // direct wave while the rest go straight to Cloudflare. Without this a chat-screen media burst
+    // (~10 sessions dialling in the same second) all raced direct together and all paid
+    // WS_WAVE_TIMEOUT_MS before falling back — a shared 4s stall every time the TTL expired.
+    private val directProbeInFlight = AtomicBoolean(false)
+    // Consecutive lost probes stretch the skip window (see directWaveNegativeTtlMs); a successful
+    // direct wave resets it, so an unblocked network returns to preferring direct immediately.
+    private val directWaveFailCount = AtomicInteger(0)
 
     /**
      * Live client count, readable at any moment from any thread.
@@ -531,18 +540,29 @@ class MtProtoProxyServer(
         // within a second, so we open ~2-3 TLS handshakes instead of ~18 — a big radio/CPU saver,
         // especially when a network switch forces every session to redial at once. Only if the
         // direct wave fails do we fall back to racing the full Cloudflare pool (wave 2).
-        val directFresh = System.currentTimeMillis() - directWaveFailedAt >= DIRECT_WAVE_NEGATIVE_TTL_MS
-        if (directFresh) {
-            onLog("[$label] connecting WS: ${directCandidates.size} direct endpoints", LogKind.WS)
-            val directResult = raceCandidates(directCandidates, WS_WAVE_TIMEOUT_MS, label)
-            if (directResult != null) {
-                directWaveFailedAt = 0L // direct is alive again — keep preferring it
-                return directResult
+        //
+        // The re-probe after a negative-cache expiry is single-flight: the first connection to
+        // notice the expiry dials direct, everyone arriving while it is dialling skips wave 1.
+        val directFresh = System.currentTimeMillis() - directWaveFailedAt >= directWaveNegativeTtlMs()
+        if (directFresh && directProbeInFlight.compareAndSet(false, true)) {
+            try {
+                onLog("[$label] connecting WS: ${directCandidates.size} direct endpoints", LogKind.WS)
+                val directResult = raceCandidates(directCandidates, WS_WAVE_TIMEOUT_MS, label)
+                if (directResult != null) {
+                    directWaveFailedAt = 0L // direct is alive again — keep preferring it
+                    directWaveFailCount.set(0)
+                    return directResult
+                }
+                directWaveFailCount.incrementAndGet()
+                directWaveFailedAt = System.currentTimeMillis()
+                val skipMin = directWaveNegativeTtlMs() / 60_000
+                onLog("[$label] direct failed — racing ${cfCandidates.size} Cloudflare endpoints (skip $skipMin min)", LogKind.CLOUDFLARE)
+            } finally {
+                directProbeInFlight.set(false)
             }
-            directWaveFailedAt = System.currentTimeMillis()
-            onLog("[$label] direct failed — racing ${cfCandidates.size} Cloudflare endpoints", LogKind.CLOUDFLARE)
         } else {
-            onLog("[$label] direct skipped (failed recently) — racing ${cfCandidates.size} Cloudflare endpoints", LogKind.CLOUDFLARE)
+            val why = if (directFresh) "probe in flight" else "failed recently"
+            onLog("[$label] direct skipped ($why) — racing ${cfCandidates.size} Cloudflare endpoints", LogKind.CLOUDFLARE)
         }
         raceCandidates(cfCandidates, WS_RACE_TIMEOUT_MS, label)?.let { return it }
 
@@ -562,6 +582,17 @@ class MtProtoProxyServer(
             return raceCandidates(workerCandidates, WS_RACE_TIMEOUT_MS, label)
         }
         return null
+    }
+
+    /**
+     * Negative-cache window for the direct wave, doubling on every consecutive lost probe
+     * (2 → 4 → 8 → 16 → 30 min cap). In a network where direct is hard-blocked for hours the
+     * re-probe cost shrinks to twice an hour; a success resets the count, so a network that just
+     * got unblocked is re-preferred immediately after one good wave.
+     */
+    private fun directWaveNegativeTtlMs(): Long {
+        val shift = directWaveFailCount.get().coerceAtMost(4)
+        return (DIRECT_WAVE_NEGATIVE_TTL_MS shl shift).coerceAtMost(DIRECT_WAVE_NEGATIVE_TTL_MAX_MS)
     }
 
     /** Race [candidates] concurrently, returning the first that connects (losers are closed). */
@@ -973,8 +1004,11 @@ class MtProtoProxyServer(
         const val WS_WAVE_TIMEOUT_MS = 4_000L
         // How long a lost direct wave suppresses it: short enough to notice a network fix within
         // a couple of minutes, long enough that a hard-blocked direct path stops taxing every
-        // new connection with WS_WAVE_TIMEOUT_MS of dead waiting.
+        // new connection with WS_WAVE_TIMEOUT_MS of dead waiting. This is the BASE of the
+        // exponential backoff — see directWaveNegativeTtlMs().
         const val DIRECT_WAVE_NEGATIVE_TTL_MS = 120_000L
+        // Backoff cap: 120s << 4 = 32 min, clamped here to a round half hour.
+        const val DIRECT_WAVE_NEGATIVE_TTL_MAX_MS = 1_800_000L
         // One-shot "nothing has ever arrived" check. Well past the worst first-response latency
         // (relayInit + a DC round trip is sub-second even on a bad mobile link), short enough
         // that the redial happens while the user is still looking at the app. Kept at 9s: a dead
