@@ -359,16 +359,9 @@ private fun HeroUnblockCard(
             textAlign = TextAlign.Center,
             maxLines = 2,
         )
-        state.error?.let {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                it,
-                style = MaterialTheme.typography.bodySmall,
-                color = Destructive,
-                fontWeight = FontWeight.Medium,
-                textAlign = TextAlign.Center,
-            )
-        }
+        // Start/stop failures only, and blank counts as nothing to say. Both rules live in the shared
+        // composable — see its doc for the per-flow diagnostics they keep out of here.
+        JevioHeroError(error = state.error, running = running)
 
     }
 }

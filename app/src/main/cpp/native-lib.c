@@ -10,6 +10,18 @@
 #include "main.h"
 
 extern int server_fd;
+
+// Failures that belong to THIS shim rather than to byedpi's main(), kept outside the range main()
+// can produce. main() answers 0 on success, -1 when init()/run() fails — which on Android means the
+// bind lost, i.e. the port really is taken — and parse_args' status - 1 (so -2) for a malformed
+// command. Returning a bare -1 from here made "another run already owns the singleton"
+// indistinguishable from "port busy", and the VPN then told the user to go close ByeByeDPI and
+// other SOCKS apps when the truth was an auto-tune sweep still holding the engine inside this very
+// process: nothing to close, no way to act on the advice. Keep these in sync with ByeDpiExit
+// (core/ByeDpiProxy.kt), which is where the Kotlin side reads them.
+#define BYEDPI_ENGINE_BUSY (-11)
+#define BYEDPI_ARGV_OOM    (-12)
+
 // Plain int, read and written only through the __atomic_* builtins: they need a type they can
 // operate on, and the SEQ_CST ordering is what keeps this flag consistent with the server_fd stores
 // it is paired with. A plain store here would let the epilogue's "not running" become visible ahead
@@ -72,7 +84,7 @@ Java_com_tgwsproxy_core_ByeDpiProxy_jniStartProxy(JNIEnv *env, __attribute__((un
     if (!__atomic_compare_exchange_n(&g_proxy_running, &idle, 1, 0,
             __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
         LOG(LOG_S, "proxy already running");
-        return -1;
+        return BYEDPI_ENGINE_BUSY;
     }
 
     // Taken under the gate, so "running" always implies server_fd belongs to *this* run. Dropping
@@ -90,7 +102,7 @@ Java_com_tgwsproxy_core_ByeDpiProxy_jniStartProxy(JNIEnv *env, __attribute__((un
         // main() never runs, so the epilogue that lowers the flag never runs either: give the gate
         // back here or every later start is refused for the life of the process.
         __atomic_store_n(&g_proxy_running, 0, __ATOMIC_SEQ_CST);
-        return -1;
+        return BYEDPI_ARGV_OOM;
     }
 
     for (int i = 0; i < argc; i++) {
@@ -131,6 +143,22 @@ Java_com_tgwsproxy_core_ByeDpiProxy_jniStartProxy(JNIEnv *env, __attribute__((un
     free(argv);
 
     return result;
+}
+
+/**
+ * Is the engine claimed right now?
+ *
+ * The busy flag is raised by jniStartProxy's gate and lowered only by its epilogue — jniStopProxy
+ * and jniForceClose deliberately leave it raised, because main() still owns the event loop when they
+ * return. That made occupancy unobservable from Kotlin: a teardown that timed out looked exactly
+ * like a clean finish, so a wedged run was reported as "done" and every later start was refused with
+ * no explanation. Exposing the flag is what lets the callers tell those two apart, and it is a plain
+ * SEQ_CST load — an answer that is already stale by the time it is read, so treat it as "was busy a
+ * moment ago" and never as a reservation. Claiming is still jniStartProxy's test-and-set alone.
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_tgwsproxy_core_ByeDpiProxy_jniIsRunning(__attribute__((unused)) JNIEnv *env, __attribute__((unused)) jobject thiz) {
+    return __atomic_load_n(&g_proxy_running, __ATOMIC_SEQ_CST) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jint JNICALL

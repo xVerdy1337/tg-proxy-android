@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -65,6 +66,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tgwsproxy.ui.theme.AccentDark
 import com.tgwsproxy.ui.theme.Background
+import com.tgwsproxy.ui.theme.Destructive
 import com.tgwsproxy.ui.theme.GlassBorder
 import com.tgwsproxy.ui.theme.GlassShadow
 import com.tgwsproxy.ui.theme.GlassSurface
@@ -124,6 +126,40 @@ internal fun JevioButtonLabel(
         softWrap = true,
         overflow = TextOverflow.Ellipsis,
         modifier = modifier.fillMaxWidth(),
+    )
+}
+
+/**
+ * The failure line under a hero dial, on both tabs.
+ *
+ * Shared rather than written twice, because the two copies had already drifted: what looks like one
+ * line of styling carries two rules that are easy to lose, and the Sites hero lost both.
+ *
+ * [running] hides it. `error` on both states carries start/stop failures — which belong here, they
+ * are the only thing distinguishing a failed attempt from never having pressed the dial — but
+ * DesyncVpnService also routes live per-flow relay diagnostics through the same field while the VPN
+ * is up. One upstream reset painted a raw «upstream SocketException: Connection reset» in alarm red
+ * directly beneath a dial reading ON in green: untranslated, unlabelled, about a single flow the next
+ * connection retried fine, and it stayed until another flow overwrote it. Those belong to the
+ * diagnostics line inside the live-stats card, which is shown on exactly the condition this hides on.
+ *
+ * Blank and not merely null, for the same reason: a caller clearing a stale diagnostic may write ""
+ * rather than null (TcpConnection does), and `?.let` admits the empty string — an empty Text keeps
+ * the Spacer above it, so the first failed flow left a phantom 10dp gap that never went away.
+ *
+ * Scoped to [ColumnScope] because the leading Spacer is vertical: in a Row it would silently become
+ * horizontal padding instead of the gap this is meant to open.
+ */
+@Composable
+internal fun ColumnScope.JevioHeroError(error: String?, running: Boolean) {
+    if (running || error.isNullOrBlank()) return
+    Spacer(Modifier.height(10.dp))
+    Text(
+        text = error,
+        style = MaterialTheme.typography.bodySmall,
+        color = Destructive,
+        fontWeight = FontWeight.Medium,
+        textAlign = TextAlign.Center,
     )
 }
 

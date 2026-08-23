@@ -650,18 +650,10 @@ private fun TelegramHero(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
-        // Same treatment as the Sites hero: a failed start has to say so under the dial, or it is
-        // indistinguishable from never having pressed it.
-        uiState.error?.let {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                it,
-                style = MaterialTheme.typography.bodySmall,
-                color = Destructive,
-                fontWeight = FontWeight.Medium,
-                textAlign = TextAlign.Center,
-            )
-        }
+        // A failed start has to say so under the dial, or it is indistinguishable from never having
+        // pressed it. Shared with the Sites hero so the two cannot drift again — the comment here used
+        // to claim «same treatment» while only one of them had the guards.
+        JevioHeroError(error = uiState.error, running = running)
 
         if (running && uiState.proxyLink.isNotEmpty()) {
             Spacer(Modifier.height(20.dp))

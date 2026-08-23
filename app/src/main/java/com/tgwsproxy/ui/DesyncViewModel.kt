@@ -12,6 +12,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tgwsproxy.R
+import com.tgwsproxy.core.ByeDpiProxy
 import com.tgwsproxy.net.HelloProbe
 import com.tgwsproxy.net.StrategyTester
 import com.tgwsproxy.vpn.ByedpiPresetCatalog
@@ -264,7 +265,31 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
             addAll(StrategyTester.STRATEGIES.filter { it.command != saved && it.command != cached })
         }
         _autoTune.value = AutoTuneUiState(running = true, total = strategies.size)
+        // Forget any earlier sweep's teardown verdict before this one starts writing its own. The
+        // completion handler at the bottom reads that verdict to tell a clean cancel from a wedged
+        // engine, and a cancel landing before the first candidate has run must not inherit the answer
+        // from a sweep two taps ago — the flag is process-wide, and a stale `true` would accuse the
+        // engine of holding on when what is really busy could be a VPN the user just enabled.
+        StrategyTester.forgetLastRun()
         val job = viewModelScope.launch {
+            // The VPN flags checked above cover the holder we know about. They do not cover a run
+            // nothing tracks any more — a previous sweep whose loop thread outlived its teardown keeps
+            // the native claim with no Kotlin handle left on it. Sweeping into that meant every one of
+            // ~28 candidates refused by the singleton gate, each scored as a broken command, minutes of
+            // progress bar, and then "no method broke the block": a verdict about the network drawn
+            // entirely from a fact about our own process. Ask the engine rather than assume, on IO
+            // because the grace wait blocks, and give it the same short grace the VPN start gives —
+            // the ordinary case here is a teardown that returned microseconds ago.
+            val engineFree = withContext(Dispatchers.IO) {
+                !ByeDpiProxy.isEngineBusy() || ByeDpiProxy.awaitEngineFree()
+            }
+            if (!engineFree) {
+                _autoTune.value = AutoTuneUiState(
+                    finished = true,
+                    error = app.getString(R.string.auto_tune_engine_stuck),
+                )
+                return@launch
+            }
             // Resolve once before sweeping: a host the resolver refuses outright is out of scope,
             // not blocked. This asks the same resolver the bypass itself will use — the sweep runs with
             // the VPN off, and once it is up our package is off the tunnel anyway (self-excluded in
@@ -298,6 +323,10 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
             var bestHosts: Map<String, Boolean> = emptyMap()
             // Set when a candidate leaves the native engine held; see the check in the loop.
             var engineStuck = false
+            // Set when a candidate was refused the engine outright, i.e. somebody else took it
+            // mid-sweep. Kept apart from engineStuck because the cure is the opposite: nothing is
+            // wedged, the user simply has to stop whatever claimed it and tune again.
+            var engineTaken = false
             val found = withContext(Dispatchers.IO) {
                 var hit: StrategyTester.Strategy? = null
                 var bestOkCount = 0
@@ -317,6 +346,16 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                     val port = freeAutoTunePort(avoid = lastPort)
                     lastPort = port
                     val res = StrategyTester.testStrategy(app, s, sweepHosts, port = port)
+                    // Refused before it ran: something else claimed the engine between candidates —
+                    // the documented way in is the user enabling the VPN from the quick-settings
+                    // tile, which the pre-check above cannot see coming. The candidate was never
+                    // tested, so its "failure" is not about the strategy, and neither is any that
+                    // would follow it. Scoring on regardless is how a sweep interrupted halfway
+                    // used to persist the best of a run of pure noise.
+                    if (res.engineRefused) {
+                        engineTaken = true
+                        break
+                    }
                     // The engine is a process-wide singleton whose busy flag is lowered only when
                     // its own main() returns — jniStopProxy and jniForceClose deliberately leave it
                     // raised. So a candidate whose loop thread outlived teardown still HOLDS the
@@ -367,6 +406,18 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                 )
                 return@launch
             }
+            // Same reason nothing may be saved: every candidate from the refusal onwards was scored
+            // without ever having been run. Distinct message because this one is recoverable without
+            // restarting anything — turn off whatever took the engine and tune again.
+            if (engineTaken) {
+                _autoTune.value = AutoTuneUiState(
+                    finished = true,
+                    error = app.getString(R.string.auto_tune_engine_taken),
+                    hostOk = lastHosts,
+                    unresolvedHosts = unresolved,
+                )
+                return@launch
+            }
             if (found != null) {
                 setByedpiCmd(found.command)
                 networkCacheKey?.let { prefs().edit().putString(AUTO_TUNE_CACHE_PREFIX + it, found.command).apply() }
@@ -390,25 +441,31 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
         // The only place a cancelled sweep may report itself. A Job reaches its final state only
         // once its body has returned, so by the time this runs the candidate in flight has been
         // through StrategyTester's teardown; clearing `running` from cancelAutoTune instead would
-        // re-open the "Tune again" button while that teardown was still under way. What it does NOT
-        // establish — left unfixed here on purpose, so read it as a risk and not as a promise — is
-        // that the engine is free again: that teardown is stopProxy() + join(1500) + forceClose() +
-        // join(1500) and then returns whether or not the byedpi loop thread actually died, while
-        // native-lib.c lowers g_proxy_running only from jniStartProxy's epilogue — jniStopProxy and
-        // jniForceClose leave the flag raised deliberately. A loop that outlives both joins therefore
-        // keeps the process-wide claim for the life of the process, refusing every later VPN start,
-        // while this card has already declared the sweep over. Nothing this class can observe tells
-        // that apart from a clean finish, and no teardown may be fired from here (see the sweep loop
-        // for why), so the repair belongs one layer down: StrategyTester already knows whether the
-        // loop thread returned, and once it reports that, this handler can hold `running` until it
-        // has. Nothing was applied either: setByedpiCmd and the per-network cache write live past the
-        // sweep's withContext, which throws instead of returning once the job is cancelled, so a
-        // half-tested leader can never be saved.
+        // re-open the "Tune again" button while that teardown was still under way.
+        //
+        // That teardown is stopProxy() + join(1500) + forceClose() + join(1500), and it returns
+        // whether or not the byedpi loop thread actually died — while native-lib.c lowers
+        // g_proxy_running only from jniStartProxy's epilogue, since jniStopProxy and jniForceClose
+        // deliberately leave the flag raised. A loop that outlives both joins therefore keeps the
+        // process-wide claim, refusing every later VPN start, and this handler used to declare the
+        // sweep cleanly stopped over exactly that. It no longer has to guess: StrategyTester records
+        // whether its last run gave up on the loop thread, and ByeDpiProxy.isEngineBusy() reads the
+        // native flag, so the two together separate "stopped, engine free" from "stopped, engine
+        // wedged" — and the wedged case gets the message that names the only real cure. Still no
+        // teardown fired from here (see the sweep loop for why), and still nothing applied: the
+        // withContext throws once the job is cancelled, so setByedpiCmd and the cache write past it
+        // can never save a half-tested leader.
+        //
+        // Both reads are cheap and non-blocking, which is what makes them legal here — this runs on
+        // whichever thread completed the job, and the cancelling one is the main thread.
         job.invokeOnCompletion { cause ->
             if (cause is CancellationException) {
+                val stuck = StrategyTester.engineStillHeldByLastRun()
                 _autoTune.value = AutoTuneUiState(
                     finished = true,
-                    error = app.getString(R.string.auto_tune_cancelled),
+                    error = app.getString(
+                        if (stuck) R.string.auto_tune_engine_stuck else R.string.auto_tune_cancelled
+                    ),
                 )
             }
         }

@@ -206,6 +206,12 @@
     <string name="current_command">current command</string>
     <string name="auto_tune_none_worked">No method broke the block. Try manually in advanced settings.</string>
     <string name="auto_tune_engine_stuck">The bypass engine did not shut down and is still holding the device. Restart the app, then run auto-tune again.</string>
+    <!-- Something else claimed the engine part-way through the sweep — enabling the VPN from the
+         quick-settings tile is the usual way in. Nothing is broken and nothing was saved: every
+         method from that point on was refused the engine rather than tested, so the results would
+         have described our own process and not the network. Deliberately different advice from
+         auto_tune_engine_stuck, which needs a restart; this one just needs the other thing off. -->
+    <string name="auto_tune_engine_taken">Something else took the bypass engine mid-check, so the rest of the methods were never tested. Turn the VPN off and tune again.</string>
     <!-- Between the tap on «Stop tuning» and the sweep actually ending: the method under test owns
          the engine until it finishes, and a progress line frozen mid-count would read as a hang. -->
     <string name="auto_tune_cancelling">Stopping — waiting for the current check to finish…</string>
@@ -239,7 +245,17 @@
     <string name="vpn_fail_establish_stage">VPN establish</string>
     <string name="vpn_fail_format">Could not complete %1$s: %2$s: %3$s</string>
     <string name="vpn_fail_no_details">no details</string>
-    <string name="byedpi_port_busy">byedpi failed to start (port %1$d busy or engine already running). Close ByeByeDPI/other SOCKS and try again</string>
+    <!-- byedpi's own main() answered -1, which on Android means init()/run() failed and the bind lost
+         the port. The old wording hedged with "or engine already running" because the shim returned
+         -1 for that too and the two could not be told apart; byedpi_engine_busy now covers it, so the
+         hedge is gone and the advice can be acted on. -->
+    <string name="byedpi_port_busy">byedpi failed to start — port %1$d is taken. Close ByeByeDPI/other SOCKS apps and try again</string>
+    <!-- The start never happened: the single native engine was already claimed and the gate refused,
+         without touching anything. No port to free and no command to fix, so neither is mentioned.
+         Opens with "byedpi failed to start" like every sibling below — this lands in the same
+         diagnostics line under the VPN card, where a message that renamed the subject to "the bypass
+         engine" would read as a different subsystem reporting. -->
+    <string name="byedpi_engine_busy">byedpi failed to start — the engine is already in use by another run. Wait for method tuning to finish, or restart the app if this keeps happening</string>
     <string name="byedpi_exit_code">byedpi exited immediately (code %1$d). Check the byedpi command in settings</string>
     <string name="byedpi_socks_timeout">byedpi SOCKS not responding on 127.0.0.1:%1$d (timeout). Try again</string>
     <string name="byedpi_socks_not_ready">byedpi SOCKS not ready on 127.0.0.1:%1$d</string>

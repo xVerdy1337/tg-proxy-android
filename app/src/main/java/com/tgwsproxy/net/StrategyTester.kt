@@ -3,6 +3,7 @@ package com.tgwsproxy.net
 import android.content.Context
 import androidx.annotation.StringRes
 import com.tgwsproxy.R
+import com.tgwsproxy.core.ByeDpiExit
 import com.tgwsproxy.core.ByeDpiProxy
 import com.tgwsproxy.vpn.ByedpiPresetCatalog
 import com.tgwsproxy.vpn.DesyncVpnService
@@ -91,8 +92,56 @@ object StrategyTester {
          * assume it, which is why this is reported instead of inferred from the coroutine finishing.
          */
         val engineReleased: Boolean = true,
+        /**
+         * The run never happened: the singleton was already claimed, so startProxy() came straight
+         * back with [ByeDpiExit.ENGINE_BUSY] without touching anything.
+         *
+         * Reported apart from the host results because it says nothing whatsoever about the strategy
+         * — and the sweep used to read it as everything. A refusal makes the listener never answer,
+         * which is [DesyncVpnService.awaitSocksReady]'s failure path, which scored the candidate as a
+         * bad command; so once anything else took the engine mid-sweep (the VPN coming up from the
+         * quick-settings tile is the documented way in) every remaining candidate was recorded as
+         * broken and the best of that garbage was persisted and cached. A refusal must stop the sweep.
+         */
+        val engineRefused: Boolean = false,
     ) {
         val allOk: Boolean get() = hosts.isNotEmpty() && hosts.all { it.ok }
+    }
+
+    /**
+     * Whether the last [testStrategy] left the engine held, kept past the call so a cancelled sweep
+     * can still find out. The sweep's own result is discarded on that path — the coroutine unwinds
+     * out of its withContext instead of returning — and this is the one fact that must survive it,
+     * because the alternative is telling the user the tuning stopped cleanly while the engine is
+     * wedged and every later VPN start is going to be refused.
+     *
+     * Written by whichever thread ran the sweep, read from the main thread in the cancel handler.
+     */
+    @Volatile
+    private var lastRunHeldEngine: Boolean = false
+
+    /**
+     * Is the engine still held by the run that last went through [testStrategy]?
+     *
+     * Both halves are needed. The flag alone goes stale: a loop thread that outlived teardown may
+     * unwind a moment later, and its epilogue then frees the engine while the flag still reads held.
+     * The native busy bit alone is not attributable: it is process-wide, so a VPN that came up in the
+     * meantime raises it too. Together they only say yes when our own run gave up AND something is
+     * still holding on, which is the case worth reporting.
+     */
+    fun engineStillHeldByLastRun(): Boolean = lastRunHeldEngine && ByeDpiProxy.isEngineBusy()
+
+    /**
+     * Drop the verdict above, so a new sweep cannot be judged by an older one's teardown.
+     *
+     * Needed because the verdict outlives the call that produced it — that is the whole point of it —
+     * and a sweep cancelled before its first candidate has finished would otherwise answer with
+     * whatever the previous sweep left behind. The busy-flag half of the test does not save us there:
+     * it is process-wide, so a VPN the user enabled in between raises it too, and a stale `true`
+     * would blame the engine for holding on to a run that ended minutes ago.
+     */
+    fun forgetLastRun() {
+        lastRunHeldEngine = false
     }
 
     /** Complete a real TLS handshake to [host] through the local SOCKS5 proxy on [socksPort]. */
@@ -126,18 +175,28 @@ object StrategyTester {
         var loop: Thread? = null
         // Written by the loop thread, read by the finally below, so it has to publish safely.
         val returned = AtomicBoolean(false)
+        // Same publication requirement, and the reason it is separate from `returned`: a refusal
+        // returns too, so "the thread came back" cannot tell the two apart on its own.
+        val refused = AtomicBoolean(false)
         // Built inside the try, returned AFTER the finally: whether the engine is free is only
         // knowable once teardown has run, so the result cannot be handed back from inside the try.
         val result: StrategyResult = try {
             val args = DesyncVpnService.buildByedpiArgs(strategy.command, "127.0.0.1", port)
             loop = thread(name = "byedpi-test", isDaemon = true) {
                 // Any return means this run is done with the engine — refused by the singleton
-                // guard (-1), rejected for a malformed command (-2, since main() returns
-                // status - 1), or finished serving. The native epilogue has already released the
-                // globals or found itself superseded, so from here on we hold nothing. Keying on
-                // "returned at all" rather than on -1 alone matters: a bad strategy string is the
-                // COMMON case in a sweep, and -1 would have missed every one of them.
-                try { proxy.startProxy(args) } catch (_: Throwable) {}
+                // guard, rejected for a malformed command (-2, since main() returns status - 1), or
+                // finished serving. The native epilogue has already released the globals or found
+                // itself superseded, so from here on we hold nothing. Keying on "returned at all"
+                // rather than on one code matters: a bad strategy string is the COMMON case in a
+                // sweep, and any single code would have missed most of them.
+                //
+                // The refusal is still worth separating out, because it is the one return that says
+                // nothing about the strategy: the engine was already someone else's, so this
+                // candidate was never tested at all.
+                try {
+                    val code = proxy.startProxy(args)
+                    if (code == ByeDpiExit.ENGINE_BUSY) refused.set(true)
+                } catch (_: Throwable) {}
                 returned.set(true)
             }
             // Readiness means the SOCKS listener accepts a connection, not merely that its thread
@@ -198,6 +257,11 @@ object StrategyTester {
         // both joins AND the force-close, i.e. it is still inside main() and the native busy flag is
         // still raised — nothing else lowers it. The sweep has to see that, because the next start
         // of anything (the VPN included) will be refused for the life of the process.
-        return result.copy(engineReleased = returned.get())
+        //
+        // Published to the object as well as returned, so a sweep that is cancelled — and therefore
+        // throws this result away — still leaves the fact behind for its completion handler.
+        val held = !returned.get()
+        lastRunHeldEngine = held
+        return result.copy(engineReleased = !held, engineRefused = refused.get())
     }
 }
