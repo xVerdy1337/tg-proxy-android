@@ -423,6 +423,25 @@ class MtProtoProxyServer(
                         "${formatBytes(up + down)} $arrow ${"%.1f".format(durSec)} s — closed: ${closeReason.get()}",
                     LogKind.CONN
                 )
+                // Evict a half-dead cached WS route: it accepted the connection, then the edge
+                // closed it having delivered nothing (peer-initiated, 0 B down, short life).
+                // A long-lived zero-download session is just an idle spare, not a dud.
+                if (route == "ws") {
+                    val key = "$connDcId/$connIsMedia"
+                    if (down == 0L && closeReason.get() == "peer" && durSec < 15) {
+                        val strikes = routeStrikes.computeIfAbsent(key) { AtomicInteger(0) }.incrementAndGet()
+                        if (strikes >= 2 && routeCache.remove(key) != null) {
+                            routeStrikes.remove(key)
+                            onLog(
+                                "cached WS route for DC$connDcId${if (connIsMedia) " media" else ""} " +
+                                    "delivered nothing twice in a row — evicted, next session re-races",
+                                LogKind.WARNING
+                            )
+                        }
+                    } else if (down > 0L) {
+                        routeStrikes.remove(key)
+                    }
+                }
             }
         }
     }
@@ -514,6 +533,11 @@ class MtProtoProxyServer(
     // "connected but dead" route never closes and Telegram hangs on "connecting". Caching only
     // proven routes + the stall watchdog in bridgeData prevents that.
     private val routeCache = ConcurrentHashMap<String, WsCandidate>()
+    // Strikes against a cached WS route that connects fine but closes having relayed nothing.
+    // connect() succeeds for such a half-dead edge, so without this it would stay cached forever
+    // and every session to that DC would die the same ~5s "closed: peer" death in a loop.
+    // Two consecutive dud sessions evict the route, forcing the next connect to re-race the pool.
+    private val routeStrikes = ConcurrentHashMap<String, AtomicInteger>()
 
     private suspend fun connectAnyWs(dcId: Int, isMedia: Boolean, label: String): Pair<WebSocketBridge, WsCandidate>? {
         val cacheKey = "$dcId/$isMedia"
@@ -869,7 +893,10 @@ class MtProtoProxyServer(
                 while (running && !clientSocket.isClosed) {
                     val data = wsBridge.receive()
                     if (data == null) {
-                        closeReason.compareAndSet("client-gone", "peer") // upstream EOF
+                        // Upstream EOF. Only blame the peer when the client is still with us:
+                        // when Telegram hangs up first, select() returns and closes this bridge
+                        // under us, so receive() returns null for a close we initiated ourselves.
+                        if (!clientSocket.isClosed) closeReason.compareAndSet("client-gone", "peer")
                         break
                     }
                     // First bytes back prove the route carries Telegram traffic → cache it.
