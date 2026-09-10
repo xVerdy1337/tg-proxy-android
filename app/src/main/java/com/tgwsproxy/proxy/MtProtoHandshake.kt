@@ -58,6 +58,9 @@ object MtProtoHandshake {
 
     fun tryHandshake(handshake: ByteArray, secret: ByteArray): HandshakeResult? {
         require(handshake.size == MtProtoConstants.HANDSHAKE_LEN)
+        require(secret.size == 16 || secret.size == 17) {
+            "secret must be 16 bytes, optionally with a 1-byte transport prefix"
+        }
 
         val decPrekeyAndIv = handshake.copyOfRange(
             MtProtoConstants.SKIP_LEN,
@@ -89,6 +92,14 @@ object MtProtoHandshake {
     }
 
     fun generateRelayInit(protoTag: ByteArray, dcIdx: Int): ByteArray {
+        require(protoTag.contentEquals(MtProtoConstants.PROTO_TAG_ABRIDGED) ||
+            protoTag.contentEquals(MtProtoConstants.PROTO_TAG_INTERMEDIATE) ||
+            protoTag.contentEquals(MtProtoConstants.PROTO_TAG_SECURE)) {
+            "unsupported MTProto transport tag"
+        }
+        require(dcIdx in Short.MIN_VALUE..Short.MAX_VALUE && dcIdx != 0) {
+            "dc index must fit a non-zero signed 16-bit value"
+        }
         while (true) {
             val rnd = ByteArray(MtProtoConstants.HANDSHAKE_LEN)
             secureRandom.nextBytes(rnd)
@@ -135,6 +146,11 @@ object MtProtoHandshake {
         secret: ByteArray,
         relayInit: ByteArray
     ): CryptoContext {
+        require(clientDecPrekeyIv.size == MtProtoConstants.PREKEY_LEN + MtProtoConstants.IV_LEN)
+        require(secret.size == 16 || secret.size == 17) {
+            "secret must be 16 bytes, optionally with a 1-byte transport prefix"
+        }
+        require(relayInit.size == MtProtoConstants.HANDSHAKE_LEN)
         // --- Client side ---
         // Client decrypt (data FROM client): key = SHA256(client_prekey + secret), iv from handshake
         val cltDecPrekey = clientDecPrekeyIv.copyOfRange(0, MtProtoConstants.PREKEY_LEN)

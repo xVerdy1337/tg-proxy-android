@@ -46,6 +46,28 @@ class MsgSplitterTest {
     }
 
     @Test
+    fun holdsOneToThreeByteIntermediateHeaderUntilComplete() {
+        val splitter = MsgSplitter(relayInit, MtProtoConstants.PROTO_INTERMEDIATE_INT)
+        val plain = intHeader(4) + ByteArray(4) { 5 }
+        val cipher = encryptor().update(plain)
+        for (size in 1..3) {
+            val local = MsgSplitter(relayInit, MtProtoConstants.PROTO_INTERMEDIATE_INT)
+            assertTrue(local.split(cipher.copyOfRange(0, size)).isEmpty())
+            assertContentEquals(cipher, local.split(cipher.copyOfRange(size, cipher.size)).single())
+        }
+    }
+
+    @Test
+    fun inputArraysAreNotMutated() {
+        val splitter = MsgSplitter(relayInit, MtProtoConstants.PROTO_INTERMEDIATE_INT)
+        val plain = intHeader(4) + ByteArray(4) { 7 }
+        val cipher = encryptor().update(plain)
+        val original = cipher.copyOf()
+        splitter.split(cipher)
+        assertContentEquals(original, cipher)
+    }
+
+    @Test
     fun holdsPartialPacketUntilComplete() {
         val splitter = MsgSplitter(relayInit, MtProtoConstants.PROTO_INTERMEDIATE_INT)
         val plain = intHeader(8) + ByteArray(8) { 5 }
@@ -58,6 +80,23 @@ class MsgSplitterTest {
         assertEquals(1, rest.size)
         assertEquals(12, rest[0].size)
         assertContentEquals(cipher, rest[0])
+    }
+
+    @Test
+    fun emitsCompletePacketsAndRetainsPartialTrailingPacket() {
+        val splitter = MsgSplitter(relayInit, MtProtoConstants.PROTO_INTERMEDIATE_INT)
+        val first = intHeader(4) + ByteArray(4) { 1 }
+        val second = intHeader(8) + ByteArray(8) { 2 }
+        val cipher = encryptor().update(first + second)
+        val splitPoint = first.size + 5
+
+        val parts = splitter.split(cipher.copyOfRange(0, splitPoint))
+        assertEquals(1, parts.size)
+        assertContentEquals(cipher.copyOfRange(0, first.size), parts.single())
+
+        val tail = splitter.split(cipher.copyOfRange(splitPoint, cipher.size))
+        assertEquals(1, tail.size)
+        assertContentEquals(cipher.copyOfRange(first.size, cipher.size), tail.single())
     }
 
     @Test
@@ -152,6 +191,15 @@ class MsgSplitterTest {
         assertEquals(2, parts.size)
         assertEquals(12, parts[0].size)
         assertEquals(16, parts[1].size)
+    }
+
+    @Test
+    fun abridgedExtendedHeaderIsHeldUntilAllFourHeaderBytesArrive() {
+        val splitter = MsgSplitter(relayInit, MtProtoConstants.PROTO_ABRIDGED_INT)
+        val plain = byteArrayOf(0x7F, 2, 0, 0) + ByteArray(8) { 4 }
+        val cipher = encryptor().update(plain)
+        assertTrue(splitter.split(cipher.copyOfRange(0, 3)).isEmpty())
+        assertContentEquals(cipher, splitter.split(cipher.copyOfRange(3, cipher.size)).single())
     }
 
     @Test
