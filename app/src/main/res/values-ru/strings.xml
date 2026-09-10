@@ -191,6 +191,7 @@
     <string name="auto_tune_engine_stuck">Движок обхода не завершился и держит устройство. Перезапусти приложение и запусти автоподбор заново.</string>
     <string name="auto_tune_engine_taken">Движок обхода забрали посреди проверки, остальные методы так и не проверились. Выключи VPN и запусти подбор заново.</string>
     <string name="auto_tune_cancelling">Останавливаю — жду, пока закончится текущая проверка…</string>
+    <string name="auto_tune_validating">Проверяю стабильность: %1$s</string>
     <string name="auto_tune_cancelled">Подбор остановлен — метод остался прежним.</string>
     <string name="auto_tune_dns_failed">Ни один адрес не разрешается в этой сети — это DNS, а не блокировка, и обходом это не лечится. Смени DNS сети или саму сеть.</string>
     <string name="proxy_starting">Прокси запускается…</string>

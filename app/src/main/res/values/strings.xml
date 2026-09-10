@@ -221,6 +221,7 @@
     <!-- Between the tap on «Stop tuning» and the sweep actually ending: the method under test owns
          the engine until it finishes, and a progress line frozen mid-count would read as a hang. -->
     <string name="auto_tune_cancelling">Stopping — waiting for the current check to finish…</string>
+    <string name="auto_tune_validating">Checking stability: %1$s</string>
     <!-- Outcome of a stopped sweep. Says the method was left alone, because a sweep cut short has
          tested some strategies and applied none of them. -->
     <string name="auto_tune_cancelled">Tuning stopped — the method was left as it was.</string>

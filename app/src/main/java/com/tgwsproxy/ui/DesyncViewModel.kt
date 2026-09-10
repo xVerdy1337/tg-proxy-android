@@ -84,6 +84,7 @@ data class AutoTuneUiState(
     val index: Int = 0,
     val total: Int = 0,
     val currentLabel: String = "",
+    val validating: Boolean = false,
     val finished: Boolean = false,
     val foundLabel: String? = null,
     val foundCommand: String? = null,
@@ -263,7 +264,18 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 )
             }
-            addAll(StrategyTester.STRATEGIES.filter { it.command != saved && it.command != cached })
+            val remaining = StrategyTester.STRATEGIES.filter { it.command != saved && it.command != cached }
+            val groupOrder = mapOf(
+                com.tgwsproxy.vpn.ByedpiPresetGroup.LIGHT to 0,
+                com.tgwsproxy.vpn.ByedpiPresetGroup.BALANCED to 1,
+                com.tgwsproxy.vpn.ByedpiPresetGroup.AGGRESSIVE to 2,
+                com.tgwsproxy.vpn.ByedpiPresetGroup.EXPERIMENTAL to 3,
+                com.tgwsproxy.vpn.ByedpiPresetGroup.DIAGNOSTIC to 4,
+            )
+            addAll(remaining.sortedWith(compareBy<StrategyTester.Strategy> { strategy ->
+                val preset = ByedpiPresetCatalog.presets.firstOrNull { it.command == strategy.command }
+                groupOrder[preset?.group] ?: 1
+            }))
         }
         _autoTune.value = AutoTuneUiState(running = true, total = strategies.size)
         // Forget any earlier sweep's teardown verdict before this one starts writing its own. The
@@ -383,13 +395,45 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                     // pass in one shot was too strict: a strategy that opens YouTube but not
                     // Instagram (or a host that merely flapped on a timeout) was discarded, so the
                     // user saw "ни один метод не пробил" even though YouTube actually worked.
+                    val previousHit = hit
+                    val previousBestOkCount = bestOkCount
+                    val previousBestHosts = bestHosts
                     val okCount = res.hosts.count { it.ok }
                     if (okCount > bestOkCount) {
                         bestOkCount = okCount
                         hit = s
                         bestHosts = hostMap
                     }
-                    if (res.allOk) break // every host we could test passed; nothing beats that
+                    if (res.allOk) {
+                        _autoTune.update { it.copy(validating = true) }
+                        val confirmation = StrategyTester.testStrategy(
+                            app,
+                            s,
+                            sweepHosts,
+                            port = freeAutoTunePort(avoid = lastPort),
+                        )
+                        _autoTune.update { it.copy(validating = false) }
+                        if (confirmation.engineRefused) {
+                            engineTaken = true
+                            break
+                        }
+                        if (!confirmation.engineReleased) {
+                            engineStuck = true
+                            break
+                        }
+                        if (confirmation.allOk) {
+                            hit = s
+                            bestHosts = confirmation.hosts.associate { hr -> hr.host to hr.ok }
+                            break
+                        }
+                        // A one-shot full success is not a winner: discard it so a later
+                        // reproducible partial result can still be selected.
+                        if (hit == s) {
+                            hit = previousHit
+                            bestOkCount = previousBestOkCount
+                            bestHosts = previousBestHosts
+                        }
+                    }
                 }
                 if (bestOkCount > 0) hit else null
             }
