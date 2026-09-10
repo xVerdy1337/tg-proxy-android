@@ -160,11 +160,13 @@ fun LazyListScope.unblockSections(
     item(key = "unblock-hero") {
         val state by vm.vpnState.collectAsState()
         val autoTune by vm.autoTune.collectAsState()
+        val excluded by vm.excluded.collectAsState()
         HeroUnblockCard(
             state = state,
             testing = autoTune.running,
             onEnable = onEnable,
             onDisable = onDisable,
+            excludedCount = excluded.size + vm.builtInExcluded.size,
         )
     }
 
@@ -255,6 +257,7 @@ private fun HeroUnblockCard(
     testing: Boolean,
     onEnable: () -> Unit,
     onDisable: () -> Unit,
+    excludedCount: Int,
 ) {
     val running = state.isRunning
     val starting = state.isStarting
@@ -351,9 +354,18 @@ private fun HeroUnblockCard(
             textAlign = TextAlign.Center,
             maxLines = 2,
         )
-        // Start/stop failures only, and blank counts as nothing to say. Both rules live in the shared
-        // composable — see its doc for the per-flow diagnostics they keep out of here.
-        JevioHeroError(error = state.error, running = running)
+        Text(
+            text = if (state.scopeAllApps) {
+                stringResource(R.string.sites_scope_all_apps, excludedCount)
+            } else {
+                stringResource(R.string.sites_scope_selected_apps)
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+        )
+        JevioHeroError(error = state.error, running = running, onRetry = onEnable)
 
     }
 }

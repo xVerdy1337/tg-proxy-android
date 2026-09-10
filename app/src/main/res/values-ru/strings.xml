@@ -117,6 +117,8 @@
     <string name="sites_starting_hint">Поднимаем локальный обход</string>
     <string name="sites_running_hint">YouTube и Instagram без блокировок</string>
     <string name="sites_idle_hint">Локальный обход без внешнего VPN</string>
+    <string name="sites_scope_all_apps">Все приложения; исключено: %1$d</string>
+    <string name="sites_scope_selected_apps">Выбранные приложения: YouTube и Instagram</string>
     <string name="auto_tune_title">Подбор метода</string>
     <string name="auto_tune_progress">Проверено %1$d из %2$d</string>
     <string name="auto_tune_keep_open">Не закрывай приложение во время проверки.</string>

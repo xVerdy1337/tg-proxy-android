@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.ContentCopy
@@ -344,6 +345,7 @@ fun MainScreen(
                                 TelegramHero(
                                     uiState = uiState,
                                     onToggle = { viewModel.toggleProxy() },
+                                    onRetry = { viewModel.toggleProxy() },
                                     onOpenTelegram = {
                                         // No handler answers tg:// when Telegram is not installed,
                                         // and an unguarded ACTION_VIEW then crashes the click with
@@ -586,6 +588,7 @@ private fun MainTabButton(
 private fun TelegramHero(
     uiState: ProxyUiState,
     onToggle: () -> Unit,
+    onRetry: () -> Unit,
     onOpenTelegram: () -> Unit,
 ) {
     val running = uiState.isRunning
@@ -692,7 +695,7 @@ private fun TelegramHero(
         // A failed start has to say so under the dial, or it is indistinguishable from never having
         // pressed it. Shared with the Sites hero so the two cannot drift again — the comment here used
         // to claim «same treatment» while only one of them had the guards.
-        JevioHeroError(error = uiState.error, running = running)
+        JevioHeroError(error = uiState.error, running = running, onRetry = onRetry)
 
         if (running && uiState.proxyLink.isNotEmpty()) {
             Spacer(Modifier.height(20.dp))
@@ -926,6 +929,13 @@ private fun ProxyInfoCard(
 ) {
     val context = LocalContext.current
     var secretRevealed by remember { mutableStateOf(false) }
+    var secretCopied by remember { mutableStateOf(false) }
+    LaunchedEffect(secretCopied) {
+        if (secretCopied) {
+            delay(1_200)
+            secretCopied = false
+        }
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -992,11 +1002,12 @@ private fun ProxyInfoCard(
                         }
                         IconButton(onClick = {
                             copyToClipboard(context, context.getString(R.string.secret), uiState.secret, context.getString(R.string.secret_copied), sensitive = true)
+                            secretCopied = true
                         }) {
                             Icon(
-                                imageVector = Icons.Default.ContentCopy,
-                                contentDescription = stringResource(R.string.copy_secret),
-                                tint = TextSecondary,
+                                imageVector = if (secretCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                                contentDescription = stringResource(if (secretCopied) R.string.copied else R.string.copy_secret),
+                                tint = if (secretCopied) Success else TextSecondary,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -1031,6 +1042,13 @@ private fun ProxyInfoCard(
 
 @Composable
 private fun CopyableRow(label: String, value: String, onCopy: () -> Unit) {
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1_200)
+            copied = false
+        }
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -1047,11 +1065,14 @@ private fun CopyableRow(label: String, value: String, onCopy: () -> Unit) {
                 overflow = TextOverflow.Ellipsis
             )
         }
-        IconButton(onClick = onCopy) {
+        IconButton(onClick = {
+            onCopy()
+            copied = true
+        }) {
             Icon(
-                imageVector = Icons.Default.ContentCopy,
-                contentDescription = stringResource(R.string.copy),
-                tint = TextSecondary,
+                imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                contentDescription = stringResource(if (copied) R.string.copied else R.string.copy),
+                tint = if (copied) Success else TextSecondary,
                 modifier = Modifier.size(18.dp)
             )
         }

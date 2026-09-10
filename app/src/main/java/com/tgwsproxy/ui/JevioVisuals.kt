@@ -37,6 +37,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -63,6 +64,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -173,7 +175,11 @@ internal fun JevioButtonLabel(
  * horizontal padding instead of the gap this is meant to open.
  */
 @Composable
-internal fun ColumnScope.JevioHeroError(error: String?, running: Boolean) {
+internal fun ColumnScope.JevioHeroError(
+    error: String?,
+    running: Boolean,
+    onRetry: (() -> Unit)? = null,
+) {
     if (running || error.isNullOrBlank()) return
     Spacer(Modifier.height(10.dp))
     Text(
@@ -183,6 +189,11 @@ internal fun ColumnScope.JevioHeroError(error: String?, running: Boolean) {
         fontWeight = FontWeight.Medium,
         textAlign = TextAlign.Center,
     )
+    if (onRetry != null) {
+        TextButton(onClick = onRetry) {
+            Text(stringResource(R.string.try_again), color = Destructive)
+        }
+    }
 }
 
 /** Warm ambient shapes make translucent surfaces read as matte glass without a heavy image. */
