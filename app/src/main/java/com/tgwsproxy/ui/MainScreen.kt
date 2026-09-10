@@ -588,7 +588,7 @@ private fun MainTabButton(
 private fun TelegramHero(
     uiState: ProxyUiState,
     onToggle: () -> Unit,
-    onRetry: () -> Unit,
+    onRetry: () -> Unit = {},
     onOpenTelegram: () -> Unit,
 ) {
     val running = uiState.isRunning

@@ -55,7 +55,9 @@ jobs:
         with:
           name: unit-test-report
           path: app/build/reports/tests/testDebugUnitTest/
-          if-no-files-found: error
+          # A compile failure produces no JUnit report — that must not mask the real failure
+          # with an artifact-upload error.
+          if-no-files-found: ignore
           retention-days: 1
 
       - name: Publish failed test error

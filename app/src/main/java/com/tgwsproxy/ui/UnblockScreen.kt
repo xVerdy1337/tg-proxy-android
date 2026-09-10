@@ -257,7 +257,7 @@ private fun HeroUnblockCard(
     testing: Boolean,
     onEnable: () -> Unit,
     onDisable: () -> Unit,
-    excludedCount: Int,
+    excludedCount: Int = 0,
 ) {
     val running = state.isRunning
     val starting = state.isStarting
