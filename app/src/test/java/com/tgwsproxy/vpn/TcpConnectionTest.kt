@@ -12,6 +12,29 @@ import kotlin.test.assertTrue
 class TcpConnectionTest {
 
     @Test
+    fun zeroAdvertisedWindowDoesNotAllowDownstreamBytes() {
+        val connection = newConnection(NoopTunnel)
+
+        assertEquals(0L, connection.downstreamAvailableWindow(0, 0, hasAck = true))
+        assertTrue(connection.downstreamAvailableWindow(0, 0, hasAck = true) <= 0L)
+    }
+
+    @Test
+    fun exhaustedAdvertisedWindowDoesNotAllowDownstreamBytes() {
+        val connection = newConnection(NoopTunnel)
+
+        assertEquals(-10L, connection.downstreamAvailableWindow(20, 10, hasAck = true))
+        assertTrue(connection.downstreamAvailableWindow(20, 10, hasAck = true) <= 0L)
+    }
+
+    @Test
+    fun unknownAckWindowAllowsInitialDownstreamSegment() {
+        val connection = newConnection(NoopTunnel)
+
+        assertEquals(Long.MAX_VALUE, connection.downstreamAvailableWindow(0, 0, hasAck = false))
+    }
+
+    @Test
     fun socksConnectConsumesTheEntireSuccessReply() {
         val response = byteArrayOf(
             0x05, 0x00,                         // greeting: SOCKS5, no authentication

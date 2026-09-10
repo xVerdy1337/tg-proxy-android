@@ -195,6 +195,9 @@ class ProxyService : Service() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     @Volatile private var lastNetworkId: String? = null
     @Volatile private var lastNetworkChangeAt: Long = 0
+    // Coalesces bursts of default-network callbacks into one reset after the link settles.
+    private var pendingNetworkReset: Job? = null
+    private var networkGeneration = 0L
 
     // Wake locks keep the CPU and Wi-Fi radio alive for a LIVE relay, so it survives screen-off /
     // Doze instead of silently dying. Held only while at least one client is connected (plus
@@ -713,26 +716,34 @@ class ProxyService : Service() {
     private fun onNetworkChanged(id: String) {
         if (!_serviceState.value.isRunning) return
         val now = System.currentTimeMillis()
-        // Debounce: ignore duplicate callbacks and bursts within 1.5s.
+        // Ignore duplicate callbacks for the same default network, but treat a new network as the
+        // latest candidate. Replacing the pending settle job coalesces callback bursts into one
+        // destructive reset instead of repeatedly dropping freshly redialled Telegram sessions.
         if (id == lastNetworkId && now - lastNetworkChangeAt < 1500) return
         lastNetworkId = id
         lastNetworkChangeAt = now
-        serviceScope.launch {
-            // Small settle delay so the new network is actually usable before redialing.
-            delay(700)
-            // Re-assert, never resurrect. A switch on an idle proxy must leave it holding nothing:
-            // the unconditional acquire that used to sit here had no counterpart that would ever
-            // fire, because with no client there is no connection callback to release it. For a
-            // live relay the locks are already held, and this only repairs an acquire that threw.
-            // The switch itself needs nothing more: resetConnections() below closes every client,
-            // which walks the count to zero and merely ARMS the linger, and the redial that follows
-            // lands well inside it and disarms it — so the coverage is continuous across the switch.
-            synchronized(wakeLockGate) {
-                // Straight from the server, like every other decision on this count.
-                liveConnections = proxyServer?.connections ?: 0
-                if (liveConnections > 0) acquireWakeLocks()
+        val generation: Long
+        synchronized(wakeLockGate) {
+            networkGeneration += 1
+            pendingNetworkReset?.cancel()
+            generation = networkGeneration
+            pendingNetworkReset = serviceScope.launch {
+                delay(700)
+                val server = synchronized(wakeLockGate) {
+                    if (generation != networkGeneration || !_serviceState.value.isRunning) return@launch
+                    liveConnections = proxyServer?.connections ?: 0
+                    if (liveConnections > 0) acquireWakeLocks()
+                    proxyServer
+                } ?: return@launch
+                // Re-check the run and network generation after the settle delay. A stop/start or a
+                // newer network callback must own the next reset, never this stale job.
+                synchronized(wakeLockGate) {
+                    if (generation != networkGeneration || !_serviceState.value.isRunning || proxyServer !== server) {
+                        return@launch
+                    }
+                }
+                try { server.resetConnections() } catch (_: Exception) {}
             }
-            try { proxyServer?.resetConnections() } catch (_: Exception) {}
         }
     }
 
@@ -742,6 +753,11 @@ class ProxyService : Service() {
         } catch (_: Exception) {}
         networkCallback = null
         lastNetworkId = null
+        synchronized(wakeLockGate) {
+            networkGeneration += 1
+            pendingNetworkReset?.cancel()
+            pendingNetworkReset = null
+        }
     }
 
     /**
