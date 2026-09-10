@@ -44,6 +44,25 @@ class AutoTunePolicyTest {
         assertEquals(previous, winner)
     }
 
+    @Test fun tiesKeepEarlierWinner() {
+        val first = strategy("first")
+        val second = strategy("second")
+        val state = AutoTuneWinnerState(first, 1, mapOf("a" to true))
+        val (winner, shouldConfirm) = considerAutoTuneCandidate(state, result(second, "b"))
+        assertEquals(state, winner)
+        assertFalse(shouldConfirm)
+    }
+
+    @Test fun fullWinnerNeedsFullConfirmation() {
+        val s = strategy("candidate")
+        val previous = AutoTuneWinnerState()
+        val first = result(s, "a", "b", "c")
+        val partialConfirmation = result(s, "a", "b")
+        assertEquals(previous, confirmAutoTuneCandidate(previous, first, partialConfirmation))
+        val fullConfirmation = result(s, "a", "b", "c")
+        assertEquals(3, confirmAutoTuneCandidate(previous, first, fullConfirmation).okCount)
+    }
+
     @Test fun refusedOrHeldEngineCannotBecomeWinner() {
         val s = strategy("candidate")
         val refused = result(s, "a").copy(engineRefused = true)
