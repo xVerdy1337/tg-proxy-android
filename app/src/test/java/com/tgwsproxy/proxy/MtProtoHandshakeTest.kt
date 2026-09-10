@@ -55,6 +55,29 @@ class MtProtoHandshakeTest {
     }
 
     @Test
+    fun tryHandshakeRejectsInvalidSecretLengthBeforeDecrypting() {
+        assertFailsWith<IllegalArgumentException> {
+            MtProtoHandshake.tryHandshake(ByteArray(64), ByteArray(15))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            MtProtoHandshake.tryHandshake(ByteArray(64), ByteArray(18))
+        }
+    }
+
+    @Test
+    fun generateRelayInitRejectsUnknownTagAndOutOfRangeDc() {
+        assertFailsWith<IllegalArgumentException> {
+            MtProtoHandshake.generateRelayInit(byteArrayOf(1, 2, 3, 4), 2)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            MtProtoHandshake.generateRelayInit(MtProtoConstants.PROTO_TAG_INTERMEDIATE, 65536)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            MtProtoHandshake.generateRelayInit(MtProtoConstants.PROTO_TAG_INTERMEDIATE, 0)
+        }
+    }
+
+    @Test
     fun tryHandshakeRejectsUnknownProtoTag() {
         val secret = ByteArray(16) { (it + 3).toByte() }
         val hs = ByteArray(64) { (it * 13 + 7).toByte() } // decrypts to a non-tag
@@ -164,6 +187,27 @@ class MtProtoHandshakeTest {
             .order(ByteOrder.LITTLE_ENDIAN)
             .short
         assertEquals(-203, dcIdx.toInt())
+    }
+
+    @Test
+    fun buildCryptoContextRejectsMalformedInputsBeforeCipherSetup() {
+        assertFailsWith<IllegalArgumentException> {
+            MtProtoHandshake.buildCryptoContext(ByteArray(47), ByteArray(16), ByteArray(64))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            MtProtoHandshake.buildCryptoContext(ByteArray(48), ByteArray(15), ByteArray(64))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            MtProtoHandshake.buildCryptoContext(ByteArray(48), ByteArray(16), ByteArray(63))
+        }
+    }
+
+    @Test
+    fun buildCryptoContextAcceptsPrefixedSecret() {
+        val context = MtProtoHandshake.buildCryptoContext(
+            ByteArray(48), ByteArray(17), ByteArray(64)
+        )
+        assertEquals(1, context.cltDecryptor.update(ByteArray(1)).size)
     }
 
     @Test
