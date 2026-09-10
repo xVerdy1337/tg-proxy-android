@@ -72,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.tgwsproxy.R
 import com.tgwsproxy.ui.theme.AccentDark
 import com.tgwsproxy.ui.theme.Background
 import com.tgwsproxy.ui.theme.Destructive
