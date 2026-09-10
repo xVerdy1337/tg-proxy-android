@@ -37,7 +37,8 @@ class WebSocketBridge {
     private var webSocket: WebSocket? = null
     // Bounded buffer (not Channel.BUFFERED's tiny ~64). On overflow we drop the socket
     // instead of silently losing MTProto frames — a corrupted stream is worse than a redial.
-    private val receiveChannel = Channel<ByteArray>(capacity = 1024)
+    private val sessionLock = Any()
+    @Volatile private var receiveChannel = Channel<ByteArray>(capacity = 1024)
     @Volatile private var isConnected = false
     @Volatile private var isClosed = false
 
@@ -52,6 +53,16 @@ class WebSocketBridge {
      */
     fun connect(targetIp: String?, domain: String, path: String = "/apiws"): Boolean {
         if (isConnected) return true
+        val channel = synchronized(sessionLock) {
+            if (isConnected) return true
+            // A bridge can be reused after a failed/closed WebSocket. Never attach a new
+            // listener to a channel that an older session already closed.
+            if (isClosed || receiveChannel.isClosedForSend) {
+                receiveChannel = Channel(capacity = 1024)
+                isClosed = false
+            }
+            receiveChannel
+        }
 
         // Use domain in URL → correct TLS SNI. With a pinned targetIp we override DNS so the
         // domain routes to the specific DC IP without a real lookup; otherwise fall back to
@@ -78,17 +89,27 @@ class WebSocketBridge {
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
-                connected = true
-                isConnected = true
+                synchronized(sessionLock) {
+                    if (receiveChannel === channel && !isClosed) {
+                        connected = true
+                        isConnected = true
+                    }
+                }
                 latch.countDown()
             }
 
             override fun onMessage(ws: WebSocket, bytes: ByteString) {
                 // If downstream (wsToClient) falls behind and the bounded channel fills up,
                 // tear the socket down rather than dropping frames on the floor.
-                if (!receiveChannel.trySend(bytes.toByteArray()).isSuccess) {
+                if (!channel.trySend(bytes.toByteArray()).isSuccess) {
                     ws.cancel()
-                    receiveChannel.close()
+                    synchronized(sessionLock) {
+                        if (receiveChannel === channel) {
+                            isConnected = false
+                            isClosed = true
+                            channel.close()
+                        }
+                    }
                 }
             }
 
@@ -99,16 +120,24 @@ class WebSocketBridge {
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
-                isConnected = false
-                isClosed = true
-                receiveChannel.close()
+                synchronized(sessionLock) {
+                    if (receiveChannel === channel) {
+                        isConnected = false
+                        isClosed = true
+                        channel.close()
+                    }
+                }
                 latch.countDown()
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                isConnected = false
-                isClosed = true
-                receiveChannel.close()
+                synchronized(sessionLock) {
+                    if (receiveChannel === channel) {
+                        isConnected = false
+                        isClosed = true
+                        channel.close()
+                    }
+                }
                 latch.countDown()
             }
         })
@@ -140,9 +169,12 @@ class WebSocketBridge {
     }
 
     fun close() {
-        isClosed = true
-        isConnected = false
+        val channel = synchronized(sessionLock) {
+            isClosed = true
+            isConnected = false
+            receiveChannel
+        }
         webSocket?.close(1000, "Closing")
-        receiveChannel.close()
+        channel.close()
     }
 }

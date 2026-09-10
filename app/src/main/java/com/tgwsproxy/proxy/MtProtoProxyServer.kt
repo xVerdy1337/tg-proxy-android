@@ -6,6 +6,8 @@ import com.tgwsproxy.R
 import com.tgwsproxy.service.LogKind
 import kotlinx.coroutines.*
 import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -657,10 +659,16 @@ class MtProtoProxyServer(
         // per-attempt ports/IPs, which would defeat both the grouping here and the ×N log
         // folding downstream.
         val failures = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        val dialSlots = Semaphore(WS_DIAL_CONCURRENCY)
         val jobs = candidates.map { c ->
             serverScope.launch {
                 val b = WebSocketBridge()
-                val ok = try { b.connect(c.pinnedIp, c.host, c.path) } catch (e: Exception) {
+                val ok = try {
+                    // Waiting candidates are cancellable; only a small number of blocking OkHttp
+                    // handshakes can occupy relay threads and wake the radio at once. Once a slot
+                    // is available, every candidate still gets its chance before the wave deadline.
+                    dialSlots.withPermit { b.connect(c.pinnedIp, c.host, c.path) }
+                } catch (e: Exception) {
                     failures.add(e.javaClass.simpleName)
                     false
                 }
@@ -1041,6 +1049,8 @@ class MtProtoProxyServer(
         // First-wave (direct endpoints) budget before falling back to the Cloudflare pool. Short
         // so a failing direct route escalates quickly, long enough for a healthy one to win.
         const val WS_WAVE_TIMEOUT_MS = 4_000L
+        // Keep route races responsive without opening one TLS socket per candidate at once.
+        const val WS_DIAL_CONCURRENCY = 3
         // How long a lost direct wave suppresses it: short enough to notice a network fix within
         // a couple of minutes, long enough that a hard-blocked direct path stops taxing every
         // new connection with WS_WAVE_TIMEOUT_MS of dead waiting. This is the BASE of the

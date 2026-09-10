@@ -64,9 +64,8 @@ class TcpConnection(
         // Max wait for the local byedpi SOCKS5 reply before giving up (frees the relay thread).
         private const val SOCKS_HANDSHAKE_TIMEOUT_MS = 10_000
         private const val MAX_PENDING_UPSTREAM_BYTES = 512 * 1024
-        // Downstream window clamping: poll interval, and max wait before sending anyway.
+        // Downstream window clamping poll interval.
         private const val WINDOW_POLL_MS = 10L
-        private const val MAX_WINDOW_WAIT_MS = 1_000
     }
 
     /** Called by the service when the initial SYN for this flow arrives. */
@@ -324,6 +323,10 @@ class TcpConnection(
         }
     }
 
+    @VisibleForTesting
+    internal fun downstreamAvailableWindow(inFlight: Long, advertisedWindow: Int, hasAck: Boolean): Long =
+        if (hasAck) advertisedWindow.toLong() - inFlight else Long.MAX_VALUE
+
     /** Reads from byedpi (real server data) and streams it back to the client as TCP segments. */
     private fun pumpDownstream(inp: InputStream) {
         val buf = ByteArray(MSS)
@@ -334,28 +337,30 @@ class TcpConnection(
                 if (n == 0) continue
                 val chunk = buf.copyOf(n)
                 var sent = 0
-                var waitedMs = 0L
                 while (sent < chunk.size) {
                     val seg = synchronized(lock) {
                         if (state == State.CLOSED) return
                         lastUsed = System.currentTimeMillis()
                         // Honor the client-advertised receive window with simple clamping:
-                        // in-flight (sent-but-unacked) bytes stay below clientWindow. If the
-                        // window is full, poll briefly outside the lock; after
-                        // MAX_WINDOW_WAIT_MS send anyway — a stuck/zero window must not
-                        // deadlock the pump (the TUN write to the local client is reliable,
-                        // see the class doc).
+                        // in-flight (sent-but-unacked) bytes stay below clientWindow. A zero or
+                        // exhausted window must never be bypassed: doing so would produce a
+                        // zero/negative take and either emit a malformed segment or throw from
+                        // copyOfRange. Wait for a window update; the service reaper handles a
+                        // genuinely dead client.
                         val inFlight = (sndNxt - clientAck) and 0xFFFFFFFFL
                         val avail = if (seenClientAck) clientWindow.toLong() - inFlight else Long.MAX_VALUE
-                        if (avail > 0 || waitedMs >= MAX_WINDOW_WAIT_MS) {
+                        if (avail > 0) {
                             val take = minOf((chunk.size - sent).toLong(), avail).toInt()
-                            val pkt = buildSegmentLocked(
-                                PacketUtils.TcpFlag.ACK or PacketUtils.TcpFlag.PSH,
-                                chunk.copyOfRange(sent, sent + take),
+                            val pkt = PacketUtils.buildTcp(
+                                src = serverIp, srcPort = serverPort,
+                                dst = clientIp, dstPort = clientPort,
+                                seq = sndNxt, ack = rcvNxt,
+                                flags = PacketUtils.TcpFlag.ACK or PacketUtils.TcpFlag.PSH,
+                                window = WIN,
+                                payload = chunk.copyOfRange(sent, sent + take),
                             )
                             sndNxt = (sndNxt + take) and 0xFFFFFFFFL
                             sent += take
-                            waitedMs = 0L
                             pkt
                         } else {
                             null
@@ -365,7 +370,6 @@ class TcpConnection(
                         tunnel.writeToTun(seg)
                     } else {
                         try { Thread.sleep(WINDOW_POLL_MS) } catch (_: InterruptedException) { reset(); return }
-                        waitedMs += WINDOW_POLL_MS
                     }
                 }
             }
