@@ -395,8 +395,8 @@ private fun AutoTuneCard(
                         // frozen: left up, a stuck «7 of 28» would be the app's whole account of
                         // itself while the candidate in flight releases the engine. Name the wait.
                         text = when {
-                            autoTune.validating -> stringResource(R.string.auto_tune_validating, autoTune.currentLabel)
                             autoTune.cancelling -> stringResource(R.string.auto_tune_cancelling)
+                            autoTune.validating -> stringResource(R.string.auto_tune_validating, autoTune.currentLabel)
                             else -> stringResource(R.string.auto_tune_progress, autoTune.index, autoTune.total)
                         },
                         color = TextPrimary,

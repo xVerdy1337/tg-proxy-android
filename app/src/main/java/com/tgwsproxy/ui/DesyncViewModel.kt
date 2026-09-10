@@ -65,6 +65,68 @@ data class ProbeUiState(
 )
 
 /** Progress + outcome of the automatic strategy tuner ("Подобрать автоматически"). */
+internal data class AutoTuneWinnerState(
+    val strategy: StrategyTester.Strategy? = null,
+    val okCount: Int = 0,
+    val hostOk: Map<String, Boolean> = emptyMap(),
+)
+
+internal fun autoTuneGroupRank(group: com.tgwsproxy.vpn.ByedpiPresetGroup?): Int = when (group) {
+    com.tgwsproxy.vpn.ByedpiPresetGroup.LIGHT -> 0
+    com.tgwsproxy.vpn.ByedpiPresetGroup.BALANCED -> 1
+    com.tgwsproxy.vpn.ByedpiPresetGroup.AGGRESSIVE -> 2
+    com.tgwsproxy.vpn.ByedpiPresetGroup.EXPERIMENTAL -> 3
+    com.tgwsproxy.vpn.ByedpiPresetGroup.DIAGNOSTIC -> 4
+    null -> 1
+}
+
+internal fun orderAutoTuneCandidates(
+    cachedCommand: String?,
+    savedCommand: String,
+    strategies: List<StrategyTester.Strategy> = StrategyTester.STRATEGIES,
+): List<StrategyTester.Strategy> {
+    val cached = cachedCommand?.trim().orEmpty()
+    val saved = savedCommand.trim()
+    val priority = buildList {
+        if (cached.isNotEmpty()) add(cached)
+        if (saved.isNotEmpty() && saved != cached) add(saved)
+    }
+    val remaining = strategies.filter { it.command !in priority }
+        .distinctBy { it.command }
+        .withIndex()
+        .sortedWith(compareBy({ autoTuneGroupRank(ByedpiPresetCatalog.presets.firstOrNull { p -> p.command == it.value.command }?.group) }, { it.index }))
+        .map { it.value }
+    return (priority.map { command ->
+        strategies.firstOrNull { it.command == command }
+            ?: StrategyTester.Strategy(command, R.string.custom_command)
+    } + remaining).distinctBy { it.command }
+}
+
+internal fun considerAutoTuneCandidate(
+    current: AutoTuneWinnerState,
+    result: StrategyTester.StrategyResult,
+): Pair<AutoTuneWinnerState, Boolean> {
+    if (result.engineRefused || !result.engineReleased) return current to false
+    val hostOk = result.hosts.associate { it.host to it.ok }
+    val okCount = result.hosts.count { it.ok }
+    return if (okCount > current.okCount) {
+        AutoTuneWinnerState(result.strategy, okCount, hostOk) to true
+    } else current to false
+}
+
+internal fun confirmAutoTuneCandidate(
+    previous: AutoTuneWinnerState,
+    first: StrategyTester.StrategyResult,
+    confirmation: StrategyTester.StrategyResult,
+): AutoTuneWinnerState {
+    if (confirmation.engineRefused || !confirmation.engineReleased) return previous
+    val firstOk = first.hosts.count { it.ok }
+    val confirmedOk = confirmation.hosts.count { it.ok }
+    return if (confirmedOk >= firstOk && confirmedOk > 0) {
+        AutoTuneWinnerState(first.strategy, confirmedOk, confirmation.hosts.associate { it.host to it.ok })
+    } else previous
+}
+
 data class AutoTuneUiState(
     val running: Boolean = false,
     /**
@@ -240,42 +302,14 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
         val cached = networkCacheKey
             ?.let { prefs().getString(AUTO_TUNE_CACHE_PREFIX + it, null) }
             ?.let { ByedpiPresetCatalog.migrateCommand(it) }
-        // Test the currently-saved command first (instant if it still works), then the curated list.
-        // Current by construction: repaired once at init for prefs written by an older build, and
-        // by setByedpiCmd for everything written since. It matters here because a superseded -A
-        // spelling still passes on its non-auto groups, so as candidate #0 it would win the sweep
-        // and be written straight back, pinning the user to a command whose auto sections can
-        // never fire.
+        // Test the cached and currently-saved commands first, then the curated list in cost order.
+        // The helper keeps this policy deterministic and independently testable.
         val saved = _settings.value.byedpiCmd.trim()
-        val strategies = buildList {
-            if (!cached.isNullOrEmpty()) {
-                add(
-                    StrategyTester.Strategy(
-                        cached,
-                        StrategyTester.labelResForCommand(cached) ?: R.string.custom_command,
-                    )
-                )
-            }
-            if (saved.isNotEmpty() && saved != cached) {
-                add(
-                    StrategyTester.Strategy(
-                        saved,
-                        StrategyTester.labelResForCommand(saved) ?: R.string.current_command,
-                    )
-                )
-            }
-            val remaining = StrategyTester.STRATEGIES.filter { it.command != saved && it.command != cached }
-            val groupOrder = mapOf(
-                com.tgwsproxy.vpn.ByedpiPresetGroup.LIGHT to 0,
-                com.tgwsproxy.vpn.ByedpiPresetGroup.BALANCED to 1,
-                com.tgwsproxy.vpn.ByedpiPresetGroup.AGGRESSIVE to 2,
-                com.tgwsproxy.vpn.ByedpiPresetGroup.EXPERIMENTAL to 3,
-                com.tgwsproxy.vpn.ByedpiPresetGroup.DIAGNOSTIC to 4,
+        val strategies = orderAutoTuneCandidates(cached, saved).map { strategy ->
+            strategy.copy(
+                labelRes = StrategyTester.labelResForCommand(strategy.command)
+                    ?: if (strategy.command == saved) R.string.current_command else R.string.custom_command
             )
-            addAll(remaining.sortedWith(compareBy<StrategyTester.Strategy> { strategy ->
-                val preset = ByedpiPresetCatalog.presets.firstOrNull { it.command == strategy.command }
-                groupOrder[preset?.group] ?: 1
-            }))
         }
         _autoTune.value = AutoTuneUiState(running = true, total = strategies.size)
         // Forget any earlier sweep's teardown verdict before this one starts writing its own. The
@@ -395,16 +429,9 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                     // pass in one shot was too strict: a strategy that opens YouTube but not
                     // Instagram (or a host that merely flapped on a timeout) was discarded, so the
                     // user saw "ни один метод не пробил" even though YouTube actually worked.
-                    val previousHit = hit
-                    val previousBestOkCount = bestOkCount
-                    val previousBestHosts = bestHosts
-                    val okCount = res.hosts.count { it.ok }
-                    if (okCount > bestOkCount) {
-                        bestOkCount = okCount
-                        hit = s
-                        bestHosts = hostMap
-                    }
-                    if (res.allOk) {
+                    val previous = AutoTuneWinnerState(hit, bestOkCount, bestHosts)
+                    val (_, isLeader) = considerAutoTuneCandidate(previous, res)
+                    if (isLeader) {
                         _autoTune.update { it.copy(validating = true) }
                         val confirmation = StrategyTester.testStrategy(
                             app,
@@ -421,18 +448,11 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                             engineStuck = true
                             break
                         }
-                        if (confirmation.allOk) {
-                            hit = s
-                            bestHosts = confirmation.hosts.associate { hr -> hr.host to hr.ok }
-                            break
-                        }
-                        // A one-shot full success is not a winner: discard it so a later
-                        // reproducible partial result can still be selected.
-                        if (hit == s) {
-                            hit = previousHit
-                            bestOkCount = previousBestOkCount
-                            bestHosts = previousBestHosts
-                        }
+                        val confirmed = confirmAutoTuneCandidate(previous, res, confirmation)
+                        hit = confirmed.strategy
+                        bestOkCount = confirmed.okCount
+                        bestHosts = confirmed.hostOk
+                        if (confirmed.strategy != null && res.allOk && confirmation.allOk) break
                     }
                 }
                 if (bestOkCount > 0) hit else null
