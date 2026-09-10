@@ -124,6 +124,8 @@
     <string name="sites_starting_hint">Starting local bypass</string>
     <string name="sites_running_hint">YouTube and Instagram without blocks</string>
     <string name="sites_idle_hint">Local bypass with no external VPN</string>
+    <string name="sites_scope_all_apps">All apps; %1$d excluded</string>
+    <string name="sites_scope_selected_apps">Selected apps: YouTube and Instagram</string>
     <string name="auto_tune_title">Method tuning</string>
     <!-- %1$d counts candidates already FINISHED, never the one under test — the same number drives
          the progress bar, which has to start empty and fill only as work completes. -->
