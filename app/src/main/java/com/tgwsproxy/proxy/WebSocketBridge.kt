@@ -35,12 +35,16 @@ class WebSocketBridge {
             .build()
     }
 
+    private class ReceiveSession {
+        // Bounded buffer (not Channel.BUFFERED's tiny ~64). On overflow we drop the socket
+        // instead of silently losing MTProto frames — a corrupted stream is worse than a redial.
+        val channel = Channel<ByteArray>(capacity = RECEIVE_CHANNEL_CAPACITY)
+        val queuedBytes = AtomicLong(0)
+    }
+
     private var webSocket: WebSocket? = null
-    // Bounded buffer (not Channel.BUFFERED's tiny ~64). On overflow we drop the socket
-    // instead of silently losing MTProto frames — a corrupted stream is worse than a redial.
     private val sessionLock = Any()
-    @Volatile private var receiveChannel = Channel<ByteArray>(capacity = RECEIVE_CHANNEL_CAPACITY)
-    private val queuedReceiveBytes = AtomicLong(0)
+    @Volatile private var receiveSession = ReceiveSession()
     @Volatile private var isConnected = false
     @Volatile private var isClosed = false
 
@@ -55,17 +59,17 @@ class WebSocketBridge {
      */
     fun connect(targetIp: String?, domain: String, path: String = "/apiws"): Boolean {
         if (isConnected) return true
-        val channel = synchronized(sessionLock) {
+        val session = synchronized(sessionLock) {
             if (isConnected) return true
             // A bridge can be reused after a failed/closed WebSocket. Never attach a new
             // listener to a channel that an older session already closed.
-            if (isClosed || receiveChannel.isClosedForSend) {
-                receiveChannel = Channel(capacity = RECEIVE_CHANNEL_CAPACITY)
-                queuedReceiveBytes.set(0)
+            if (isClosed || receiveSession.channel.isClosedForSend) {
+                receiveSession = ReceiveSession()
                 isClosed = false
             }
-            receiveChannel
+            receiveSession
         }
+        val channel = session.channel
 
         // Use domain in URL → correct TLS SNI. With a pinned targetIp we override DNS so the
         // domain routes to the specific DC IP without a real lookup; otherwise fall back to
@@ -93,7 +97,7 @@ class WebSocketBridge {
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 synchronized(sessionLock) {
-                    if (receiveChannel === channel && !isClosed) {
+                    if (receiveSession === session && !isClosed) {
                         connected = true
                         isConnected = true
                     }
@@ -106,21 +110,29 @@ class WebSocketBridge {
                 // 1024 frames while still exhausting memory and stalling the local client.
                 val data = bytes.toByteArray()
                 val reserved = synchronized(sessionLock) {
-                    val current = queuedReceiveBytes.get()
+                    val current = session.queuedBytes.get()
                     if (current + data.size > MAX_RECEIVE_BYTES) false
-                    else { queuedReceiveBytes.addAndGet(data.size.toLong()); true }
+                    else { session.queuedBytes.addAndGet(data.size.toLong()); true }
                 }
-                if (!reserved || !channel.trySend(data).isSuccess) {
-                    ws.cancel()
-                    synchronized(sessionLock) {
-                        if (receiveChannel === channel) {
-                            isConnected = false
-                            isClosed = true
-                            channel.close()
-                        }
+                if (!reserved) {
+                    failSession(ws, session)
+                } else if (!channel.trySend(data).isSuccess) {
+                    session.queuedBytes.addAndGet(-data.size.toLong())
+                    failSession(ws, session)
+                }
+            }
+
+            private fun failSession(ws: WebSocket, session: ReceiveSession) {
+                ws.cancel()
+                synchronized(sessionLock) {
+                    if (receiveSession === session) {
+                        isConnected = false
+                        isClosed = true
+                        session.channel.close()
                     }
                 }
             }
+
 
             override fun onMessage(ws: WebSocket, text: String) {}
 
@@ -130,7 +142,7 @@ class WebSocketBridge {
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
                 synchronized(sessionLock) {
-                    if (receiveChannel === channel) {
+                    if (receiveSession === session) {
                         isConnected = false
                         isClosed = true
                         channel.close()
@@ -141,7 +153,7 @@ class WebSocketBridge {
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 synchronized(sessionLock) {
-                    if (receiveChannel === channel) {
+                    if (receiveSession === session) {
                         isConnected = false
                         isClosed = true
                         channel.close()
@@ -172,19 +184,20 @@ class WebSocketBridge {
     fun queueSize(): Long = try { webSocket?.queueSize() ?: 0L } catch (_: Exception) { 0L }
 
     suspend fun receive(): ByteArray? {
-        // receiveCatching returns a closed result (→ null) once the channel is closed.
-        val data = receiveChannel.receiveCatching().getOrNull()
-        if (data != null) queuedReceiveBytes.addAndGet(-data.size.toLong())
+        // Capture the session before suspending so a reconnect cannot switch accounting underneath us.
+        val session = receiveSession
+        val data = session.channel.receiveCatching().getOrNull()
+        if (data != null) session.queuedBytes.addAndGet(-data.size.toLong())
         return data
     }
 
     fun close() {
-        val channel = synchronized(sessionLock) {
+        val session = synchronized(sessionLock) {
             isClosed = true
             isConnected = false
-            receiveChannel
+            receiveSession
         }
         webSocket?.close(1000, "Closing")
-        channel.close()
+        session.channel.close()
     }
 }
