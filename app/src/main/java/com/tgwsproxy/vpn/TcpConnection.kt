@@ -37,7 +37,7 @@ class TcpConnection(
 
     @Volatile private var state = State.SYN_RECEIVED
     @Volatile var lastUsed = System.currentTimeMillis(); private set
-    private val lock = Any()
+    private val lock = java.lang.Object()
 
     /** True if the flow is closed or has seen no traffic for [idleMs] (reaped by the service). */
     fun isIdle(idleMs: Long): Boolean =
@@ -64,8 +64,8 @@ class TcpConnection(
         // Max wait for the local byedpi SOCKS5 reply before giving up (frees the relay thread).
         private const val SOCKS_HANDSHAKE_TIMEOUT_MS = 10_000
         private const val MAX_PENDING_UPSTREAM_BYTES = 512 * 1024
-        // Downstream window clamping poll interval.
-        private const val WINDOW_POLL_MS = 10L
+        // Lost-notification safety net; normal ACK/window updates wake the waiter immediately.
+        private const val WINDOW_WAIT_TIMEOUT_MS = 1_000L
     }
 
     /** Called by the service when the initial SYN for this flow arrives. */
@@ -204,6 +204,7 @@ class TcpConnection(
         if (flags and PacketUtils.TcpFlag.ACK != 0) {
             clientAck = ack
             seenClientAck = true
+            lock.notifyAll()
         }
 
         if (flags and PacketUtils.TcpFlag.RST != 0) { closeLocked(sendRst = false, toTun); return }
@@ -339,37 +340,41 @@ class TcpConnection(
                 var sent = 0
                 while (sent < chunk.size) {
                     val seg = synchronized(lock) {
-                        if (state == State.CLOSED) return
-                        lastUsed = System.currentTimeMillis()
-                        // Honor the client-advertised receive window with simple clamping:
-                        // in-flight (sent-but-unacked) bytes stay below clientWindow. A zero or
-                        // exhausted window must never be bypassed: doing so would produce a
-                        // zero/negative take and either emit a malformed segment or throw from
-                        // copyOfRange. Wait for a window update; the service reaper handles a
-                        // genuinely dead client.
-                        val inFlight = (sndNxt - clientAck) and 0xFFFFFFFFL
-                        val avail = if (seenClientAck) clientWindow.toLong() - inFlight else Long.MAX_VALUE
-                        if (avail > 0) {
-                            val take = minOf((chunk.size - sent).toLong(), avail).toInt()
-                            val pkt = PacketUtils.buildTcp(
-                                src = serverIp, srcPort = serverPort,
-                                dst = clientIp, dstPort = clientPort,
-                                seq = sndNxt, ack = rcvNxt,
-                                flags = PacketUtils.TcpFlag.ACK or PacketUtils.TcpFlag.PSH,
-                                window = WIN,
-                                payload = chunk.copyOfRange(sent, sent + take),
-                            )
-                            sndNxt = (sndNxt + take) and 0xFFFFFFFFL
-                            sent += take
-                            pkt
-                        } else {
-                            null
+                        while (state != State.CLOSED) {
+                            // Honor the client-advertised receive window with simple clamping:
+                            // in-flight (sent-but-unacked) bytes stay below clientWindow. A zero or
+                            // exhausted window must never be bypassed. ACK processing calls notifyAll,
+                            // while the timeout is only a lost-notification safety net.
+                            val inFlight = (sndNxt - clientAck) and 0xFFFFFFFFL
+                            val avail = if (seenClientAck) clientWindow.toLong() - inFlight else Long.MAX_VALUE
+                            if (avail > 0) {
+                                val take = minOf((chunk.size - sent).toLong(), avail).toInt()
+                                val pkt = PacketUtils.buildTcp(
+                                    src = serverIp, srcPort = serverPort,
+                                    dst = clientIp, dstPort = clientPort,
+                                    seq = sndNxt, ack = rcvNxt,
+                                    flags = PacketUtils.TcpFlag.ACK or PacketUtils.TcpFlag.PSH,
+                                    window = WIN,
+                                    payload = chunk.copyOfRange(sent, sent + take),
+                                )
+                                sndNxt = (sndNxt + take) and 0xFFFFFFFFL
+                                sent += take
+                                lastUsed = System.currentTimeMillis()
+                                return@synchronized pkt
+                            }
+                            try {
+                                lock.wait(WINDOW_WAIT_TIMEOUT_MS)
+                            } catch (_: InterruptedException) {
+                                Thread.currentThread().interrupt()
+                                return@synchronized null
+                            }
                         }
+                        null
                     }
                     if (seg != null) {
                         tunnel.writeToTun(seg)
-                    } else {
-                        try { Thread.sleep(WINDOW_POLL_MS) } catch (_: InterruptedException) { reset(); return }
+                    } else if (state == State.CLOSED || Thread.currentThread().isInterrupted) {
+                        return
                     }
                 }
             }
@@ -416,6 +421,7 @@ class TcpConnection(
             try { toTun.add(buildSegmentLocked(PacketUtils.TcpFlag.RST or PacketUtils.TcpFlag.ACK, ByteArray(0))) } catch (_: Exception) {}
         }
         state = State.CLOSED
+        lock.notifyAll()
         pendingToUpstream.clear()
         pendingToUpstreamBytes = 0
         try { upstream?.close() } catch (_: Exception) {}
