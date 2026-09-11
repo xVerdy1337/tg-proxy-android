@@ -86,6 +86,17 @@ object PacketUtils {
         return p.copyOfRange(start, end)
     }
 
+    /** Best-effort QUIC long-header detection for a UDP payload. */
+    fun isLikelyQuic(payload: ByteArray): Boolean {
+        if (payload.size < 5) return false
+        val first = payload[0].toInt() and 0xFF
+        if ((first and 0x80) == 0 || (first and 0x40) == 0) return false
+        val packetType = (first ushr 4) and 0x03
+        if (packetType != 0) return false
+        return payload[1].toInt() != 0 || payload[2].toInt() != 0 ||
+            payload[3].toInt() != 0 || payload[4].toInt() != 0
+    }
+
     object TcpFlag {
         const val FIN = 0x01
         const val SYN = 0x02

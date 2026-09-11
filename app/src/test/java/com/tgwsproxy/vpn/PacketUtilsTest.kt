@@ -97,6 +97,15 @@ class PacketUtilsTest {
         assertContentEquals(original, reply.copyOfRange(28, reply.size))
     }
 
+    @Test
+    fun quicClassifierAcceptsInitialAndRejectsOtherPackets() {
+        assertTrue(PacketUtils.isLikelyQuic(byteArrayOf(0xC0.toByte(), 0, 0, 0, 1, 1)))
+        assertFalse(PacketUtils.isLikelyQuic(byteArrayOf(0xD0.toByte(), 0, 0, 0, 1, 1)))
+        assertFalse(PacketUtils.isLikelyQuic(byteArrayOf(0x40, 1, 2, 3, 4, 5)))
+        assertFalse(PacketUtils.isLikelyQuic(byteArrayOf(0xC0.toByte(), 0, 0, 0, 0, 1)))
+        assertFalse(PacketUtils.isLikelyQuic(byteArrayOf(0xC0.toByte(), 0, 0, 1)))
+    }
+
     // ---- checksums ----
 
     @Test

@@ -60,6 +60,8 @@ class DesyncVpnService : VpnService(), Tunnel {
         /** True while sockets, native byedpi and the TUN interface are being closed. */
         val isStopping: Boolean = false,
         val preset: String = PRESET_TLSREC,
+        /** Effective catalog id, or `custom` when a custom command is active. */
+        val effectivePreset: String? = null,
         val blockQuic: Boolean = true,
         val scopeAllApps: Boolean = true,
         val activeTcp: Int = 0,
@@ -108,6 +110,16 @@ class DesyncVpnService : VpnService(), Tunnel {
          * Flags: -d disorder, -s split, -r tlsrec, -f fake, -t fake TTL, +s = cut at the SNI.
          */
         fun presetToByedpiArgs(preset: String): String = ByedpiPresetCatalog.commandFor(preset)
+
+        fun effectivePresetFor(preset: String, customCommand: String): String {
+            val migrated = ByedpiPresetCatalog.migrateCommand(customCommand.trim())
+            val command = if (migrated.isNotEmpty()) migrated else ByedpiPresetCatalog.commandFor(preset)
+            val direct = ByedpiPresetCatalog.byCommand(command)
+            if (direct != null) return direct.id
+            return ByedpiPresetCatalog.presets.firstOrNull {
+                ByedpiPresetCatalog.migrateCommand(it.command) == command
+            }?.id ?: "custom"
+        }
 
         /**
          * Tokenise a byedpi command line into an argv array (argv[0] = "ciadpi").
@@ -441,6 +453,9 @@ class DesyncVpnService : VpnService(), Tunnel {
 
     private val tcpMap = ConcurrentHashMap<Long, TcpConnection>()
     private val udpMap = ConcurrentHashMap<Long, UdpAssociation>()
+    private val blockedQuic = ConcurrentHashMap<Long, Long>()
+    private val quicRejects = AtomicLong(0)
+    private val flowRejects = AtomicLong(0)
 
     private val bytesUp = AtomicLong(0)
     private val bytesDown = AtomicLong(0)
@@ -452,6 +467,7 @@ class DesyncVpnService : VpnService(), Tunnel {
     // NOTE: byedpi (native ciadpi) is the data-path desync engine; the pure-Kotlin
     // DesyncEngine is only used by the direct-connection HelloProbe/StrategyTester, not here.
     private var activePreset: String = PRESET_AUTO
+    private var effectivePreset: String? = null
     private var blockQuic = true
     private var allApps = true
     private var excludedUser: Set<String> = emptySet()
@@ -552,8 +568,10 @@ class DesyncVpnService : VpnService(), Tunnel {
         // migrateCommand, not the raw pref: a saved -A command written before the -T timeouts
         // existed has a dead auto-detect, and this path (tile, boot autostart) can launch it long
         // before the UI ever gets a chance to repair it.
-        val custom = ByedpiPresetCatalog.migrateCommand((p.getString(KEY_BYEDPI_CMD, "") ?: "").trim())
+        val rawCustom = (p.getString(KEY_BYEDPI_CMD, "") ?: "").trim()
+        val custom = ByedpiPresetCatalog.migrateCommand(rawCustom)
         val command = if (custom.isNotEmpty()) custom else presetToByedpiArgs(preset)
+        effectivePreset = effectivePresetFor(preset, rawCustom)
         socksPort = selectSocksPort()
         byedpiArgs = buildByedpiArgs(command, "127.0.0.1", socksPort)
     }
@@ -729,6 +747,7 @@ class DesyncVpnService : VpnService(), Tunnel {
                 isRunning = false,
                 isStarting = true,
                 preset = activePreset,
+                effectivePreset = effectivePreset,
                 blockQuic = blockQuic,
                 scopeAllApps = allApps,
                 error = null,
@@ -828,6 +847,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             isRunning = true,
             isStarting = false,
             preset = presetString(),
+            effectivePreset = effectivePreset,
             blockQuic = blockQuic,
             scopeAllApps = allApps,
             startedAt = System.currentTimeMillis(),
@@ -886,7 +906,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         if (isSyn) {
             // Cap concurrent flows: drop the SYN if we're at the limit so a local flood can't
             // exhaust threads/memory. The client simply retries/times out — no resources spent.
-            if (tcpMap.size >= MAX_TCP_FLOWS) return
+            if (tcpMap.size >= MAX_TCP_FLOWS) { flowRejects.incrementAndGet(); return }
             // Counted only past the drop checks, like handleUdp: a flood of stale or rejected
             // packets would otherwise show up as upload traffic that never went anywhere.
             bytesUp.addAndGet(packet.size.toLong())
@@ -910,25 +930,29 @@ class DesyncVpnService : VpnService(), Tunnel {
 
     private fun handleUdp(packet: ByteArray) {
         val dstPort = PacketUtils.dstPort(packet)
-        // QUIC = UDP/443. Reject it explicitly so clients fail over to TCP/TLS immediately.
-        if (blockQuic && dstPort == 443) {
+        val srcPort = PacketUtils.srcPort(packet)
+        val key = PacketUtils.flowKey(PacketUtils.srcIpInt(packet), srcPort, PacketUtils.dstIpInt(packet), dstPort)
+        val payload = PacketUtils.udpPayload(packet)
+        // QUIC Initial packets use the long header and carry a non-zero version. Remember the
+        // flow so retransmitted/next packets cannot escape through the direct UDP relay.
+        if (blockQuic && (blockedQuic.containsKey(key) ||
+                    (dstPort == 443 && PacketUtils.isLikelyQuic(payload)))) {
+            blockedQuic[key] = System.currentTimeMillis()
+            quicRejects.incrementAndGet()
             writeToTun(PacketUtils.buildIcmpPortUnreachable(packet))
             return
         }
 
-        val srcPort = PacketUtils.srcPort(packet)
         val dstIpInt = PacketUtils.dstIpInt(packet)
         // UDP and TCP live in separate maps, so no protocol tag is needed; srcIp is part of the
         // key so two source addresses reusing a srcPort for the same destination stay apart.
-        val key = PacketUtils.flowKey(PacketUtils.srcIpInt(packet), srcPort, dstIpInt, dstPort)
-        val payload = PacketUtils.udpPayload(packet)
         if (payload.isEmpty()) return
         bytesUp.addAndGet(packet.size.toLong())
 
         var assoc = udpMap[key]
         if (assoc == null) {
             // Cap concurrent UDP associations (same flood defense as TCP).
-            if (udpMap.size >= MAX_UDP_FLOWS) return
+            if (udpMap.size >= MAX_UDP_FLOWS) { flowRejects.incrementAndGet(); return }
             assoc = UdpAssociation(
                 clientIp = PacketUtils.srcIp(packet), clientPort = srcPort,
                 serverIp = PacketUtils.dstIp(packet), serverPort = dstPort,
@@ -937,7 +961,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             udpMap[key] = assoc
             // start() dispatches a reader onto relayExecutor — can reject when full/stopped.
             val started = try { assoc.start() } catch (_: java.util.concurrent.RejectedExecutionException) { false }
-            if (!started) { udpMap.remove(key); assoc.close(); return }
+            if (!started) { flowRejects.incrementAndGet(); udpMap.remove(key); assoc.close(); return }
         }
         assoc.onClientPayload(payload)
     }
@@ -964,6 +988,7 @@ class DesyncVpnService : VpnService(), Tunnel {
 
     override fun onConnectionClosed(key: Long, udp: Boolean) {
         if (udp) udpMap.remove(key) else tcpMap.remove(key)
+        if (udp) blockedQuic.remove(key)
     }
 
     override fun reportError(msg: String) {
@@ -1013,6 +1038,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         for ((k, a) in udpMap) {
             if (now - a.lastUsed > UDP_IDLE_MS) { a.close(); udpMap.remove(k) }
         }
+        blockedQuic.entries.removeIf { now - it.value > UDP_IDLE_MS }
         // TCP flows have no FIN/RST guarantee (a half-open flow never closes itself), so reap any
         // that are closed or idle past TCP_IDLE_MS — close() removes the entry via onConnectionClosed.
         for ((k, c) in tcpMap) {
@@ -1039,7 +1065,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             statsJob?.cancel()
             for (c in tcpMap.values) c.close()
             for (u in udpMap.values) u.close()
-            tcpMap.clear(); udpMap.clear()
+            tcpMap.clear(); udpMap.clear(); blockedQuic.clear()
             relayPool?.shutdownNow()
             relayPool = null
             stopByedpi()
