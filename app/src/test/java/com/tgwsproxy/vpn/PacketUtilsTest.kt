@@ -74,6 +74,38 @@ class PacketUtilsTest {
         assertContentEquals(payload, PacketUtils.udpPayload(pkt))
     }
 
+    @Test
+    fun icmpPortUnreachableQuotesOriginalHeaderAndEightBytes() {
+        val original = PacketUtils.buildUdp(SRC, 51000, DST, 443, ByteArray(32) { it.toByte() })
+        val reply = PacketUtils.buildIcmpPortUnreachable(original)
+        assertEquals(1, PacketUtils.protocol(reply))
+        assertContentEquals(DST, PacketUtils.srcIp(reply))
+        assertContentEquals(SRC, PacketUtils.dstIp(reply))
+        assertEquals(3, u(reply[20]))
+        assertEquals(3, u(reply[21]))
+        assertEquals(28 + 28, reply.size)
+        assertContentEquals(original.copyOfRange(0, 28), reply.copyOfRange(28, reply.size))
+        assertEquals(0, PacketUtils.checksum(reply, 0, 20))
+        assertEquals(0, PacketUtils.checksum(reply, 20, reply.size - 20))
+    }
+
+    @Test
+    fun icmpPortUnreachableQuotesShortOriginalPacketOnly() {
+        val original = PacketUtils.buildUdp(SRC, 1, DST, 443, ByteArray(0))
+        val reply = PacketUtils.buildIcmpPortUnreachable(original)
+        assertEquals(20 + 8 + original.size, reply.size)
+        assertContentEquals(original, reply.copyOfRange(28, reply.size))
+    }
+
+    @Test
+    fun quicClassifierAcceptsInitialAndRejectsOtherPackets() {
+        assertTrue(PacketUtils.isLikelyQuic(byteArrayOf(0xC0.toByte(), 0, 0, 0, 1, 1)))
+        assertFalse(PacketUtils.isLikelyQuic(byteArrayOf(0xD0.toByte(), 0, 0, 0, 1, 1)))
+        assertFalse(PacketUtils.isLikelyQuic(byteArrayOf(0x40, 1, 2, 3, 4, 5)))
+        assertFalse(PacketUtils.isLikelyQuic(byteArrayOf(0xC0.toByte(), 0, 0, 0, 0, 1)))
+        assertFalse(PacketUtils.isLikelyQuic(byteArrayOf(0xC0.toByte(), 0, 0, 1)))
+    }
+
     // ---- checksums ----
 
     @Test

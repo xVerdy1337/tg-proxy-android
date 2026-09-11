@@ -86,6 +86,17 @@ object PacketUtils {
         return p.copyOfRange(start, end)
     }
 
+    /** Best-effort QUIC long-header detection for a UDP payload. */
+    fun isLikelyQuic(payload: ByteArray): Boolean {
+        if (payload.size < 5) return false
+        val first = payload[0].toInt() and 0xFF
+        if ((first and 0x80) == 0 || (first and 0x40) == 0) return false
+        val packetType = (first ushr 4) and 0x03
+        if (packetType != 0) return false
+        return payload[1].toInt() != 0 || payload[2].toInt() != 0 ||
+            payload[3].toInt() != 0 || payload[4].toInt() != 0
+    }
+
     object TcpFlag {
         const val FIN = 0x01
         const val SYN = 0x02
@@ -145,6 +156,26 @@ object PacketUtils {
         if (payload.isNotEmpty()) System.arraycopy(payload, 0, out, t + tcpHdr, payload.size)
         putU16(out, t + 16, l4Checksum(out, src, dst, PROTO_TCP, t, tcpLen))
 
+        return out
+    }
+
+    fun buildIcmpPortUnreachable(original: ByteArray): ByteArray {
+        require(isWellFormedIpv4L4(original)) { "original packet must be a well-formed IPv4 TCP/UDP packet" }
+        val originalLen = minOf(totalLength(original), original.size)
+        val quoteLen = minOf(originalLen, ihl(original) + 8)
+        val icmpLen = 8 + quoteLen
+        val out = ByteArray(20 + icmpLen)
+        out[0] = 0x45
+        putU16(out, 2, out.size)
+        out[8] = 64
+        out[9] = 1
+        System.arraycopy(original, 16, out, 12, 4)
+        System.arraycopy(original, 12, out, 16, 4)
+        putU16(out, 10, checksum(out, 0, 20))
+        out[20] = 3
+        out[21] = 3
+        System.arraycopy(original, 0, out, 28, quoteLen)
+        putU16(out, 22, checksum(out, 20, icmpLen))
         return out
     }
 
