@@ -9,6 +9,7 @@ import okhttp3.WebSocketListener
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 class WebSocketBridge {
 
@@ -22,6 +23,8 @@ class WebSocketBridge {
     // only redialed once the app was reopened. We keep readTimeout only for the initial
     // connect/handshake; the longer ping interval reduces periodic radio wakeups.
     private companion object {
+        const val RECEIVE_CHANNEL_CAPACITY = 2048
+        const val MAX_RECEIVE_BYTES = 8L * 1024 * 1024
         // Race candidates share one dispatcher, connection pool and thread set.
         val BASE_CLIENT: OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(5, TimeUnit.SECONDS)
@@ -36,7 +39,8 @@ class WebSocketBridge {
     // Bounded buffer (not Channel.BUFFERED's tiny ~64). On overflow we drop the socket
     // instead of silently losing MTProto frames — a corrupted stream is worse than a redial.
     private val sessionLock = Any()
-    @Volatile private var receiveChannel = Channel<ByteArray>(capacity = 1024)
+    @Volatile private var receiveChannel = Channel<ByteArray>(capacity = RECEIVE_CHANNEL_CAPACITY)
+    private val queuedReceiveBytes = AtomicLong(0)
     @Volatile private var isConnected = false
     @Volatile private var isClosed = false
 
@@ -56,7 +60,8 @@ class WebSocketBridge {
             // A bridge can be reused after a failed/closed WebSocket. Never attach a new
             // listener to a channel that an older session already closed.
             if (isClosed || receiveChannel.isClosedForSend) {
-                receiveChannel = Channel(capacity = 1024)
+                receiveChannel = Channel(capacity = RECEIVE_CHANNEL_CAPACITY)
+                queuedReceiveBytes.set(0)
                 isClosed = false
             }
             receiveChannel
@@ -97,9 +102,15 @@ class WebSocketBridge {
             }
 
             override fun onMessage(ws: WebSocket, bytes: ByteString) {
-                // If downstream (wsToClient) falls behind and the bounded channel fills up,
-                // tear the socket down rather than dropping frames on the floor.
-                if (!channel.trySend(bytes.toByteArray()).isSuccess) {
+                // Bound both frame count and total bytes: media bursts can contain fewer than
+                // 1024 frames while still exhausting memory and stalling the local client.
+                val data = bytes.toByteArray()
+                val reserved = synchronized(sessionLock) {
+                    val current = queuedReceiveBytes.get()
+                    if (current + data.size > MAX_RECEIVE_BYTES) false
+                    else { queuedReceiveBytes.addAndGet(data.size.toLong()); true }
+                }
+                if (!reserved || !channel.trySend(data).isSuccess) {
                     ws.cancel()
                     synchronized(sessionLock) {
                         if (receiveChannel === channel) {
@@ -161,9 +172,10 @@ class WebSocketBridge {
     fun queueSize(): Long = try { webSocket?.queueSize() ?: 0L } catch (_: Exception) { 0L }
 
     suspend fun receive(): ByteArray? {
-        // receiveCatching returns a closed result (→ null) once the channel is closed,
-        // so there's no need to probe isEmpty (not a reliable readiness signal).
-        return receiveChannel.receiveCatching().getOrNull()
+        // receiveCatching returns a closed result (→ null) once the channel is closed.
+        val data = receiveChannel.receiveCatching().getOrNull()
+        if (data != null) queuedReceiveBytes.addAndGet(-data.size.toLong())
+        return data
     }
 
     fun close() {
