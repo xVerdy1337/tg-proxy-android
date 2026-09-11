@@ -11,7 +11,6 @@ import android.content.pm.ServiceInfo
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
-import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
 import android.os.PowerManager
@@ -199,12 +198,10 @@ class ProxyService : Service() {
     private var pendingNetworkReset: Job? = null
     private var networkGeneration = 0L
 
-    // Wake locks keep the CPU and Wi-Fi radio alive for a LIVE relay, so it survives screen-off /
-    // Doze instead of silently dying. Held only while at least one client is connected (plus
-    // [WAKE_LOCK_LINGER_MS]) — see [acquireWakeLocks] for why a merely listening proxy needs
-    // neither, which is what makes running all day nearly free.
+    // A partial CPU wake lock keeps a LIVE relay progressing through screen-off / Doze. It is held
+    // only while at least one client is connected (plus [WAKE_LOCK_LINGER_MS]); Wi-Fi power mode is
+    // intentionally left to the platform so an idle proxy does not pin the radio awake.
     private var wakeLock: PowerManager.WakeLock? = null
-    private var wifiLock: WifiManager.WifiLock? = null
 
     /**
      * Serialises every wake-lock transition. Connection counts arrive from the accept thread and
@@ -542,9 +539,9 @@ class ProxyService : Service() {
     }
 
     /**
-     * Take a partial CPU wake lock plus a high-performance Wi-Fi lock for a live relay. Without
-     * them the system can park the CPU / Wi-Fi radio on screen-off, which drops the relay until the
-     * user reopens the app. Must hold [wakeLockGate].
+     * Take a partial CPU wake lock for a live relay. The platform manages Wi-Fi power state based
+     * on actual traffic; we deliberately do not pin the radio in high-performance mode. Must hold
+     * [wakeLockGate].
      *
      * Not taken for a merely listening proxy, which is the whole point of gating: the client is
      * Telegram, an app on this same device, and a local app cannot dial 127.0.0.1 while the CPU is
@@ -555,21 +552,12 @@ class ProxyService : Service() {
     private fun acquireWakeLocks() {
         try {
             if (wakeLock?.isHeld == false) wakeLock?.acquire()
-            if (wifiLock?.isHeld == false) wifiLock?.acquire()
         } catch (_: Exception) {
             // Wake locks are best-effort; never let them crash the service.
         }
     }
 
-    /**
-     * Build both locks once, in onCreate, rather than lazily on first acquire.
-     *
-     * newWakeLock and createWifiLock are binder round-trips to system_server, and the gate they used
-     * to sit inside is also taken from the main thread by stop and destroy — so a first acquire on
-     * the accept thread could park the main thread behind a binder call for as long as system_server
-     * was contended. Constructing eagerly leaves the gate wrapping only isHeld/acquire/release,
-     * which are cheap and local.
-     */
+    /** Build the CPU wake lock once, in onCreate, rather than lazily on first acquire. */
     private fun createWakeLocks() {
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -577,20 +565,8 @@ class ProxyService : Service() {
                 PowerManager.PARTIAL_WAKE_LOCK,
                 "Jevio:ProxyWakeLock"
             ).apply { setReferenceCounted(false) }
-
-            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            // FULL_HIGH_PERF keeps Wi-Fi awake for the relay without the extra power draw of
-            // FULL_LOW_LATENCY (that mode is meant for gaming/voice and pins the radio in a
-            // high-power, low-latency state — overkill for a mostly-idle proxy).
-            @Suppress("DEPRECATION")
-            val mode = WifiManager.WIFI_MODE_FULL_HIGH_PERF
-            wifiLock = wm.createWifiLock(mode, "Jevio:ProxyWifiLock").apply {
-                setReferenceCounted(false)
-            }
         } catch (e: Exception) {
-            // Best-effort: a null lock simply means acquire/release are no-ops. Logged because the
-            // usual cause — a SecurityException from createWifiLock — is otherwise invisible and the
-            // relay then dies on screen-off with no trace.
+            // Best-effort: a null lock simply means acquire/release is a no-op.
             addLog("Wake lock setup failed: ${e.message}")
         }
     }
@@ -611,14 +587,10 @@ class ProxyService : Service() {
         }
     }
 
-    /** The release itself. Must hold [wakeLockGate]; separate try blocks so one throw can't skip
-     *  the other lock. */
+    /** The release itself. Must hold [wakeLockGate]. */
     private fun dropWakeLocks() {
         try {
             if (wakeLock?.isHeld == true) wakeLock?.release()
-        } catch (_: Exception) {}
-        try {
-            if (wifiLock?.isHeld == true) wifiLock?.release()
         } catch (_: Exception) {}
     }
 

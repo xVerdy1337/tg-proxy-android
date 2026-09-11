@@ -16,20 +16,18 @@ class WebSocketBridge {
     // DNS override is applied per-connect so each call can target a different IP.
     //
     // pingInterval is the critical bit for reliability: OkHttp sends a WebSocket ping every
-    // 30s, which (a) keeps the tunnel's NAT mapping alive on mobile/Wi-Fi so the carrier
-    // doesn't silently reap an idle connection, and (b) makes OkHttp *ignore* the socket read
-    // timeout for an established socket and instead detect death via missing pongs. Without
-    // it, an idle chat (>readTimeout) had its WebSocket torn down — Telegram then showed
-    // "connecting" and only redialed once the app was reopened. We keep readTimeout only for
-    // the initial connect/handshake. 30s is a battery/reliability balance: most carrier/Wi-Fi
-    // NATs hold an idle mapping 60-120s, so 30s keeps it alive with fewer radio wakeups than 20s.
+    // 60s, which (a) keeps the tunnel's NAT mapping alive on most mobile/Wi-Fi networks and
+    // (b) makes OkHttp detect a dead established socket via missing pongs. Without it, an idle
+    // chat (>readTimeout) had its WebSocket torn down — Telegram then showed "connecting" and
+    // only redialed once the app was reopened. We keep readTimeout only for the initial
+    // connect/handshake; the longer ping interval reduces periodic radio wakeups.
     private companion object {
         // Race candidates share one dispatcher, connection pool and thread set.
         val BASE_CLIENT: OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-            .pingInterval(30, TimeUnit.SECONDS)
+            .pingInterval(60, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .build()
     }
