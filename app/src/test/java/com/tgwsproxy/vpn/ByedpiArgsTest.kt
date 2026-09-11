@@ -103,6 +103,15 @@ class ByedpiArgsTest {
         DesyncVpnService.buildByedpiArgs(command, IP, PORT).toList()
 
     @Test
+    fun readinessRetryDelayUsesBoundedBackoff() {
+        assertEquals(20L, DesyncVpnService.readinessRetryDelay(0))
+        assertEquals(40L, DesyncVpnService.readinessRetryDelay(1))
+        assertEquals(80L, DesyncVpnService.readinessRetryDelay(2))
+        assertEquals(120L, DesyncVpnService.readinessRetryDelay(3))
+        assertEquals(120L, DesyncVpnService.readinessRetryDelay(99))
+    }
+
+    @Test
     fun effectivePresetUsesCatalogForEmptyCustomCommand() {
         assertEquals(DesyncVpnService.PRESET_AUTO,
             DesyncVpnService.effectivePresetFor(DesyncVpnService.PRESET_AUTO, ""))

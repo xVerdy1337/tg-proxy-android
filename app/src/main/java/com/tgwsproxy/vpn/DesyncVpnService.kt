@@ -333,12 +333,19 @@ class DesyncVpnService : VpnService(), Tunnel {
          * StrategyTester there — would race the bind and see connection-refused on the very first
          * flow. Keeping this in one place means both callers agree on what "up" means.
          */
+        private const val READY_RETRY_INITIAL_MS = 20L
+        private const val READY_RETRY_MAX_MS = 120L
+
+        internal fun readinessRetryDelay(attempt: Int): Long =
+            (READY_RETRY_INITIAL_MS shl attempt.coerceIn(0, 3)).coerceAtMost(READY_RETRY_MAX_MS)
+
         fun awaitSocksReady(
             port: Int,
             deadlineMs: Long = 3_000L,
             alive: () -> Boolean = { true },
         ): Boolean {
             val deadline = System.currentTimeMillis() + deadlineMs
+            var attempt = 0
             while (System.currentTimeMillis() < deadline) {
                 try {
                     Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", port), 150) }
@@ -349,7 +356,7 @@ class DesyncVpnService : VpnService(), Tunnel {
                     // instead of making the user watch out the whole deadline for a known failure.
                     if (!alive()) return false
                     try {
-                        Thread.sleep(40)
+                        Thread.sleep(readinessRetryDelay(attempt++))
                     } catch (_: InterruptedException) {
                         // Re-arm the flag we just consumed: the auto-tune sweep interrupts its
                         // worker to abort, and swallowing it here would strand that thread.
