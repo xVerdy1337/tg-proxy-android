@@ -148,6 +148,26 @@ object PacketUtils {
         return out
     }
 
+    fun buildIcmpPortUnreachable(original: ByteArray): ByteArray {
+        require(isWellFormedIpv4L4(original)) { "original packet must be a well-formed IPv4 TCP/UDP packet" }
+        val originalLen = minOf(totalLength(original), original.size)
+        val quoteLen = minOf(originalLen, ihl(original) + 8)
+        val icmpLen = 8 + quoteLen
+        val out = ByteArray(20 + icmpLen)
+        out[0] = 0x45
+        putU16(out, 2, out.size)
+        out[8] = 64
+        out[9] = 1
+        System.arraycopy(original, 16, out, 12, 4)
+        System.arraycopy(original, 12, out, 16, 4)
+        putU16(out, 10, checksum(out, 0, 20))
+        out[20] = 3
+        out[21] = 3
+        System.arraycopy(original, 0, out, 28, quoteLen)
+        putU16(out, 22, checksum(out, 20, icmpLen))
+        return out
+    }
+
     fun buildUdp(
         src: ByteArray, srcPort: Int,
         dst: ByteArray, dstPort: Int,

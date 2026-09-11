@@ -910,8 +910,11 @@ class DesyncVpnService : VpnService(), Tunnel {
 
     private fun handleUdp(packet: ByteArray) {
         val dstPort = PacketUtils.dstPort(packet)
-        // QUIC = UDP/443. Drop it so the app retries over TCP/TLS, which we can desync.
-        if (blockQuic && dstPort == 443) return
+        // QUIC = UDP/443. Reject it explicitly so clients fail over to TCP/TLS immediately.
+        if (blockQuic && dstPort == 443) {
+            writeToTun(PacketUtils.buildIcmpPortUnreachable(packet))
+            return
+        }
 
         val srcPort = PacketUtils.srcPort(packet)
         val dstIpInt = PacketUtils.dstIpInt(packet)
