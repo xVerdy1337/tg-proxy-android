@@ -735,6 +735,7 @@ class MtProtoProxyServer(
                 if (!winner.complete(null)) {
                     val late = winner.await()?.first
                     if (late != null && late !== result?.first) {
+                        activeWebSockets.remove(late)
                         try { late.close() } catch (_: Exception) {}
                     }
                 }
