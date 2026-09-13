@@ -69,7 +69,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         val blockQuic: Boolean = true,
         val scopeAllApps: Boolean = true,
         /** Whether the running VPN leaves IPv6 on the underlying network instead of the TUN. */
-        val allowDirectIpv6: Boolean = true,
+        val allowDirectIpv6: Boolean = false,
         val activeTcp: Int = 0,
         val activeUdp: Int = 0,
         val bytesUp: Long = 0,
@@ -487,7 +487,7 @@ class DesyncVpnService : VpnService(), Tunnel {
     private var effectivePreset: String? = null
     private var blockQuic = true
     private var allApps = true
-    private var allowDirectIpv6 = true
+    private var allowDirectIpv6 = false
     private var excludedUser: Set<String> = emptySet()
     private var byedpiArgs: Array<String> = arrayOf("ciadpi")
     private var socksPort: Int = DEFAULT_SOCKS_PORT
@@ -579,7 +579,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         val p = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         blockQuic = p.getBoolean(KEY_BLOCK_QUIC, true)
         allApps = p.getBoolean(KEY_ALL_APPS, true)
-        allowDirectIpv6 = p.getBoolean(KEY_ALLOW_DIRECT_IPV6, true)
+        allowDirectIpv6 = p.getBoolean(KEY_ALLOW_DIRECT_IPV6, false)
         excludedUser = p.getStringSet(KEY_EXCLUDED_USER, emptySet())?.toSet() ?: emptySet()
         val preset = p.getString(KEY_PRESET, PRESET_AUTO) ?: PRESET_AUTO
         activePreset = preset
@@ -888,7 +888,7 @@ class DesyncVpnService : VpnService(), Tunnel {
                 val n = input.read(buffer)
                 if (n <= 0) { if (n < 0) break else continue }
                 val packet = buffer.copyOf(n)
-                if (PacketUtils.ipVersion(packet) != 4) continue // IPv6 is allowed outside this TUN
+                if (PacketUtils.ipVersion(packet) != 4) continue // Data path is IPv4-only; IPv6 never enters this relay.
                 // Drop malformed/truncated packets before the L4 accessors index by ihl/dataOffset —
                 // a crafted short packet would otherwise throw and tear down the whole VPN (DoS).
                 if (!PacketUtils.isWellFormedIpv4L4(packet)) continue

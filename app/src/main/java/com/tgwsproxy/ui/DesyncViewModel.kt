@@ -40,7 +40,7 @@ data class DesyncSettings(
     val blockQuic: Boolean = true,
     val allApps: Boolean = true,
     /** Allow IPv6 to use the underlying network directly instead of entering the IPv4-only TUN. */
-    val allowDirectIpv6: Boolean = true,
+    val allowDirectIpv6: Boolean = false,
     /** Custom byedpi command line; empty = use the preset's built-in strategy. */
     val byedpiCmd: String = "",
 )
@@ -740,7 +740,7 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                 ?: DesyncVpnService.PRESET_AUTO,
             blockQuic = p.getBoolean(DesyncVpnService.KEY_BLOCK_QUIC, true),
             allApps = p.getBoolean(DesyncVpnService.KEY_ALL_APPS, true),
-            allowDirectIpv6 = p.getBoolean(DesyncVpnService.KEY_ALLOW_DIRECT_IPV6, true),
+            allowDirectIpv6 = p.getBoolean(DesyncVpnService.KEY_ALLOW_DIRECT_IPV6, false),
             byedpiCmd = p.getString(DesyncVpnService.KEY_BYEDPI_CMD, "") ?: "",
         )
     }
