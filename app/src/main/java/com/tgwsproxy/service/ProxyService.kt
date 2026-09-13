@@ -726,7 +726,6 @@ class ProxyService : Service() {
                 val server = synchronized(wakeLockGate) {
                     if (generation != networkGeneration || !_serviceState.value.isRunning) return@launch
                     liveConnections = proxyServer?.connections ?: 0
-                    if (liveConnections > 0) acquireWakeLocks()
                     proxyServer
                 } ?: return@launch
                 // Re-check the run and network generation after the settle delay. A stop/start or a
