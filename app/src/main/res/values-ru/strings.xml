@@ -120,6 +120,8 @@
     <string name="sites_idle_hint">Локальный обход без внешнего VPN</string>
     <string name="sites_scope_all_apps">Все приложения; исключено: %1$d</string>
     <string name="sites_scope_selected_apps">Выбранные приложения: YouTube и Instagram</string>
+    <string name="sites_ipv4_jevio_ipv6_direct">IPv4 через Jevio · IPv6 напрямую</string>
+    <string name="sites_ipv4_jevio_ipv6_blocked">IPv4 через Jevio · IPv6 заблокирован</string>
     <string name="auto_tune_title">Подбор метода</string>
     <string name="auto_tune_progress">Проверено %1$d из %2$d</string>
     <string name="auto_tune_keep_open">Не закрывай приложение во время проверки.</string>
@@ -158,13 +160,15 @@
     <string name="restart_vpn_after_change">Применится после того, как выключишь и включишь VPN.</string>
     <string name="hide_description">Скрыть описание</string>
     <string name="show_description">Показать описание</string>
-    <string name="unblock_settings_subtitle">Метод, QUIC, приложения, byedpi</string>
+    <string name="unblock_settings_subtitle">Метод, QUIC, приложения, IPv6, byedpi</string>
     <string name="custom_command">своя команда</string>
     <string name="block_quic">Блокировать QUIC</string>
     <string name="block_quic_subtitle">Ускоряет обход для YouTube: обычный TLS вместо QUIC</string>
     <string name="all_apps">Все приложения</string>
     <string name="all_apps_on_subtitle">Обход для всех приложений (рекомендуется)</string>
     <string name="all_apps_off_subtitle">Только YouTube и Instagram — включи «все», если не работает</string>
+    <string name="direct_ipv6">Прямой IPv6</string>
+    <string name="direct_ipv6_subtitle">Разрешать IPv6-соединения напрямую, без метода обхода. Помогает в IPv6-only сетях, но часть сайтов может обойти Jevio.</string>
     <string name="exclusions_title">Не использовать обход для…</string>
     <string name="exclusions_count">%1$d исключено (банки, Госуслуги…)</string>
     <string name="manual_method_check">Ручная проверка методов</string>

@@ -127,6 +127,8 @@
     <string name="sites_idle_hint">Local bypass with no external VPN</string>
     <string name="sites_scope_all_apps">All apps; %1$d excluded</string>
     <string name="sites_scope_selected_apps">Selected apps: YouTube and Instagram</string>
+    <string name="sites_ipv4_jevio_ipv6_direct">IPv4 via Jevio · IPv6 direct</string>
+    <string name="sites_ipv4_jevio_ipv6_blocked">IPv4 via Jevio · IPv6 blocked</string>
     <string name="auto_tune_title">Method tuning</string>
     <!-- %1$d counts candidates already FINISHED, never the one under test — the same number drives
          the progress bar, which has to start empty and fill only as work completes. -->
@@ -177,13 +179,15 @@
     <string name="restart_vpn_after_change">Applies after you turn VPN off and on.</string>
     <string name="hide_description">Hide description</string>
     <string name="show_description">Show description</string>
-    <string name="unblock_settings_subtitle">Method, QUIC, apps, byedpi</string>
+    <string name="unblock_settings_subtitle">Method, QUIC, apps, IPv6, byedpi</string>
     <string name="custom_command">custom command</string>
     <string name="block_quic">Block QUIC</string>
     <string name="block_quic_subtitle">Speeds up YouTube bypass: plain TLS instead of QUIC</string>
     <string name="all_apps">All apps</string>
     <string name="all_apps_on_subtitle">Bypass for all apps (recommended)</string>
     <string name="all_apps_off_subtitle">YouTube and Instagram only — enable «all» if it doesn\'t work</string>
+    <string name="direct_ipv6">Direct IPv6</string>
+    <string name="direct_ipv6_subtitle">Allow IPv6 connections directly, without the bypass method. May help on IPv6-only networks, but some sites can bypass Jevio.</string>
     <string name="exclusions_title">Don\'t use bypass for…</string>
     <string name="exclusions_count">%1$d excluded (banks, gov services…)</string>
     <string name="manual_method_check">Manual method check</string>

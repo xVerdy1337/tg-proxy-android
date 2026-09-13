@@ -52,8 +52,8 @@ import kotlin.concurrent.thread
  *
  * Flow: TUN → read IPv4 packets → TCP goes through [TcpConnection] (desync on the ClientHello),
  * UDP through [UdpAssociation] (QUIC dropped when the toggle is on so apps fall back to TLS).
- * IPv6 is explicitly allowed outside the IPv4-only TUN, so IPv6-only networks retain connectivity
- * while the IPv4 path continues through the desync relay.
+ * IPv6 can be allowed outside the IPv4-only TUN when Direct IPv6 is enabled, so IPv6-only networks
+ * retain connectivity while the IPv4 path continues through the desync relay.
  */
 class DesyncVpnService : VpnService(), Tunnel {
 
@@ -68,6 +68,8 @@ class DesyncVpnService : VpnService(), Tunnel {
         val effectivePreset: String? = null,
         val blockQuic: Boolean = true,
         val scopeAllApps: Boolean = true,
+        /** Whether the running VPN leaves IPv6 on the underlying network instead of the TUN. */
+        val allowDirectIpv6: Boolean = true,
         val activeTcp: Int = 0,
         val activeUdp: Int = 0,
         val bytesUp: Long = 0,
@@ -86,6 +88,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         const val KEY_PRESET = "desync_preset"
         const val KEY_BLOCK_QUIC = "desync_block_quic"
         const val KEY_ALL_APPS = "desync_all_apps"
+        const val KEY_ALLOW_DIRECT_IPV6 = "desync_allow_direct_ipv6"
         const val KEY_VPN_RUNNING = "desync_vpn_running"
         // Custom byedpi command line (empty → derived from the selected preset).
         const val KEY_BYEDPI_CMD = "byedpi_cmd"
@@ -484,6 +487,7 @@ class DesyncVpnService : VpnService(), Tunnel {
     private var effectivePreset: String? = null
     private var blockQuic = true
     private var allApps = true
+    private var allowDirectIpv6 = true
     private var excludedUser: Set<String> = emptySet()
     private var byedpiArgs: Array<String> = arrayOf("ciadpi")
     private var socksPort: Int = DEFAULT_SOCKS_PORT
@@ -575,6 +579,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         val p = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         blockQuic = p.getBoolean(KEY_BLOCK_QUIC, true)
         allApps = p.getBoolean(KEY_ALL_APPS, true)
+        allowDirectIpv6 = p.getBoolean(KEY_ALLOW_DIRECT_IPV6, true)
         excludedUser = p.getStringSet(KEY_EXCLUDED_USER, emptySet())?.toSet() ?: emptySet()
         val preset = p.getString(KEY_PRESET, PRESET_AUTO) ?: PRESET_AUTO
         activePreset = preset
@@ -764,6 +769,7 @@ class DesyncVpnService : VpnService(), Tunnel {
                 effectivePreset = effectivePreset,
                 blockQuic = blockQuic,
                 scopeAllApps = allApps,
+                allowDirectIpv6 = allowDirectIpv6,
                 error = null,
             )
         }
@@ -787,17 +793,18 @@ class DesyncVpnService : VpnService(), Tunnel {
             return
         }
 
-        // The relay currently implements IPv4 packets. Explicitly allow IPv6 outside the VPN rather
-        // than capturing it and silently dropping it: this keeps IPv6-only networks usable and
-        // lets Happy Eyeballs choose a direct IPv6 path when it is available.
+        // The relay currently implements IPv4 packets. Direct IPv6 is optional: when enabled, keep
+        // IPv6 outside the VPN so IPv6-only networks remain usable; when disabled, the IPv4-only
+        // builder policy prevents IPv6 from bypassing the desync relay.
         val builder = Builder()
             .setSession("Jevio Unblocker")
             .setMtu(MTU)
             .addAddress(TUN_ADDR, 32)
             .addRoute("0.0.0.0", 0)
-            .allowFamily(OsConstants.AF_INET6)
             .addDnsServer("8.8.8.8")
             .addDnsServer("1.1.1.1")
+
+        if (allowDirectIpv6) builder.allowFamily(OsConstants.AF_INET6)
 
         if (allApps) {
             // Our own app must bypass the TUN (byedpi's upstream socket reaches the net directly).
@@ -864,6 +871,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             effectivePreset = effectivePreset,
             blockQuic = blockQuic,
             scopeAllApps = allApps,
+            allowDirectIpv6 = allowDirectIpv6,
             startedAt = System.currentTimeMillis(),
             error = null,
         )
