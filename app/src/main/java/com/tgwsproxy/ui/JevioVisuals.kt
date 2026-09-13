@@ -73,6 +73,7 @@ import com.tgwsproxy.ui.theme.GlassBorder
 import com.tgwsproxy.ui.theme.Primary
 import com.tgwsproxy.ui.theme.Signal
 import com.tgwsproxy.ui.theme.TextPrimary
+import com.tgwsproxy.ui.theme.TextSecondary
 import com.tgwsproxy.ui.theme.SurfaceElevated
 
 /** Shared motion curve: quick response with a soft, natural finish. */
