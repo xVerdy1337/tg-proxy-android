@@ -53,7 +53,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.BatteryAlert
-import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
@@ -481,7 +480,7 @@ private fun MainTabRow(selected: MainTab, onSelect: (MainTab) -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(12.dp, RoundedCornerShape(999.dp), ambientColor = GlassShadow, spotColor = GlassShadow)
+            .shadow(4.dp, RoundedCornerShape(999.dp), ambientColor = GlassShadow, spotColor = GlassShadow)
             .clip(RoundedCornerShape(999.dp))
             .background(GlassSurfaceMuted)
             .border(1.dp, GlassBorder, RoundedCornerShape(999.dp))
@@ -699,7 +698,7 @@ private fun TelegramHero(
 
         if (running && uiState.proxyLink.isNotEmpty()) {
             Spacer(Modifier.height(20.dp))
-            PillButton(
+            ActionButton(
                 label = stringResource(R.string.connect_telegram),
                 loading = false,
                 destructive = false,
@@ -760,9 +759,9 @@ private fun TelegramHero(
     }
 }
 
-/** Full-width fully-rounded (pill) primary/secondary button. */
+/** Full-width primary/secondary action with a compact, stable touch shape. */
 @Composable
-private fun PillButton(
+private fun ActionButton(
     label: String,
     loading: Boolean,
     destructive: Boolean,
@@ -770,7 +769,7 @@ private fun PillButton(
     outlined: Boolean = false,
     onClick: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(999.dp)
+    val shape = RoundedCornerShape(16.dp)
     val interaction = remember { MutableInteractionSource() }
     val scale = rememberPressScale(interaction)
     val reduceMotion = reducedMotionEnabled()
@@ -797,7 +796,7 @@ private fun PillButton(
             .fillMaxWidth()
             .heightIn(min = 58.dp)
             .shadow(
-                elevation = if (!outlined && !destructive && enabled) 9.dp else 0.dp,
+                elevation = if (!outlined && !destructive && enabled) 6.dp else 0.dp,
                 shape = shape,
                 ambientColor = GlassShadow,
                 spotColor = GlassShadow,
@@ -939,7 +938,7 @@ private fun ProxyInfoCard(
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Surface)
     ) {
         Column(
@@ -1094,7 +1093,7 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Surface),
         border = if (enabled) BorderStroke(1.dp, Primary.copy(alpha = 0.45f)) else null
     ) {
@@ -1244,7 +1243,7 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Surface)
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
@@ -1444,7 +1443,7 @@ private fun TelegramChannelCard() {
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .clickable {
+            .clickable(role = Role.Button) {
                 try {
                     context.startActivity(
                         Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/jevio_dev"))
@@ -1490,9 +1489,9 @@ private fun TelegramChannelCard() {
                 )
             }
             Icon(
-                imageVector = Icons.Default.ChevronRight,
-                contentDescription = null,
-                tint = TextSecondary,
+                imageVector = Icons.Default.OpenInNew,
+                contentDescription = stringResource(R.string.tg_channel_open),
+                tint = Accent,
                 modifier = Modifier.size(22.dp)
             )
         }

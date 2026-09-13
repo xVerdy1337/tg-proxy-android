@@ -14,6 +14,7 @@ import android.net.Network
 import android.os.Binder
 import android.os.Build
 import android.os.PowerManager
+import android.os.SystemClock
 import android.service.quicksettings.TileService
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -90,14 +91,11 @@ class ProxyService : Service() {
         const val DEFAULT_PORT = 1443
 
         /**
-         * How long the wake locks outlive the last client. Not zero, because Telegram drops and
-         * redials constantly — on its own backoff ladder, and on every network switch — and each
-         * toggle of WIFI_MODE_FULL_HIGH_PERF drags the radio out of and back into power save, which
-         * costs more than simply holding it across the gap. 30s clears every redial we can provoke
-         * (our own 700ms settle plus the reconnect, seconds at worst) by an order of magnitude,
-         * while still handing an idle proxy back to Doze within half a minute instead of never.
+         * How long the wake lock outlives the latest traffic. This covers a burst finishing on a
+         * screen-off device without pinning an idle Telegram session; a later packet reacquires it.
          */
-        private const val WAKE_LOCK_LINGER_MS = 30_000L
+        private const val WAKE_LOCK_LINGER_MS = 12_000L
+        private const val WAKE_LOCK_QUEUE_POLL_MS = 2_000L
 
         /**
          * Build the tg:// proxy link. Pure helper so the UI can render the link
@@ -198,9 +196,8 @@ class ProxyService : Service() {
     private var pendingNetworkReset: Job? = null
     private var networkGeneration = 0L
 
-    // A partial CPU wake lock keeps a LIVE relay progressing through screen-off / Doze. It is held
-    // only while at least one client is connected (plus [WAKE_LOCK_LINGER_MS]); Wi-Fi power mode is
-    // intentionally left to the platform so an idle proxy does not pin the radio awake.
+    // A partial CPU wake lock keeps active relay I/O progressing while the screen is off. It is
+    // released during idle gaps even when Telegram keeps a socket open for hours.
     private var wakeLock: PowerManager.WakeLock? = null
 
     /**
@@ -213,7 +210,7 @@ class ProxyService : Service() {
      */
     private val wakeLockGate = Any()
 
-    /** Guarded by [wakeLockGate]: the armed linger, cancelled when a client arrives before it. */
+    /** Guarded by [wakeLockGate]: the armed idle-release job for the latest traffic burst. */
     private var pendingRelease: Job? = null
 
     /**
@@ -225,10 +222,12 @@ class ProxyService : Service() {
      * so two callbacks racing arrive in an order unrelated to the order the count actually moved.
      * Latching the payload goes wrong in both directions — a stale zero applied after a live accept
      * releases the locks under a running relay (the exact failure these locks exist to prevent), and
-     * a stale non-zero left after the last client never self-corrects, because there is no further
-     * disconnect to fix it, quietly restoring the 24/7 hold this gating removes.
+     * a stale non-zero still cannot keep the lock by itself: acquisition is driven by traffic, and
+     * the release job re-reads the authoritative count before dropping the lock.
      */
     private var liveConnections = 0
+    /** Guarded by [wakeLockGate], monotonic timestamp of the latest relay traffic signal. */
+    private var lastTrafficAt = 0L
 
     inner class ProxyBinder : Binder() {
         fun getService(): ProxyService = this@ProxyService
@@ -416,9 +415,9 @@ class ProxyService : Service() {
             )
         }
         persistRunning(true)
-        // Deliberately no wake lock here: a started-but-idle proxy must hold nothing. The callback
-        // wired below takes them on the first accept, and it is handed to the server at
-        // construction — before start() can accept anything — so no relay can ever run unlocked.
+        // Deliberately no wake lock here: a started-but-idle proxy must hold nothing. The traffic
+        // callback is handed to the server before start() can accept anything, so active relay I/O
+        // still gets a short CPU-awake window.
         registerNetworkCallback()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -447,6 +446,7 @@ class ProxyService : Service() {
                     secret = secret,
                     onLog = { line, kind -> addLog(line, kind) },
                     onConnectionChange = { count -> onConnectionsChanged(generation, count) },
+                    onTraffic = { onTraffic(generation) },
                     cfDomain = _serviceState.value.cfDomain,
                     cfWorkerDomain = _serviceState.value.cfWorkerDomain,
                     fakeTlsDomain = fakeTlsDomain
@@ -489,17 +489,14 @@ class ProxyService : Service() {
     }
 
     /**
-     * The only driver of the wake locks: they follow the client count, not the run.
+     * Connection count updates the UI and releases the lock when the final client leaves. Traffic
+     * itself drives acquisition so an idle persistent Telegram socket can sleep.
      *
      * [generation] is the run the reporting server belongs to. A stopped server's clients keep
      * reporting their own unwind for as long as their sockets take to close — stopProxy bumps the
      * generation before it releases, so those counts neither put the locks back nor overwrite a
-     * "stopped" UI with two connections. The check sits inside the gate because it and the acquire
-     * have to be one indivisible step; outside it, a callback could clear the check, block on the
-     * monitor while stopProxy released, and then acquire into a service that is already gone.
-     *
-     * Must not release the instant the count hits zero: Telegram redials within seconds and
-     * thrashing the locks costs more than holding them — hence [WAKE_LOCK_LINGER_MS].
+     * "stopped" UI with two connections. The generation check stays inside the gate so a late
+     * callback cannot race teardown and change the lock state after the service has stopped.
      */
     private fun onConnectionsChanged(generation: Long, count: Int) {
         synchronized(wakeLockGate) {
@@ -508,28 +505,10 @@ class ProxyService : Service() {
             // only matters if the server reference is already gone, and then there is nothing left
             // to relay anyway.
             liveConnections = proxyServer?.connections ?: count
-            // Cancel first in both branches: at most one linger may ever be armed, and an arriving
-            // client must disarm the one already ticking.
-            pendingRelease?.cancel()
-            pendingRelease = null
-            if (liveConnections > 0) {
-                acquireWakeLocks()
-            } else {
-                pendingRelease = serviceScope.launch {
-                    // delay() measures uptime, which is exactly the right clock here: we are still
-                    // holding the CPU awake while it runs, so it cannot be stretched by a suspend.
-                    delay(WAKE_LOCK_LINGER_MS)
-                    // Re-checked under the gate because cancel() cannot stop a timer that has
-                    // already cleared the delay and is queued on the monitor — a client that
-                    // arrived in that window has taken the locks and this expiry must not undo it.
-                    // Straight from the server again, not from the cached field: this is the last
-                    // check before the locks go, so it should depend on nothing but the counter.
-                    synchronized(wakeLockGate) {
-                        val live = proxyServer?.connections ?: 0
-                        liveConnections = live
-                        if (live == 0) dropWakeLocks()
-                    }
-                }
+            if (liveConnections == 0) {
+                pendingRelease?.cancel()
+                pendingRelease = null
+                dropWakeLocks()
             }
         }
         // Also the authoritative count, for the same reason the gate uses it: two callbacks that
@@ -538,16 +517,59 @@ class ProxyService : Service() {
         _serviceState.update { it.copy(connectionCount = shown) }
     }
 
+    /** Keep the CPU awake for recent relay bytes and until OkHttp has drained its write queues. */
+    private fun onTraffic(generation: Long) {
+        synchronized(wakeLockGate) {
+            if (proxyGeneration.get() != generation || liveConnections == 0) return
+            lastTrafficAt = SystemClock.uptimeMillis()
+            acquireWakeLocks()
+            if (pendingRelease != null) return
+            pendingRelease = serviceScope.launch {
+                while (isActive) {
+                    val waitMs = synchronized(wakeLockGate) {
+                        val now = SystemClock.uptimeMillis()
+                        val live = proxyServer?.connections ?: 0
+                        if (proxyGeneration.get() != generation || live == 0) {
+                            pendingRelease = null
+                            dropWakeLocks()
+                            return@launch
+                        }
+                        // send() only enqueues into OkHttp. Keep the lock while any active bridge
+                        // still has unsent bytes, then start the normal idle linger after drain.
+                        val queuePending = proxyServer?.hasPendingWebSocketWrites() == true
+                        if (queuePending) {
+                            lastTrafficAt = now
+                            acquireWakeLocks()
+                            WAKE_LOCK_QUEUE_POLL_MS
+                        } else {
+                            (WAKE_LOCK_LINGER_MS - (now - lastTrafficAt))
+                                .coerceAtLeast(1L)
+                        }
+                    }
+                    delay(waitMs)
+                    synchronized(wakeLockGate) {
+                        val live = proxyServer?.connections ?: 0
+                        liveConnections = live
+                        val idle = SystemClock.uptimeMillis() - lastTrafficAt >= WAKE_LOCK_LINGER_MS
+                        val queuePending = proxyServer?.hasPendingWebSocketWrites() == true
+                        if (proxyGeneration.get() != generation || live == 0 || (idle && !queuePending)) {
+                            pendingRelease = null
+                            dropWakeLocks()
+                            return@launch
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /**
-     * Take a partial CPU wake lock for a live relay. The platform manages Wi-Fi power state based
-     * on actual traffic; we deliberately do not pin the radio in high-performance mode. Must hold
-     * [wakeLockGate].
+     * Take a partial CPU wake lock for recent relay traffic. The platform manages Wi-Fi power state
+     * based on actual traffic; we deliberately do not pin the radio in high-performance mode. Must
+     * hold [wakeLockGate].
      *
-     * Not taken for a merely listening proxy, which is the whole point of gating: the client is
-     * Telegram, an app on this same device, and a local app cannot dial 127.0.0.1 while the CPU is
-     * suspended — the accept that would need servicing implies the CPU is already awake, so the
-     * listener needs no help to survive. Only bytes in flight do, and a non-zero connection count
-     * is exactly that. Being a foreground service is what keeps us alive in between.
+     * A merely listening proxy holds nothing. Network delivery wakes the process, the traffic
+     * callback keeps it awake while bytes are in flight, and the linger then lets the CPU suspend.
      */
     private fun acquireWakeLocks() {
         try {
@@ -704,7 +726,6 @@ class ProxyService : Service() {
                 val server = synchronized(wakeLockGate) {
                     if (generation != networkGeneration || !_serviceState.value.isRunning) return@launch
                     liveConnections = proxyServer?.connections ?: 0
-                    if (liveConnections > 0) acquireWakeLocks()
                     proxyServer
                 } ?: return@launch
                 // Re-check the run and network generation after the settle delay. A stop/start or a

@@ -5,9 +5,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 
 // === Jevio matte dark ===
-// Deep neutral canvas, smoky charcoal surfaces and a single high-visibility accent drawn from the
-// brand gradient's warm end. The alpha on surfaces preserves the existing soft-depth treatment
-// without light flash.
+// Deep neutral canvas, matte charcoal surfaces and a single high-visibility accent drawn from the
+// brand gradient's warm end. Surfaces are opaque so hierarchy stays stable while the list scrolls.
 //
 // The accent has a hard constraint: [OnAccent] is the near-black canvas, because the accent is a
 // FILLED button background with dark text on top. So it has to stay light. The saturated blue and
@@ -16,9 +15,9 @@ import androidx.compose.ui.graphics.SolidColor
 // to a light colour first, everywhere, not just editing the value here.
 
 val Background = Color(0xFF11120F)
-val Surface = Color(0xE31C1D19)
-val SurfaceElevated = Color(0xF5262722)
-val SurfaceVariant = Color(0xCC33352E)
+val Surface = Color(0xFF1C1D19)
+val SurfaceElevated = Color(0xFF262722)
+val SurfaceVariant = Color(0xFF33352E)
 
 val Primary = Color(0xFFF5F3ED)
 val PrimaryDark = Color(0xFFD0CCC2)
@@ -35,8 +34,7 @@ val TextMuted = Color(0xFF96938B)
 
 val Border = Color(0x8067645C)
 val GlassBorder = Color(0x24FFFFFF)
-val GlassSurface = Color(0xE31C1D19)
-val GlassSurfaceMuted = Color(0xCC2B2C27)
+val GlassSurfaceMuted = Color(0xFF2B2C27)
 val GlassShadow = Color(0x60000000)
 val Destructive = Color(0xFFEE7B72)
 val ErrorContainer = Color(0xE83B1E1C)

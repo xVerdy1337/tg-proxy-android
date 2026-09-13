@@ -88,19 +88,20 @@
     <string name="fake_tls_relink_hint">After changing, add the new link in Telegram again.</string>
 
     <!-- Cloudflare settings -->
-    <string name="cf_title">Custom Cloudflare</string>
-    <string name="cf_desc">If the network blocks Telegram, the proxy automatically goes through Cloudflare. You can set your own domain (more reliable than shared ones).</string>
+    <string name="cf_title">Custom Cloudflare domains</string>
+    <string name="cf_desc">If the network blocks Telegram, the proxy automatically routes through Cloudflare. Add your own domain for a more reliable connection.</string>
     <string name="cf_domains_label">Custom Cloudflare domains</string>
     <string name="cf_domains_hint">Multiple domains — comma-separated. Leave empty to use built-in domains.</string>
     <string name="cf_worker_desc">Cloudflare Worker — free, no domain purchase. Deploy a worker (docs/CfWorker.md) and paste its *.workers.dev address.</string>
-    <string name="cf_worker_label">Cloudflare Worker domain</string>
+    <string name="cf_worker_label">Cloudflare Worker</string>
     <string name="cf_worker_hint">Multiple workers — comma-separated. Leave empty to disable.</string>
     <string name="save_worker">Save Worker</string>
     <string name="restart_proxy_hint">Changes apply after restarting the proxy.</string>
 
     <!-- Channel / onboarding / update -->
-    <string name="tg_channel_title">Our Telegram channel</string>
-    <string name="tg_channel_subtitle">\@jevio_dev — news and updates</string>
+    <string name="tg_channel_title">Jevio on Telegram</string>
+    <string name="tg_channel_subtitle">\@jevio_dev — updates, fixes, and unblock news</string>
+    <string name="tg_channel_open">Open Jevio on Telegram</string>
     <string name="onboarding_welcome">Welcome to Jevio Unblocker</string>
     <string name="onboarding_proxy_title">Telegram proxy</string>
     <string name="onboarding_proxy_body">Start the proxy and connect Telegram with the ready link.</string>
@@ -185,9 +186,6 @@
     <string name="all_apps_off_subtitle">YouTube and Instagram only — enable «all» if it doesn\'t work</string>
     <string name="exclusions_title">Don\'t use bypass for…</string>
     <string name="exclusions_count">%1$d excluded (banks, gov services…)</string>
-    <string name="pipe_diagnostics">Pipe diagnostics</string>
-    <string name="pipe_diagnostics_desc">Checks a plain connection without desync. Only to see whether the problem is the network or the bypass method.</string>
-    <string name="check_without_bypass">Check without bypass</string>
     <string name="manual_method_check">Manual method check</string>
     <string name="manual_method_check_desc">Quick direct split/tlsrec probe (no FAKE). For full tuning use «Auto-tune» above.</string>
     <string name="probe_simple_ok">A simple method worked. But «Auto-tune» is more reliable — it also checks FAKE/TTL.</string>
@@ -246,11 +244,11 @@
     <string name="desync_channel_desc">YouTube / Instagram bypass status</string>
     <string name="desync_notification_title">Unlock is on</string>
     <string name="desync_notification_text">YouTube and Instagram bypass the block</string>
-    <!-- The two stage keys are substituted as %1$s into vpn_fail_format, so they have to complete
-         that sentence: a noun phrase after "Could not complete", an infinitive after "Не удалось". -->
-    <string name="vpn_fail_start_stage">VPN start</string>
-    <string name="vpn_fail_establish_stage">VPN establish</string>
-    <string name="vpn_fail_format">Could not complete %1$s: %2$s: %3$s</string>
+    <!-- The two stage keys are substituted as %1$s into vpn_fail_format, so they complete the
+         sentence as infinitives in English and Russian respectively. -->
+    <string name="vpn_fail_start_stage">start the VPN</string>
+    <string name="vpn_fail_establish_stage">set up the VPN</string>
+    <string name="vpn_fail_format">Could not %1$s: %2$s: %3$s</string>
     <string name="vpn_fail_no_details">no details</string>
     <!-- byedpi's own main() answered -1, which on Android means init()/run() failed and the bind lost
          the port. The old wording hedged with "or engine already running" because the shim returned
@@ -301,21 +299,21 @@
 
     <!-- Presets -->
     <string name="preset_auto_label">Auto — cascade</string>
-    <string name="preset_auto_desc">Strong disorder + split cascade. Main universal option.</string>
+    <string name="preset_auto_desc">Strong disorder + split cascade. The best all-purpose option.</string>
     <string name="preset_split_label">SNI split</string>
     <string name="preset_split_desc">Multi-point split without FAKE. Usually lighter on battery and latency.</string>
     <string name="preset_tlsrec_label">TLS-record + FAKE</string>
     <string name="preset_tlsrec_desc">Split + TLS-record + low TTL. Fallback for strict DPI.</string>
     <string name="preset_split_minimal_label">Minimal split</string>
-    <string name="preset_split_minimal_desc">Single cut at SNI — minimal load and a quick test.</string>
+    <string name="preset_split_minimal_desc">Single split at SNI — minimal load and a quick test.</string>
     <string name="preset_tlsrec_minimal_label">Minimal TLS-record</string>
     <string name="preset_tlsrec_minimal_desc">Only TLS-record re-fragmentation at SNI.</string>
     <string name="preset_disorder_minimal_label">Minimal disorder</string>
-    <string name="preset_disorder_minimal_desc">Reverse segment order at SNI without cascade.</string>
+    <string name="preset_disorder_minimal_desc">Reorders segments at SNI without a cascade.</string>
     <string name="preset_split_triple_label">Split: 3 points</string>
     <string name="preset_split_triple_desc">Short split cascade for networks where long chains break the connection.</string>
     <string name="preset_disorder_split_label">Disorder + split</string>
-    <string name="preset_disorder_split_desc">Simple combo of two basic methods.</string>
+    <string name="preset_disorder_split_desc">A simple combination of two basic methods.</string>
     <string name="preset_split_tlsrec_label">Split + TLS-record</string>
     <string name="preset_split_tlsrec_desc">Two ways to hide the ClientHello boundary without a FAKE packet.</string>
     <string name="preset_mixed_short_label">Short mix</string>
@@ -339,7 +337,7 @@
     <string name="preset_fake_random_tls_label">FAKE with random TLS</string>
     <string name="preset_fake_random_tls_desc">Changes fake ClientHello parameters; sometimes helps against signatures.</string>
     <string name="preset_fake_original_tls_label">FAKE with original TLS</string>
-    <string name="preset_fake_original_tls_desc">Keeps original fake ClientHello parameters.</string>
+    <string name="preset_fake_original_tls_desc">Keeps the original fake ClientHello parameters.</string>
     <string name="preset_fake_google_sni_label">FAKE: Google SNI</string>
     <string name="preset_fake_google_sni_desc">SNI swap only in the decoy packet. Test on your network.</string>
     <string name="preset_fake_microsoft_sni_label">FAKE: Microsoft SNI</string>

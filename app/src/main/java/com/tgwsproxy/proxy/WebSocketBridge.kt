@@ -11,16 +11,19 @@ import okio.ByteString.Companion.toByteString
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
-class WebSocketBridge {
+class WebSocketBridge(
+    // Invoked from OkHttp's listener thread when bytes have actually arrived from the network.
+    private val onTraffic: () -> Unit = {}
+) {
 
     // Base client with standard TLS validation — Telegram servers have valid certificates.
     // DNS override is applied per-connect so each call can target a different IP.
     //
-    // pingInterval is the critical bit for reliability: OkHttp sends a WebSocket ping every
-    // 60s, which (a) keeps the tunnel's NAT mapping alive on most mobile/Wi-Fi networks and
-    // (b) makes OkHttp detect a dead established socket via missing pongs. Without it, an idle
-    // chat (>readTimeout) had its WebSocket torn down — Telegram then showed "connecting" and
-    // only redialed once the app was reopened. We keep readTimeout only for the initial
+    // pingInterval is the critical bit for reliability while the process is awake: OkHttp sends
+    // a WebSocket ping every 60s, which (a) keeps the tunnel's NAT mapping alive on most
+    // mobile/Wi-Fi networks and (b) makes OkHttp detect a dead established socket via missing
+    // pongs. Android may defer in-process timers during deep sleep, so an idle connection is
+    // allowed to reconnect on its next real packet. We keep readTimeout only for the initial
     // connect/handshake; the longer ping interval reduces periodic radio wakeups.
     private companion object {
         const val RECEIVE_CHANNEL_CAPACITY = 2048
@@ -119,6 +122,10 @@ class WebSocketBridge {
                 } else if (!channel.trySend(data).isSuccess) {
                     session.queuedBytes.addAndGet(-data.size.toLong())
                     failSession(ws, session)
+                } else {
+                    // This is the earliest reliable downstream signal: receive() may not run
+                    // until after the service's idle linger has already expired.
+                    try { onTraffic() } catch (_: Exception) {}
                 }
             }
 
@@ -171,7 +178,13 @@ class WebSocketBridge {
     fun send(data: ByteArray): Boolean {
         // data.toByteString(0, size) avoids the array copy that the *data spread operator
         // forces on every frame (okio moved the 3-arg of() to this extension). send() is hot.
-        return isConnected && (webSocket?.send(data.toByteString(0, data.size)) ?: false)
+        val sent = isConnected && (webSocket?.send(data.toByteString(0, data.size)) ?: false)
+        if (sent) {
+            // send() confirms enqueue into OkHttp, so this both acquires the short lock window
+            // for the initial relay frame and refreshes it for outbound traffic bursts.
+            try { onTraffic() } catch (_: Exception) {}
+        }
+        return sent
     }
 
     /**

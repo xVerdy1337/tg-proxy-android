@@ -42,11 +42,14 @@ class MtProtoProxyServer(
     // Optional Fake-TLS masking domain. When non-empty, clients connect with an `ee...`
     // secret and wrap the obfuscated2 stream in TLS records that look like HTTPS to [this
     // domain] — the strongest DPI bypass. Empty = plain (dd) handshake on the raw path.
-    private val fakeTlsDomain: String = ""
+    private val fakeTlsDomain: String = "",
+    // Called when relay bytes move so the owner can keep the CPU awake only for active I/O.
+    private val onTraffic: () -> Unit = {}
 ) {
     private var serverSocket: ServerSocket? = null
     @Volatile private var running = false
     private val activeConnections = ConcurrentHashMap.newKeySet<Socket>()
+    private val activeWebSockets = ConcurrentHashMap.newKeySet<WebSocketBridge>()
     private val connectionCount = AtomicInteger(0)
     // Per-connection sequence for log labels: on loopback every client is 127.0.0.1, so the bare
     // address made all summary lines indistinguishable.
@@ -64,6 +67,17 @@ class MtProtoProxyServer(
     // Consecutive lost probes stretch the skip window (see directWaveNegativeTtlMs); a successful
     // direct wave resets it, so an unblocked network returns to preferring direct immediately.
     private val directWaveFailCount = AtomicInteger(0)
+    private val lastTrafficSignalAt = AtomicLong(0)
+
+    private fun signalTraffic() {
+        val now = SystemClock.uptimeMillis()
+        val previous = lastTrafficSignalAt.get()
+        if (now - previous >= TRAFFIC_SIGNAL_MIN_INTERVAL_MS &&
+            lastTrafficSignalAt.compareAndSet(previous, now)
+        ) {
+            onTraffic()
+        }
+    }
 
     /**
      * Live client count, readable at any moment from any thread.
@@ -76,6 +90,9 @@ class MtProtoProxyServer(
      * count must read this instead of trusting the payload.
      */
     val connections: Int get() = connectionCount.get()
+
+    /** True while any live WebSocket still has bytes queued in OkHttp's writer. */
+    fun hasPendingWebSocketWrites(): Boolean = activeWebSockets.any { it.queueSize() > 0L }
     // Blocking read()/write() calls pin the thread they run on, so the shared Dispatchers.IO
     // pool would be drained by a full house of clients (~2-3 parked threads per client x
     // MAX_CLIENTS, plus the WS race). Give the server its own cached pool instead: threads are
@@ -227,6 +244,8 @@ class MtProtoProxyServer(
         routeCache.clear()
         activeConnections.forEach { try { it.close() } catch (_: Exception) {} }
         activeConnections.clear()
+        activeWebSockets.forEach { try { it.close() } catch (_: Exception) {} }
+        activeWebSockets.clear()
         try { serverSocket?.close() } catch (_: Exception) {}
         onLog(appContext.getString(R.string.proxy_stopped_log), LogKind.PLAIN)
     }
@@ -395,6 +414,7 @@ class MtProtoProxyServer(
             // finally block would otherwise only close the socket after a pointless wait.
             if (!bridge.send(relayInit)) {
                 onLog("[$label] WS bridge closed before relay init — dropping client", LogKind.WARNING)
+                activeWebSockets.remove(bridge)
                 try { bridge.close() } catch (_: Exception) {}
                 return
             }
@@ -486,6 +506,7 @@ class MtProtoProxyServer(
                         while (!clientSocket.isClosed) {
                             val r = clientInput.read(b); if (r <= 0) break
                             connUp.addAndGet(r.toLong())
+                            signalTraffic()
                             upOut.write(b, 0, r); upOut.flush()
                         }
                     } catch (_: Exception) {}
@@ -496,6 +517,7 @@ class MtProtoProxyServer(
                         while (!up.isClosed) {
                             val r = upIn.read(b); if (r <= 0) break
                             connDown.addAndGet(r.toLong())
+                            signalTraffic()
                             clientOutput.write(b, 0, r); clientOutput.flush()
                         }
                     } catch (_: Exception) {}
@@ -551,10 +573,11 @@ class MtProtoProxyServer(
         val cacheKey = "$dcId/$isMedia"
 
         routeCache[cacheKey]?.let { cached ->
-            val b = WebSocketBridge()
+            val b = WebSocketBridge { signalTraffic() }
             val ok = try { b.connect(cached.pinnedIp, cached.host, cached.path) } catch (_: Exception) { false }
             if (ok) {
                 lastRoute = cached.kind
+                activeWebSockets.add(b)
                 onLog("[$label] WS reconnected via ${cached.host} (${cached.kind}, cached)", LogKind.WS)
                 return Pair(b, cached)
             }
@@ -650,7 +673,7 @@ class MtProtoProxyServer(
         // sweep the list once the race resolved — stranded live sockets: connect() blocks on a
         // plain CountDownLatch (WebSocketBridge), so cancelling the jobs cannot stop a candidate
         // that is already dialling, and one that registered or finished after the sweep was never
-        // closed by anybody. OkHttp's 30s pingInterval then kept those sockets alive forever, a
+        // closed by anybody. OkHttp's pingInterval then kept those sockets alive forever, a
         // whole Cloudflare wave's worth per race, on every reconnect.
         val winner = kotlinx.coroutines.CompletableDeferred<Pair<WebSocketBridge, WsCandidate>?>()
 
@@ -662,7 +685,7 @@ class MtProtoProxyServer(
         val dialSlots = Semaphore(WS_DIAL_CONCURRENCY)
         val jobs = candidates.map { c ->
             serverScope.launch {
-                val b = WebSocketBridge()
+                val b = WebSocketBridge { signalTraffic() }
                 val ok = try {
                     // Waiting candidates are cancellable; only a small number of blocking OkHttp
                     // handshakes can occupy relay threads and wake the radio at once. Once a slot
@@ -672,10 +695,14 @@ class MtProtoProxyServer(
                     failures.add(e.javaClass.simpleName)
                     false
                 }
+                if (ok) {
+                    activeWebSockets.add(b)
+                }
                 if (ok && winner.complete(Pair(b, c))) {
                     lastRoute = c.kind
                     onLog("[$label] WS connected via ${c.host} (${c.kind})", LogKind.WS)
                 } else {
+                    if (ok) activeWebSockets.remove(b)
                     try { b.close() } catch (_: Exception) {}
                 }
             }
@@ -695,7 +722,7 @@ class MtProtoProxyServer(
             // returning, while connect() is a plain blocking latch that no cancellation can
             // interrupt — so a candidate already dialling still finishes, still wins the
             // deferred, and its bridge would be left with no owner at all (the caller never
-            // receives it, and stop() only closes client sockets). OkHttp's 30s pingInterval
+            // receives it, and stop() only closes client sockets). OkHttp's pingInterval
             // keeps such a socket alive indefinitely. NonCancellable so this runs to the end
             // inside an already-cancelled scope.
             withContext(NonCancellable) {
@@ -708,6 +735,7 @@ class MtProtoProxyServer(
                 if (!winner.complete(null)) {
                     val late = winner.await()?.first
                     if (late != null && late !== result?.first) {
+                        activeWebSockets.remove(late)
                         try { late.close() } catch (_: Exception) {}
                     }
                 }
@@ -874,6 +902,7 @@ class MtProtoProxyServer(
                         break
                     }
                     connUp.addAndGet(read.toLong())
+                    signalTraffic()
                     lastUpAt.set(SystemClock.uptimeMillis())
                     bytesUp.addAndGet(read.toLong())
                     val chunk = buffer.copyOfRange(0, read)
@@ -913,6 +942,9 @@ class MtProtoProxyServer(
                         if (!clientSocket.isClosed) closeReason.compareAndSet("client-gone", "peer")
                         break
                     }
+                    // The listener already signals at network ingress; repeat here in case the
+                    // bounded receive channel made the relay wait through a previous linger.
+                    signalTraffic()
                     // First bytes back prove the route carries Telegram traffic → cache it.
                     if (connDown.getAndAdd(data.size.toLong()) == 0L) {
                         routeCache[cacheKey] = candidate
@@ -937,6 +969,7 @@ class MtProtoProxyServer(
             }
             try { clientSocket.close() } catch (_: Exception) {}
             wsBridge.close()
+            activeWebSockets.remove(wsBridge)
             clientToWs.cancel(); wsToClient.cancel()
         } catch (e: CancellationException) {
             // Never swallow cancellation — it is how stop()/resetConnections() tears sessions down.
@@ -945,6 +978,7 @@ class MtProtoProxyServer(
         } finally {
             watchdog.cancel()
             wsBridge.close()
+            activeWebSockets.remove(wsBridge)
             // No per-session log here: handleClient emits the single CONN summary line.
         }
     }
@@ -984,6 +1018,7 @@ class MtProtoProxyServer(
                                 break
                             }
                             connUp.addAndGet(read.toLong())
+                            signalTraffic()
                             bytesUp.addAndGet(read.toLong())
                             val chunk = buffer.copyOfRange(0, read)
                             val plain = ctx.cltDecryptor.update(chunk)
@@ -1008,6 +1043,7 @@ class MtProtoProxyServer(
                                 break
                             }
                             connDown.addAndGet(read.toLong())
+                            signalTraffic()
                             bytesDown.addAndGet(read.toLong())
                             val chunk = buffer.copyOfRange(0, read)
                             val plain = ctx.tgDecryptor.update(chunk)
@@ -1088,6 +1124,9 @@ class MtProtoProxyServer(
         const val UPSTREAM_CONNECT_TIMEOUT_MS = 5_000
         // Idle I/O timeout on the benign masking relay so a silent peer can't hang it forever.
         const val RELAY_IO_TIMEOUT_MS = 15_000
+        // Avoid wake-lock transition churn on high-throughput sessions; the owner still gets a
+        // fresh signal often enough to extend the short active-I/O linger.
+        const val TRAFFIC_SIGNAL_MIN_INTERVAL_MS = 2_000L
         // Max accepted Fake-TLS ClientHello record length — bounds the pre-auth allocation.
         const val MAX_CLIENT_HELLO = 4096
         // Max concurrent client connections (loopback proxy; Telegram needs ~15). Flood guard.
