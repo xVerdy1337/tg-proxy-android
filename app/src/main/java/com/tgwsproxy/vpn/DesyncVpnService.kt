@@ -27,6 +27,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.FileInputStream
@@ -1025,6 +1027,12 @@ class DesyncVpnService : VpnService(), Tunnel {
                     uiWatching -> 1000L
                     hasFlows -> 10000L
                     else -> NO_FLOW_POLL_MS
+                }
+                if (!uiWatching && !hasFlows) {
+                    withTimeoutOrNull(NO_FLOW_POLL_MS) {
+                        _state.subscriptionCount.first { it > 0 }
+                    }
+                    continue
                 }
                 if (uiWatching || hasFlows) reapIdleFlows()
                 if (uiWatching) {

@@ -63,7 +63,6 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -93,6 +92,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tgwsproxy.R
 import com.tgwsproxy.ui.theme.Accent
 import com.tgwsproxy.ui.theme.AccentSoft
@@ -149,7 +149,7 @@ private fun serviceLabel(host: String): String = when (host) {
  * no separate tab/scroll container. Caller owns spacing + bottom padding.
  *
  * `LazyListScope` is NOT @Composable, so each `item { }` lambda collects the flows it needs
- * via `collectAsState()` itself — we don't hoist state reads to this scope.
+ * via `collectAsStateWithLifecycle()` itself — we don't hoist state reads to this scope.
  */
 fun LazyListScope.unblockSections(
     vm: DesyncViewModel,
@@ -158,9 +158,9 @@ fun LazyListScope.unblockSections(
     onDisable: () -> Unit,
 ) {
     item(key = "unblock-hero") {
-        val state by vm.vpnState.collectAsState()
-        val autoTune by vm.autoTune.collectAsState()
-        val excluded by vm.excluded.collectAsState()
+        val state by vm.vpnState.collectAsStateWithLifecycle()
+        val autoTune by vm.autoTune.collectAsStateWithLifecycle()
+        val excluded by vm.excluded.collectAsStateWithLifecycle()
         HeroUnblockCard(
             state = state,
             testing = autoTune.running,
@@ -171,8 +171,8 @@ fun LazyListScope.unblockSections(
     }
 
     item(key = "auto-tune") {
-        val autoTune by vm.autoTune.collectAsState()
-        val state by vm.vpnState.collectAsState()
+        val autoTune by vm.autoTune.collectAsStateWithLifecycle()
+        val state by vm.vpnState.collectAsStateWithLifecycle()
         AutoTuneCard(
             autoTune = autoTune,
             // Busy spans every state in which the one-instance byedpi engine is claimed, not just
@@ -200,9 +200,9 @@ fun LazyListScope.unblockSections(
     // this scope. Hanging the card off a neighbour that is always present buys the same thing:
     // nothing shown is nothing measured.
     item(key = "services") {
-        val probe by vm.probe.collectAsState()
-        val autoTune by vm.autoTune.collectAsState()
-        val state by vm.vpnState.collectAsState()
+        val probe by vm.probe.collectAsStateWithLifecycle()
+        val autoTune by vm.autoTune.collectAsStateWithLifecycle()
+        val state by vm.vpnState.collectAsStateWithLifecycle()
         Column {
             ServicesCard(probe, autoTune)
             AnimatedVisibility(
@@ -222,12 +222,12 @@ fun LazyListScope.unblockSections(
     }
 
     item(key = "unblock-settings") {
-        val settings by vm.settings.collectAsState()
-        val probe by vm.probe.collectAsState()
-        val excluded by vm.excluded.collectAsState()
+        val settings by vm.settings.collectAsStateWithLifecycle()
+        val probe by vm.probe.collectAsStateWithLifecycle()
+        val excluded by vm.excluded.collectAsStateWithLifecycle()
         var showExclusions by remember { mutableStateOf(false) }
         if (showExclusions) {
-            val installedApps by vm.installedApps.collectAsState()
+            val installedApps by vm.installedApps.collectAsStateWithLifecycle()
             ExclusionDialog(
                 apps = installedApps,
                 excluded = excluded,
