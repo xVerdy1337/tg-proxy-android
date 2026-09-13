@@ -53,7 +53,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.BatteryAlert
-import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
@@ -1444,7 +1443,7 @@ private fun TelegramChannelCard() {
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .clickable {
+            .clickable(role = Role.Button) {
                 try {
                     context.startActivity(
                         Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/jevio_dev"))
@@ -1490,9 +1489,9 @@ private fun TelegramChannelCard() {
                 )
             }
             Icon(
-                imageVector = Icons.Default.ChevronRight,
-                contentDescription = null,
-                tint = TextSecondary,
+                imageVector = Icons.Default.OpenInNew,
+                contentDescription = stringResource(R.string.tg_channel_open),
+                tint = Accent,
                 modifier = Modifier.size(22.dp)
             )
         }

@@ -1066,7 +1066,6 @@ private fun UnblockSettingsCard(
                     restartHint = stringResource(R.string.restart_vpn_after_change),
                     onChange = onBlockQuic,
                 )
-                DiagnosticPresetCard(settings.preset, onSelectPreset)
                 ProbeCard(probe, onCheck)
                 ByedpiCommandCard(
                     command = settings.byedpiCmd,
@@ -1108,30 +1107,6 @@ private fun UnblockSettingsCard(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun DiagnosticPresetCard(
-    current: String,
-    onSelect: (String) -> Unit,
-) {
-    PanelCard {
-        Text(stringResource(R.string.pipe_diagnostics), color = TextPrimary, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            stringResource(R.string.pipe_diagnostics_desc),
-            color = TextSecondary,
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Spacer(Modifier.height(10.dp))
-        PresetChip(
-            stringResource(R.string.check_without_bypass),
-            DesyncVpnService.PRESET_OFF,
-            current,
-            Modifier.fillMaxWidth(),
-            onSelect,
-        )
     }
 }
 

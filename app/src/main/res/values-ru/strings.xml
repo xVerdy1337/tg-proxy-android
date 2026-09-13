@@ -93,8 +93,9 @@
     <string name="save_worker">Сохранить Worker</string>
     <string name="restart_proxy_hint">Изменения применятся после перезапуска прокси.</string>
 
-    <string name="tg_channel_title">Наш Telegram-канал</string>
-    <string name="tg_channel_subtitle">\@jevio_dev — новости и обновления</string>
+    <string name="tg_channel_title">Jevio в Telegram</string>
+    <string name="tg_channel_subtitle">\@jevio_dev — обновления, исправления и новости об обходе блокировок</string>
+    <string name="tg_channel_open">Открыть Jevio в Telegram</string>
     <string name="onboarding_welcome">Добро пожаловать в Jevio Unblocker</string>
     <string name="onboarding_proxy_title">Telegram-прокси</string>
     <string name="onboarding_proxy_body">Запусти прокси и подключи Telegram по готовой ссылке.</string>
@@ -166,9 +167,6 @@
     <string name="all_apps_off_subtitle">Только YouTube и Instagram — включи «все», если не работает</string>
     <string name="exclusions_title">Не использовать обход для…</string>
     <string name="exclusions_count">%1$d исключено (банки, Госуслуги…)</string>
-    <string name="pipe_diagnostics">Диагностика трубы</string>
-    <string name="pipe_diagnostics_desc">Проверяет обычное подключение без desync. Нужен только чтобы понять, где проблема: в сети или в методе обхода.</string>
-    <string name="check_without_bypass">Проверить без обхода</string>
     <string name="manual_method_check">Ручная проверка методов</string>
     <string name="manual_method_check_desc">Быстрая прямая проба split/tlsrec (без FAKE). Для полного подбора используй «Автоподбор» выше.</string>
     <string name="probe_simple_ok">Нашёлся рабочий простой метод. Но «Автоподбор» надёжнее — он проверяет и FAKE/TTL.</string>

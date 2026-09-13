@@ -99,8 +99,9 @@
     <string name="restart_proxy_hint">Changes apply after restarting the proxy.</string>
 
     <!-- Channel / onboarding / update -->
-    <string name="tg_channel_title">Our Telegram channel</string>
-    <string name="tg_channel_subtitle">\@jevio_dev — news and updates</string>
+    <string name="tg_channel_title">Jevio on Telegram</string>
+    <string name="tg_channel_subtitle">\@jevio_dev — updates, fixes, and unblock news</string>
+    <string name="tg_channel_open">Open Jevio on Telegram</string>
     <string name="onboarding_welcome">Welcome to Jevio Unblocker</string>
     <string name="onboarding_proxy_title">Telegram proxy</string>
     <string name="onboarding_proxy_body">Start the proxy and connect Telegram with the ready link.</string>
@@ -185,9 +186,6 @@
     <string name="all_apps_off_subtitle">YouTube and Instagram only — enable «all» if it doesn\'t work</string>
     <string name="exclusions_title">Don\'t use bypass for…</string>
     <string name="exclusions_count">%1$d excluded (banks, gov services…)</string>
-    <string name="pipe_diagnostics">Pipe diagnostics</string>
-    <string name="pipe_diagnostics_desc">Checks a plain connection without desync. Only to see whether the problem is the network or the bypass method.</string>
-    <string name="check_without_bypass">Check without bypass</string>
     <string name="manual_method_check">Manual method check</string>
     <string name="manual_method_check_desc">Quick direct split/tlsrec probe (no FAKE). For full tuning use «Auto-tune» above.</string>
     <string name="probe_simple_ok">A simple method worked. But «Auto-tune» is more reliable — it also checks FAKE/TTL.</string>
