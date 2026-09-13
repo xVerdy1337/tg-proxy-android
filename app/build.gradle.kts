@@ -13,8 +13,8 @@ android {
         applicationId = "com.tgwsproxy"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "1.3.2"
+        versionCode = 7
+        versionName = "1.3.3"
 
         ndk {
             abiFilters.add("arm64-v8a")

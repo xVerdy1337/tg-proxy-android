@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PriorityHigh
@@ -245,6 +246,7 @@ fun LazyListScope.unblockSections(
             presetDefault = vm.defaultCmdForPreset(settings.preset),
             onBlockQuic = { vm.setBlockQuic(it) },
             onAllApps = { vm.setAllApps(it) },
+            onAllowDirectIpv6 = { vm.setAllowDirectIpv6(it) },
             excludedCount = excluded.size + vm.builtInExcluded.size,
             onOpenExclusions = { vm.loadInstalledApps(); showExclusions = true },
         )
@@ -365,6 +367,32 @@ private fun HeroUnblockCard(
             textAlign = TextAlign.Center,
             maxLines = 2,
         )
+        if (running) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Language,
+                    contentDescription = null,
+                    tint = if (state.allowDirectIpv6) OkGreen else TextSecondary,
+                    modifier = Modifier.size(16.dp),
+                )
+                Text(
+                    text = stringResource(
+                        if (state.allowDirectIpv6) {
+                            R.string.sites_ipv4_jevio_ipv6_direct
+                        } else {
+                            R.string.sites_ipv4_jevio_ipv6_blocked
+                        },
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (state.allowDirectIpv6) OkGreen else TextSecondary,
+                    textAlign = TextAlign.Center,
+                    maxLines = 2,
+                )
+            }
+        }
         JevioHeroError(error = state.error, running = running, onRetry = onEnable)
 
     }
@@ -1008,6 +1036,7 @@ private fun UnblockSettingsCard(
     presetDefault: String,
     onBlockQuic: (Boolean) -> Unit,
     onAllApps: (Boolean) -> Unit,
+    onAllowDirectIpv6: (Boolean) -> Unit,
     excludedCount: Int,
     onOpenExclusions: () -> Unit,
 ) {
@@ -1082,6 +1111,14 @@ private fun UnblockSettingsCard(
                     checked = settings.allApps,
                     restartHint = stringResource(R.string.restart_vpn_after_change),
                     onChange = onAllApps
+                )
+                ToggleCard(
+                    icon = Icons.Default.Language,
+                    title = stringResource(R.string.direct_ipv6),
+                    subtitle = stringResource(R.string.direct_ipv6_subtitle),
+                    checked = settings.allowDirectIpv6,
+                    restartHint = stringResource(R.string.restart_vpn_after_change),
+                    onChange = onAllowDirectIpv6,
                 )
                 Row(
                     modifier = Modifier
@@ -1674,6 +1711,7 @@ internal fun FullUnblockPreviewContent() {
             presetDefault = ByedpiPresetCatalog.commandFor(settings.preset),
             onBlockQuic = {},
             onAllApps = {},
+            onAllowDirectIpv6 = {},
             excludedCount = 0,
             onOpenExclusions = {},
         )

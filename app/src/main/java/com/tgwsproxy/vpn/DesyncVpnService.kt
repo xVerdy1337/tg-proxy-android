@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.system.OsConstants
 import android.content.ComponentName
 import android.service.quicksettings.TileService
 import androidx.core.app.NotificationCompat
@@ -51,7 +52,8 @@ import kotlin.concurrent.thread
  *
  * Flow: TUN → read IPv4 packets → TCP goes through [TcpConnection] (desync on the ClientHello),
  * UDP through [UdpAssociation] (QUIC dropped when the toggle is on so apps fall back to TLS).
- * IPv6 is captured and dropped to force apps onto IPv4 where the desync works.
+ * IPv6 can be allowed outside the IPv4-only TUN when Direct IPv6 is enabled, so IPv6-only networks
+ * retain connectivity while the IPv4 path continues through the desync relay.
  */
 class DesyncVpnService : VpnService(), Tunnel {
 
@@ -66,6 +68,8 @@ class DesyncVpnService : VpnService(), Tunnel {
         val effectivePreset: String? = null,
         val blockQuic: Boolean = true,
         val scopeAllApps: Boolean = true,
+        /** Whether the running VPN leaves IPv6 on the underlying network instead of the TUN. */
+        val allowDirectIpv6: Boolean = false,
         val activeTcp: Int = 0,
         val activeUdp: Int = 0,
         val bytesUp: Long = 0,
@@ -84,6 +88,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         const val KEY_PRESET = "desync_preset"
         const val KEY_BLOCK_QUIC = "desync_block_quic"
         const val KEY_ALL_APPS = "desync_all_apps"
+        const val KEY_ALLOW_DIRECT_IPV6 = "desync_allow_direct_ipv6"
         const val KEY_VPN_RUNNING = "desync_vpn_running"
         // Custom byedpi command line (empty → derived from the selected preset).
         const val KEY_BYEDPI_CMD = "byedpi_cmd"
@@ -482,6 +487,7 @@ class DesyncVpnService : VpnService(), Tunnel {
     private var effectivePreset: String? = null
     private var blockQuic = true
     private var allApps = true
+    private var allowDirectIpv6 = false
     private var excludedUser: Set<String> = emptySet()
     private var byedpiArgs: Array<String> = arrayOf("ciadpi")
     private var socksPort: Int = DEFAULT_SOCKS_PORT
@@ -573,6 +579,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         val p = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         blockQuic = p.getBoolean(KEY_BLOCK_QUIC, true)
         allApps = p.getBoolean(KEY_ALL_APPS, true)
+        allowDirectIpv6 = p.getBoolean(KEY_ALLOW_DIRECT_IPV6, false)
         excludedUser = p.getStringSet(KEY_EXCLUDED_USER, emptySet())?.toSet() ?: emptySet()
         val preset = p.getString(KEY_PRESET, PRESET_AUTO) ?: PRESET_AUTO
         activePreset = preset
@@ -762,6 +769,7 @@ class DesyncVpnService : VpnService(), Tunnel {
                 effectivePreset = effectivePreset,
                 blockQuic = blockQuic,
                 scopeAllApps = allApps,
+                allowDirectIpv6 = allowDirectIpv6,
                 error = null,
             )
         }
@@ -785,10 +793,9 @@ class DesyncVpnService : VpnService(), Tunnel {
             return
         }
 
-        // IPv4 only on purpose: we do NOT add an IPv6 address/route. If we advertised IPv6 on the
-        // TUN, apps (YouTube/Instagram use Happy Eyeballs) would prefer AAAA/IPv6 and we'd have to
-        // silently drop those packets → multi-second connect stalls instead of an instant IPv4
-        // path. With no IPv6 on the interface, apps go straight to IPv4 where the desync applies.
+        // The relay currently implements IPv4 packets. Direct IPv6 is optional: when enabled, keep
+        // IPv6 outside the VPN so IPv6-only networks remain usable; when disabled, the IPv4-only
+        // builder policy prevents IPv6 from bypassing the desync relay.
         val builder = Builder()
             .setSession("Jevio Unblocker")
             .setMtu(MTU)
@@ -796,6 +803,8 @@ class DesyncVpnService : VpnService(), Tunnel {
             .addRoute("0.0.0.0", 0)
             .addDnsServer("8.8.8.8")
             .addDnsServer("1.1.1.1")
+
+        if (allowDirectIpv6) builder.allowFamily(OsConstants.AF_INET6)
 
         if (allApps) {
             // Our own app must bypass the TUN (byedpi's upstream socket reaches the net directly).
@@ -862,6 +871,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             effectivePreset = effectivePreset,
             blockQuic = blockQuic,
             scopeAllApps = allApps,
+            allowDirectIpv6 = allowDirectIpv6,
             startedAt = System.currentTimeMillis(),
             error = null,
         )
@@ -878,7 +888,7 @@ class DesyncVpnService : VpnService(), Tunnel {
                 val n = input.read(buffer)
                 if (n <= 0) { if (n < 0) break else continue }
                 val packet = buffer.copyOf(n)
-                if (PacketUtils.ipVersion(packet) != 4) continue // drop IPv6 → force IPv4
+                if (PacketUtils.ipVersion(packet) != 4) continue // Data path is IPv4-only; IPv6 never enters this relay.
                 // Drop malformed/truncated packets before the L4 accessors index by ihl/dataOffset —
                 // a crafted short packet would otherwise throw and tear down the whole VPN (DoS).
                 if (!PacketUtils.isWellFormedIpv4L4(packet)) continue
