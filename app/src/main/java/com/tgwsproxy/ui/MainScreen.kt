@@ -91,7 +91,6 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -126,6 +125,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tgwsproxy.R
 import com.tgwsproxy.service.LogKind
 import com.tgwsproxy.service.LogLine
@@ -206,7 +206,7 @@ fun MainScreen(
     onEnableVpn: () -> Unit = {},
     onDisableVpn: () -> Unit = {},
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     // Filtered once per state emission, not per LogItem: the whole log recomposes on every
     // arriving line, so doing the predicate inside the lazy item would redo it 200× per line.
     val visibleLogs = remember(uiState.logs, uiState.logFilter) {
