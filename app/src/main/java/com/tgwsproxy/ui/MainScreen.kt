@@ -481,7 +481,7 @@ private fun MainTabRow(selected: MainTab, onSelect: (MainTab) -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(12.dp, RoundedCornerShape(999.dp), ambientColor = GlassShadow, spotColor = GlassShadow)
+            .shadow(4.dp, RoundedCornerShape(999.dp), ambientColor = GlassShadow, spotColor = GlassShadow)
             .clip(RoundedCornerShape(999.dp))
             .background(GlassSurfaceMuted)
             .border(1.dp, GlassBorder, RoundedCornerShape(999.dp))
@@ -699,7 +699,7 @@ private fun TelegramHero(
 
         if (running && uiState.proxyLink.isNotEmpty()) {
             Spacer(Modifier.height(20.dp))
-            PillButton(
+            ActionButton(
                 label = stringResource(R.string.connect_telegram),
                 loading = false,
                 destructive = false,
@@ -760,9 +760,9 @@ private fun TelegramHero(
     }
 }
 
-/** Full-width fully-rounded (pill) primary/secondary button. */
+/** Full-width primary/secondary action with a compact, stable touch shape. */
 @Composable
-private fun PillButton(
+private fun ActionButton(
     label: String,
     loading: Boolean,
     destructive: Boolean,
@@ -770,7 +770,7 @@ private fun PillButton(
     outlined: Boolean = false,
     onClick: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(999.dp)
+    val shape = RoundedCornerShape(16.dp)
     val interaction = remember { MutableInteractionSource() }
     val scale = rememberPressScale(interaction)
     val reduceMotion = reducedMotionEnabled()
@@ -797,7 +797,7 @@ private fun PillButton(
             .fillMaxWidth()
             .heightIn(min = 58.dp)
             .shadow(
-                elevation = if (!outlined && !destructive && enabled) 9.dp else 0.dp,
+                elevation = if (!outlined && !destructive && enabled) 6.dp else 0.dp,
                 shape = shape,
                 ambientColor = GlassShadow,
                 spotColor = GlassShadow,
@@ -939,7 +939,7 @@ private fun ProxyInfoCard(
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Surface)
     ) {
         Column(
@@ -1094,7 +1094,7 @@ private fun FakeTlsCard(uiState: ProxyUiState, onSave: (String) -> Unit) {
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Surface),
         border = if (enabled) BorderStroke(1.dp, Primary.copy(alpha = 0.45f)) else null
     ) {
@@ -1244,7 +1244,7 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Surface)
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(20.dp)) {

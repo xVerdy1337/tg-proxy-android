@@ -10,7 +10,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Keep the CPU/Wi-Fi awake so the relay survives Doze / screen-off. -->
+    <!-- Keep the CPU awake briefly while active relay I/O drains during screen-off. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- createWifiLock() fails with a swallowed SecurityException without this one. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
