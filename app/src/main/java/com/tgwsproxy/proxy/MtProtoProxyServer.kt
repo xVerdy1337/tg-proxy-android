@@ -559,8 +559,8 @@ class MtProtoProxyServer(
     //
     // NB: we deliberately cache only AFTER data flows, not when the WebSocket merely opens. A
     // Cloudflare-fronted endpoint can complete the WS upgrade (onOpen) while its upstream to
-    // Telegram is dead; because pingInterval keeps the CF edge alive with pongs, such a
-    // "connected but dead" route never closes and Telegram hangs on "connecting". Caching only
+    // Telegram is dead; a WebSocket upgrade alone does not prove the relay works and can leave a
+    // "connected but dead" route open. Caching only
     // proven routes + the stall watchdog in bridgeData prevents that.
     private val routeCache = ConcurrentHashMap<String, WsCandidate>()
     // Strikes against a cached WS route that connects fine but closes having relayed nothing.
@@ -673,8 +673,8 @@ class MtProtoProxyServer(
         // sweep the list once the race resolved — stranded live sockets: connect() blocks on a
         // plain CountDownLatch (WebSocketBridge), so cancelling the jobs cannot stop a candidate
         // that is already dialling, and one that registered or finished after the sweep was never
-        // closed by anybody. OkHttp's pingInterval then kept those sockets alive forever, a
-        // whole Cloudflare wave's worth per race, on every reconnect.
+        // closed by anybody. Without explicit ownership cleanup, a whole Cloudflare wave's worth
+        // of sockets could remain open on every reconnect.
         val winner = kotlinx.coroutines.CompletableDeferred<Pair<WebSocketBridge, WsCandidate>?>()
 
         // Per-candidate failure classes, collected so a lost race can say WHY (timeout vs reset
@@ -722,9 +722,8 @@ class MtProtoProxyServer(
             // returning, while connect() is a plain blocking latch that no cancellation can
             // interrupt — so a candidate already dialling still finishes, still wins the
             // deferred, and its bridge would be left with no owner at all (the caller never
-            // receives it, and stop() only closes client sockets). OkHttp's pingInterval
-            // keeps such a socket alive indefinitely. NonCancellable so this runs to the end
-            // inside an already-cancelled scope.
+            // receives it, and stop() only closes client sockets). NonCancellable ensures this
+            // ownership cleanup runs to the end inside an already-cancelled scope.
             withContext(NonCancellable) {
                 jobs.forEach { it.cancel() }
                 // Slam the door: once the deferred holds null, every candidate still stuck in
@@ -789,8 +788,8 @@ class MtProtoProxyServer(
 
         // Stall watchdog: a route that opened but never delivers a byte back while the client
         // is actively sending = dead upstream (e.g. a Cloudflare edge that can't reach
-        // Telegram). pingInterval keeps such a socket alive forever, so detect it ourselves,
-        // evict the route from cache and drop the client so it reconnects and re-races.
+        // Telegram). Detect it ourselves, evict the route from cache and drop the client so it
+        // reconnects and re-races.
         //
         // Both signals are gated on an empty OkHttp send queue. Upstream bytes are counted at
         // proxy INGRESS — lastUpAt is stamped when they are read off the 256 KB-buffered loopback

@@ -409,6 +409,9 @@ class DesyncVpnService : VpnService(), Tunnel {
         private const val TUN_ADDR = "10.111.222.1"
         private const val MTU = 1500
         private const val UDP_IDLE_MS = 30_000L
+        // With no captured flows there is nothing to reap. A slower check avoids waking the CPU
+        // every few seconds while an always-on VPN is idle in the background.
+        private const val NO_FLOW_POLL_MS = 60_000L
         // Idle TCP flows are reaped after this long with no client/server activity, so half-open
         // or abandoned flows can't accumulate threads/sockets forever (no TCP FIN/RST required).
         private const val TCP_IDLE_MS = 120_000L
@@ -1012,16 +1015,18 @@ class DesyncVpnService : VpnService(), Tunnel {
     private fun startStats() {
         statsJob?.cancel()
         statsJob = scope.launch {
-            var sinceReap = 0L
             while (isActive && running) {
-                // Only the UI consumes these stats. When nobody is collecting _state (app closed),
-                // poll far less often so we don't wake the CPU every second 24/7 while the VPN runs.
                 val uiWatching = _state.subscriptionCount.value > 0
-                val interval = if (uiWatching) 1000L else 10000L
-                // Reap idle UDP + TCP at least every ~10s regardless of UI, so sockets/threads
-                // from abandoned or half-open flows don't linger (and can't accumulate to OOM).
-                sinceReap += interval
-                if (uiWatching || sinceReap >= 10000L) { reapIdleFlows(); sinceReap = 0L }
+                val hasFlows = tcpMap.isNotEmpty() || udpMap.isNotEmpty() || blockedQuic.isNotEmpty()
+                // Only the UI consumes these stats. In the background, reap active flows every
+                // ~10s; when there are no flows at all, sleep longer instead of waking the CPU
+                // every few seconds for an empty-map scan.
+                val interval = when {
+                    uiWatching -> 1000L
+                    hasFlows -> 10000L
+                    else -> NO_FLOW_POLL_MS
+                }
+                if (uiWatching || hasFlows) reapIdleFlows()
                 if (uiWatching) {
                     _state.value = _state.value.copy(
                         activeTcp = tcpMap.size,

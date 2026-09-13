@@ -19,12 +19,10 @@ class WebSocketBridge(
     // Base client with standard TLS validation — Telegram servers have valid certificates.
     // DNS override is applied per-connect so each call can target a different IP.
     //
-    // pingInterval is the critical bit for reliability while the process is awake: OkHttp sends
-    // a WebSocket ping every 60s, which (a) keeps the tunnel's NAT mapping alive on most
-    // mobile/Wi-Fi networks and (b) makes OkHttp detect a dead established socket via missing
-    // pongs. Android may defer in-process timers during deep sleep, so an idle connection is
-    // allowed to reconnect on its next real packet. We keep readTimeout only for the initial
-    // connect/handshake; the longer ping interval reduces periodic radio wakeups.
+    // Do not add an OkHttp ping loop here. Telegram's MTProto layer already sends its own
+    // keepalive traffic on an idle session; duplicating it with a WebSocket ping wakes the radio
+    // once a minute for every connected client. A dead route is still noticed on the next real
+    // packet, and the relay watchdog drops routes that stop answering active traffic.
     private companion object {
         const val RECEIVE_CHANNEL_CAPACITY = 2048
         const val MAX_RECEIVE_BYTES = 8L * 1024 * 1024
@@ -33,7 +31,7 @@ class WebSocketBridge(
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-            .pingInterval(60, TimeUnit.SECONDS)
+            .pingInterval(0, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .build()
     }
