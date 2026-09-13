@@ -95,6 +95,7 @@ class ProxyService : Service() {
          * screen-off device without pinning an idle Telegram session; a later packet reacquires it.
          */
         private const val WAKE_LOCK_LINGER_MS = 12_000L
+        private const val WAKE_LOCK_QUEUE_POLL_MS = 2_000L
 
         /**
          * Build the tg:// proxy link. Pure helper so the UI can render the link
@@ -195,7 +196,7 @@ class ProxyService : Service() {
     private var pendingNetworkReset: Job? = null
     private var networkGeneration = 0L
 
-    // A partial CPU wake lock keeps active relay I/O progressing through screen-off / Doze. It is
+    // A partial CPU wake lock keeps active relay I/O progressing while the screen is off. It is
     // released during idle gaps even when Telegram keeps a socket open for hours.
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -516,7 +517,7 @@ class ProxyService : Service() {
         _serviceState.update { it.copy(connectionCount = shown) }
     }
 
-    /** Keep the CPU awake for recent relay bytes, then return it to Doze during idle periods. */
+    /** Keep the CPU awake for recent relay bytes and until OkHttp has drained its write queues. */
     private fun onTraffic(generation: Long) {
         synchronized(wakeLockGate) {
             if (proxyGeneration.get() != generation || liveConnections == 0) return
@@ -525,15 +526,33 @@ class ProxyService : Service() {
             if (pendingRelease != null) return
             pendingRelease = serviceScope.launch {
                 while (isActive) {
-                    val remaining = synchronized(wakeLockGate) {
-                        WAKE_LOCK_LINGER_MS - (SystemClock.uptimeMillis() - lastTrafficAt)
+                    val waitMs = synchronized(wakeLockGate) {
+                        val now = SystemClock.uptimeMillis()
+                        val live = proxyServer?.connections ?: 0
+                        if (proxyGeneration.get() != generation || live == 0) {
+                            pendingRelease = null
+                            dropWakeLocks()
+                            return@launch
+                        }
+                        // send() only enqueues into OkHttp. Keep the lock while any active bridge
+                        // still has unsent bytes, then start the normal idle linger after drain.
+                        val queuePending = proxyServer?.hasPendingWebSocketWrites() == true
+                        if (queuePending) {
+                            lastTrafficAt = now
+                            acquireWakeLocks()
+                            WAKE_LOCK_QUEUE_POLL_MS
+                        } else {
+                            (WAKE_LOCK_LINGER_MS - (now - lastTrafficAt))
+                                .coerceAtLeast(1L)
+                        }
                     }
-                    if (remaining > 0) delay(remaining)
+                    delay(waitMs)
                     synchronized(wakeLockGate) {
                         val live = proxyServer?.connections ?: 0
                         liveConnections = live
                         val idle = SystemClock.uptimeMillis() - lastTrafficAt >= WAKE_LOCK_LINGER_MS
-                        if (proxyGeneration.get() != generation || live == 0 || idle) {
+                        val queuePending = proxyServer?.hasPendingWebSocketWrites() == true
+                        if (proxyGeneration.get() != generation || live == 0 || (idle && !queuePending)) {
                             pendingRelease = null
                             dropWakeLocks()
                             return@launch
@@ -550,7 +569,7 @@ class ProxyService : Service() {
      * hold [wakeLockGate].
      *
      * A merely listening proxy holds nothing. Network delivery wakes the process, the traffic
-     * callback keeps it awake while bytes are in flight, and the linger then lets Doze resume.
+     * callback keeps it awake while bytes are in flight, and the linger then lets the CPU suspend.
      */
     private fun acquireWakeLocks() {
         try {
