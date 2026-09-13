@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.system.OsConstants
 import android.content.ComponentName
 import android.service.quicksettings.TileService
 import androidx.core.app.NotificationCompat
@@ -51,7 +52,8 @@ import kotlin.concurrent.thread
  *
  * Flow: TUN → read IPv4 packets → TCP goes through [TcpConnection] (desync on the ClientHello),
  * UDP through [UdpAssociation] (QUIC dropped when the toggle is on so apps fall back to TLS).
- * IPv6 is captured and dropped to force apps onto IPv4 where the desync works.
+ * IPv6 is explicitly allowed outside the IPv4-only TUN, so IPv6-only networks retain connectivity
+ * while the IPv4 path continues through the desync relay.
  */
 class DesyncVpnService : VpnService(), Tunnel {
 
@@ -785,15 +787,15 @@ class DesyncVpnService : VpnService(), Tunnel {
             return
         }
 
-        // IPv4 only on purpose: we do NOT add an IPv6 address/route. If we advertised IPv6 on the
-        // TUN, apps (YouTube/Instagram use Happy Eyeballs) would prefer AAAA/IPv6 and we'd have to
-        // silently drop those packets → multi-second connect stalls instead of an instant IPv4
-        // path. With no IPv6 on the interface, apps go straight to IPv4 where the desync applies.
+        // The relay currently implements IPv4 packets. Explicitly allow IPv6 outside the VPN rather
+        // than capturing it and silently dropping it: this keeps IPv6-only networks usable and
+        // lets Happy Eyeballs choose a direct IPv6 path when it is available.
         val builder = Builder()
             .setSession("Jevio Unblocker")
             .setMtu(MTU)
             .addAddress(TUN_ADDR, 32)
             .addRoute("0.0.0.0", 0)
+            .allowFamily(OsConstants.AF_INET6)
             .addDnsServer("8.8.8.8")
             .addDnsServer("1.1.1.1")
 
@@ -878,7 +880,7 @@ class DesyncVpnService : VpnService(), Tunnel {
                 val n = input.read(buffer)
                 if (n <= 0) { if (n < 0) break else continue }
                 val packet = buffer.copyOf(n)
-                if (PacketUtils.ipVersion(packet) != 4) continue // drop IPv6 → force IPv4
+                if (PacketUtils.ipVersion(packet) != 4) continue // IPv6 is allowed outside this TUN
                 // Drop malformed/truncated packets before the L4 accessors index by ihl/dataOffset —
                 // a crafted short packet would otherwise throw and tear down the whole VPN (DoS).
                 if (!PacketUtils.isWellFormedIpv4L4(packet)) continue
