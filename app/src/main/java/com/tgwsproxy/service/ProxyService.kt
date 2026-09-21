@@ -91,10 +91,15 @@ class ProxyService : Service() {
         const val DEFAULT_PORT = 1443
 
         /**
-         * How long the wake lock outlives the latest traffic. This covers a burst finishing on a
-         * screen-off device without pinning an idle Telegram session; a later packet reacquires it.
+         * Tail after a burst whose bytes were still sitting in OkHttp's queue. In-flight bytes
+         * keep the lock via the queue poll; this is only the moment after that queue drains.
          */
-        private const val WAKE_LOCK_LINGER_MS = 12_000L
+        private const val WAKE_LOCK_LINGER_MS = 4_000L
+        /**
+         * Tail after a keepalive-sized poke that never filled the queue. The packet already woke
+         * the CPU, and several offset Telegram pings must not chain into a permanent hold.
+         */
+        private const val WAKE_LOCK_KEEPALIVE_LINGER_MS = 500L
         private const val WAKE_LOCK_QUEUE_POLL_MS = 2_000L
 
         /**
@@ -182,10 +187,10 @@ class ProxyService : Service() {
     private var lastLogEntrySeq = 0L
     private var lastLogRepeat = 0
 
-    // True while the UI is bound to us. The 1s stats pump is only useful when someone is
-    // actually watching the screen; when the app is closed we poll far less often to avoid
-    // waking the CPU every second 24/7 (battery win on an always-on background proxy).
-    @Volatile private var uiBound = false
+    // True while an activity is at least started. Binding survives the user leaving the app
+    // (the ViewModel holds the connection), and a 1s stats pump in a foreground service would
+    // keep waking the CPU the whole time. Traffic forwarding does not use this flag.
+    @Volatile private var uiVisible = false
 
     // Watches Wi-Fi ↔ mobile transitions so active sessions reconnect on the new network.
     private var connectivityManager: ConnectivityManager? = null
@@ -214,6 +219,12 @@ class ProxyService : Service() {
     private var pendingRelease: Job? = null
 
     /**
+     * Guarded by [wakeLockGate]. Set when this hold saw a nonempty OkHttp queue, so the release
+     * uses the long tail. A hold that only copied a keepalive uses the short one.
+     */
+    private var wakeSawBacklog = false
+
+    /**
      * Guarded by [wakeLockGate]: the live client count, re-read from the server rather than taken
      * from the callback payload.
      *
@@ -233,22 +244,24 @@ class ProxyService : Service() {
         fun getService(): ProxyService = this@ProxyService
     }
 
-    override fun onBind(intent: Intent?): IBinder {
-        uiBound = true
-        startStatsPump()
-        return binder
-    }
+    override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onUnbind(intent: Intent?): Boolean {
-        uiBound = false
-        statsJob?.cancel()
-        statsJob = null
+        setUiVisible(false)
         return true // allow onRebind when the UI comes back
     }
 
-    override fun onRebind(intent: Intent?) {
-        uiBound = true
-        startStatsPump()
+    /**
+     * The activity reports this from ON_START / ON_STOP. The stats pump is the only consumer,
+     * so a backgrounded app stops the 1Hz wake even while this service stays in the foreground.
+     */
+    fun setUiVisible(visible: Boolean) {
+        if (uiVisible == visible && (!visible || statsJob?.isActive == true)) return
+        uiVisible = visible
+        if (visible) startStatsPump() else {
+            statsJob?.cancel()
+            statsJob = null
+        }
     }
 
     override fun onCreate() {
@@ -415,6 +428,7 @@ class ProxyService : Service() {
             )
         }
         persistRunning(true)
+        if (uiVisible) startStatsPump()
         // Deliberately no wake lock here: a started-but-idle proxy must hold nothing. The traffic
         // callback is handed to the server before start() can accept anything, so active relay I/O
         // still gets a short CPU-awake window.
@@ -524,6 +538,7 @@ class ProxyService : Service() {
             lastTrafficAt = SystemClock.uptimeMillis()
             acquireWakeLocks()
             if (pendingRelease != null) return
+            wakeSawBacklog = false
             pendingRelease = serviceScope.launch {
                 while (isActive) {
                     val waitMs = synchronized(wakeLockGate) {
@@ -538,19 +553,29 @@ class ProxyService : Service() {
                         // still has unsent bytes, then start the normal idle linger after drain.
                         val queuePending = proxyServer?.hasPendingWebSocketWrites() == true
                         if (queuePending) {
+                            wakeSawBacklog = true
                             lastTrafficAt = now
                             acquireWakeLocks()
                             WAKE_LOCK_QUEUE_POLL_MS
                         } else {
-                            (WAKE_LOCK_LINGER_MS - (now - lastTrafficAt))
-                                .coerceAtLeast(1L)
+                            val linger = if (wakeSawBacklog) {
+                                WAKE_LOCK_LINGER_MS
+                            } else {
+                                WAKE_LOCK_KEEPALIVE_LINGER_MS
+                            }
+                            (linger - (now - lastTrafficAt)).coerceAtLeast(1L)
                         }
                     }
                     delay(waitMs)
                     synchronized(wakeLockGate) {
                         val live = proxyServer?.connections ?: 0
                         liveConnections = live
-                        val idle = SystemClock.uptimeMillis() - lastTrafficAt >= WAKE_LOCK_LINGER_MS
+                        val linger = if (wakeSawBacklog) {
+                            WAKE_LOCK_LINGER_MS
+                        } else {
+                            WAKE_LOCK_KEEPALIVE_LINGER_MS
+                        }
+                        val idle = SystemClock.uptimeMillis() - lastTrafficAt >= linger
                         val queuePending = proxyServer?.hasPendingWebSocketWrites() == true
                         if (proxyGeneration.get() != generation || live == 0 || (idle && !queuePending)) {
                             pendingRelease = null
@@ -611,6 +636,7 @@ class ProxyService : Service() {
 
     /** The release itself. Must hold [wakeLockGate]. */
     private fun dropWakeLocks() {
+        wakeSawBacklog = false
         try {
             if (wakeLock?.isHeld == true) wakeLock?.release()
         } catch (_: Exception) {}
@@ -672,7 +698,7 @@ class ProxyService : Service() {
     private fun startStatsPump() {
         statsJob?.cancel()
         statsJob = serviceScope.launch {
-            while (isActive && uiBound) {
+            while (isActive && uiVisible) {
                 val server = proxyServer
                 if (server != null) {
                     val up = server.bytesUp.get()

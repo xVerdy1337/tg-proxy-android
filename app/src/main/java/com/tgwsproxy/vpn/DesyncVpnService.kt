@@ -419,6 +419,9 @@ class DesyncVpnService : VpnService(), Tunnel {
         // With no captured flows there is nothing to reap. A slower check avoids waking the CPU
         // every few seconds while an always-on VPN is idle in the background.
         private const val NO_FLOW_POLL_MS = 60_000L
+        // UDP associations are idle at 30s and TCP flows at 120s, so a background sweep does
+        // not need to wake every 10s while some app still holds a socket.
+        private const val BACKGROUND_REAP_MS = 30_000L
         // Idle TCP flows are reaped after this long with no client/server activity, so half-open
         // or abandoned flows can't accumulate threads/sockets forever (no TCP FIN/RST required).
         private const val TCP_IDLE_MS = 120_000L
@@ -1030,12 +1033,12 @@ class DesyncVpnService : VpnService(), Tunnel {
             while (isActive && running) {
                 val uiWatching = _state.subscriptionCount.value > 0
                 val hasFlows = tcpMap.isNotEmpty() || udpMap.isNotEmpty() || blockedQuic.isNotEmpty()
-                // Only the UI consumes these stats. In the background, reap active flows every
-                // ~10s; when there are no flows at all, sleep longer instead of waking the CPU
-                // every few seconds for an empty-map scan.
+                // Only the UI consumes these stats. In the background, reap active flows on the
+                // UDP idle horizon; when there are no flows at all, sleep longer instead of
+                // waking the CPU for an empty-map scan.
                 val interval = when {
                     uiWatching -> 1000L
-                    hasFlows -> 10000L
+                    hasFlows -> BACKGROUND_REAP_MS
                     else -> NO_FLOW_POLL_MS
                 }
                 if (!uiWatching && !hasFlows) {

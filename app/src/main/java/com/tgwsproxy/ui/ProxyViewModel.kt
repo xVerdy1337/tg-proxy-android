@@ -69,12 +69,16 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
     private var proxyService: ProxyService? = null
     private var serviceBound = false
     private var collectJob: Job? = null
+    // Survives the gap before the service binds. The activity reports screen visibility
+    // here so the service can stop its 1s stats pump while the app is backgrounded.
+    private var uiVisible = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as ProxyService.ProxyBinder
             proxyService = binder.getService()
             serviceBound = true
+            proxyService?.setUiVisible(uiVisible)
             collectServiceState()
         }
 
@@ -239,6 +243,11 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             prefs().edit().putString(ProxyService.KEY_FAKE_TLS_DOMAIN, domain.trim()).apply()
         }
+    }
+
+    fun setUiVisible(visible: Boolean) {
+        uiVisible = visible
+        proxyService?.setUiVisible(visible)
     }
 
     fun setLogFilter(filter: LogFilter) {

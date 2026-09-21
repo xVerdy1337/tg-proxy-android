@@ -124,6 +124,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tgwsproxy.R
@@ -207,6 +208,24 @@ fun MainScreen(
     onDisableVpn: () -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> viewModel.setUiVisible(true)
+                Lifecycle.Event.ON_STOP -> viewModel.setUiVisible(false)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        viewModel.setUiVisible(
+            lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+        )
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.setUiVisible(false)
+        }
+    }
     // Filtered once per state emission, not per LogItem: the whole log recomposes on every
     // arriving line, so doing the predicate inside the lazy item would redo it 200× per line.
     val visibleLogs = remember(uiState.logs, uiState.logFilter) {
@@ -607,10 +626,16 @@ private fun TelegramHero(
     }
 
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(running) {
-        while (running) {
-            now = System.currentTimeMillis()
-            delay(1000)
+    val uptimeLifecycle = LocalLifecycleOwner.current
+    // The activity stays composed while the user is elsewhere, and the proxy is a foreground
+    // service, so a bare loop would keep waking the CPU every second with the screen off.
+    LaunchedEffect(running, uptimeLifecycle) {
+        if (!running) return@LaunchedEffect
+        uptimeLifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (isActive) {
+                now = System.currentTimeMillis()
+                delay(1000)
+            }
         }
     }
 
