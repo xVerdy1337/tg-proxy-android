@@ -39,8 +39,8 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
-          # The action's default also installs the legacy 'tools' package, which current
-          # cmdline-tools (16.0 on the runner image) no longer publish, failing the step.
+          # The action's default list still starts with "tools". That legacy SDK package
+          # is gone from Google's repository, so sdkmanager 16 fails the whole step.
           packages: platform-tools
 
       - name: Install NDK and CMake

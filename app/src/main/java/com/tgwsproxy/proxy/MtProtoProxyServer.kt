@@ -18,7 +18,6 @@ import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -54,19 +53,10 @@ class MtProtoProxyServer(
     // Per-connection sequence for log labels: on loopback every client is 127.0.0.1, so the bare
     // address made all summary lines indistinguishable.
     private val connectionSeq = AtomicInteger(0)
-    // Negative cache for the direct WS wave: when direct endpoints are hard-blocked, every new
-    // connection was paying the full WS_WAVE_TIMEOUT_MS before racing Cloudflare, and Telegram's
-    // own ~5s patience meant some sessions died as "closed: peer" mid-dial. After a lost wave,
-    // skip direct for a while; a success anywhere clears it.
-    @Volatile private var directWaveFailedAt = 0L
-    // Single-flight re-probe: when the negative cache expires, exactly ONE connection re-tests the
-    // direct wave while the rest go straight to Cloudflare. Without this a chat-screen media burst
-    // (~10 sessions dialling in the same second) all raced direct together and all paid
-    // WS_WAVE_TIMEOUT_MS before falling back — a shared 4s stall every time the TTL expired.
-    private val directProbeInFlight = AtomicBoolean(false)
-    // Consecutive lost probes stretch the skip window (see directWaveNegativeTtlMs); a successful
-    // direct wave resets it, so an unblocked network returns to preferring direct immediately.
-    private val directWaveFailCount = AtomicInteger(0)
+    // Direct-wave backoff, dead-open hosts, and the single-flight re-probe. An onOpen is not
+    // a success: only a downstream byte clears the backoff, and a host that upgrades and then
+    // sends nothing is skipped on the next dial. See [UpstreamRouteGate].
+    private val routeGate = UpstreamRouteGate()
     private val lastTrafficSignalAt = AtomicLong(0)
 
     private fun signalTraffic() {
@@ -253,8 +243,12 @@ class MtProtoProxyServer(
         activeConnections.forEach { try { it.close() } catch (_: Exception) {} }
         activeConnections.clear()
         // Re-evaluate routes on the new network: an endpoint that worked on Wi-Fi may be
-        // blocked on mobile (or vice-versa), so drop the cache and let the next connect race.
+        // blocked on mobile (or vice-versa). Drop the cache, the dud strikes, and the
+        // direct-wave backoff together — a failure recorded on the old link must not keep
+        // the new one on Cloudflare for up to half an hour.
         routeCache.clear()
+        routeStrikes.clear()
+        routeGate.reset()
         if (n > 0) onLog(appContext.getString(R.string.network_changed, n), LogKind.PLAIN)
     }
 
@@ -393,11 +387,11 @@ class MtProtoProxyServer(
                 route = "tcp"
                 // tcpFallback logs its own detailed error line ("failed to connect to … after
                 // 5000ms"); a second bare "fallback failed" line here only doubled the noise.
-                tcpFallback(clientSocket, clientInput, clientOutput, cryptoCtx, relayInit, fallbackIp, connUp, connDown, closeReason)
+                tcpFallback(clientSocket, clientInput, clientOutput, cryptoCtx, relayInit, fallbackIp, connUp, connDown, closeReason, label)
                 return
             }
 
-            val (bridge, candidate) = wsConn
+            val (bridge, candidate, openedAtEpoch) = wsConn
             route = "ws"
 
             // Hand Telegram the relay obfuscation init as the very first WS frame.
@@ -410,7 +404,7 @@ class MtProtoProxyServer(
                 return
             }
 
-            bridgeData(clientSocket, clientInput, clientOutput, bridge, cryptoCtx, relayInit, protoInt, label, result.dcId, result.isMedia, candidate, connUp, connDown, closeReason)
+            bridgeData(clientSocket, clientInput, clientOutput, bridge, cryptoCtx, relayInit, protoInt, label, result.dcId, result.isMedia, candidate, connUp, connDown, closeReason, openedAtEpoch)
 
         } catch (e: CancellationException) {
             // Never swallow cancellation — it is how stop()/resetConnections() tears sessions down.
@@ -560,20 +554,34 @@ class MtProtoProxyServer(
     // Two consecutive dud sessions evict the route, forcing the next connect to re-race the pool.
     private val routeStrikes = ConcurrentHashMap<String, AtomicInteger>()
 
-    private suspend fun connectAnyWs(dcId: Int, isMedia: Boolean, label: String): Pair<WebSocketBridge, WsCandidate>? {
+    private data class OpenedWs(
+        val bridge: WebSocketBridge,
+        val candidate: WsCandidate,
+        val epoch: Int,
+    )
+
+    private suspend fun connectAnyWs(dcId: Int, isMedia: Boolean, label: String): OpenedWs? {
+        // Taken before any dial. bridgeData records success and dead-opens against this
+        // value, so a reset that lands while we are still dialling cannot be overwritten
+        // by the attempt that just lost its network.
+        val epoch = routeGate.epoch()
         val cacheKey = "$dcId/$isMedia"
 
         routeCache[cacheKey]?.let { cached ->
-            val b = WebSocketBridge { signalTraffic() }
-            val ok = try { b.connect(cached.pinnedIp, cached.host, cached.path) } catch (_: Exception) { false }
-            if (ok) {
-                lastRoute = cached.kind
-                activeWebSockets.add(b)
-                onLog("[$label] WS reconnected via ${cached.host} (${cached.kind}, cached)", LogKind.WS)
-                return Pair(b, cached)
+            if (routeGate.isDeadOpen(cached.host)) {
+                routeCache.remove(cacheKey, cached)
+            } else {
+                val b = WebSocketBridge { signalTraffic() }
+                val ok = try { b.connect(cached.pinnedIp, cached.host, cached.path) } catch (_: Exception) { false }
+                if (ok) {
+                    lastRoute = cached.kind
+                    activeWebSockets.add(b)
+                    onLog("[$label] WS reconnected via ${cached.host} (${cached.kind}, cached)", LogKind.WS)
+                    return OpenedWs(b, cached, epoch)
+                }
+                try { b.close() } catch (_: Exception) {}
+                routeCache.remove(cacheKey, cached) // cached endpoint went stale — fall back to full race
             }
-            try { b.close() } catch (_: Exception) {}
-            routeCache.remove(cacheKey) // cached endpoint went stale — fall back to full race
         }
 
         val directCandidates = ArrayList<WsCandidate>()
@@ -595,28 +603,28 @@ class MtProtoProxyServer(
         //
         // The re-probe after a negative-cache expiry is single-flight: the first connection to
         // notice the expiry dials direct, everyone arriving while it is dialling skips wave 1.
-        val directFresh = System.currentTimeMillis() - directWaveFailedAt >= directWaveNegativeTtlMs()
-        if (directFresh && directProbeInFlight.compareAndSet(false, true)) {
+        // Opening the socket does not clear the backoff. A front that finishes the WebSocket
+        // handshake and never relays bytes used to win every race, wipe the backoff, and keep
+        // Cloudflare from ever being tried. The backoff ends in bridgeData, on the first byte.
+        val directFresh = routeGate.directIsFresh()
+        if (directFresh && routeGate.tryStartProbe()) {
             try {
                 onLog("[$label] connecting WS: ${directCandidates.size} direct endpoints", LogKind.WS)
                 val directResult = raceCandidates(directCandidates, WS_WAVE_TIMEOUT_MS, label)
-                if (directResult != null) {
-                    directWaveFailedAt = 0L // direct is alive again — keep preferring it
-                    directWaveFailCount.set(0)
-                    return directResult
-                }
-                directWaveFailCount.incrementAndGet()
-                directWaveFailedAt = System.currentTimeMillis()
-                val skipMin = directWaveNegativeTtlMs() / 60_000
+                if (directResult != null) return OpenedWs(directResult.first, directResult.second, epoch)
+                routeGate.recordDirectWaveFailure(epoch)
+                val skipMin = routeGate.negativeTtlMs() / 60_000
                 onLog("[$label] direct failed — racing ${cfCandidates.size} Cloudflare endpoints (skip $skipMin min)", LogKind.CLOUDFLARE)
             } finally {
-                directProbeInFlight.set(false)
+                routeGate.endProbe(epoch)
             }
         } else {
             val why = if (directFresh) "probe in flight" else "failed recently"
             onLog("[$label] direct skipped ($why) — racing ${cfCandidates.size} Cloudflare endpoints", LogKind.CLOUDFLARE)
         }
-        raceCandidates(cfCandidates, WS_RACE_TIMEOUT_MS, label)?.let { return it }
+        raceCandidates(cfCandidates, WS_RACE_TIMEOUT_MS, label)?.let {
+            return OpenedWs(it.first, it.second, epoch)
+        }
 
         // Extra tier: user-deployed Cloudflare Worker(s). Each relays a WebSocket to the RAW DC
         // IP (dst) over Cloudflare's edge — a free alternative to a purchased CF-proxy domain.
@@ -631,20 +639,11 @@ class MtProtoProxyServer(
                 )
             }
             onLog("[$label] Cloudflare failed — racing ${workerCandidates.size} CF Worker endpoint(s)", LogKind.CLOUDFLARE)
-            return raceCandidates(workerCandidates, WS_RACE_TIMEOUT_MS, label)
+            return raceCandidates(workerCandidates, WS_RACE_TIMEOUT_MS, label)?.let {
+                OpenedWs(it.first, it.second, epoch)
+            }
         }
         return null
-    }
-
-    /**
-     * Negative-cache window for the direct wave, doubling on every consecutive lost probe
-     * (2 → 4 → 8 → 16 → 30 min cap). In a network where direct is hard-blocked for hours the
-     * re-probe cost shrinks to twice an hour; a success resets the count, so a network that just
-     * got unblocked is re-preferred immediately after one good wave.
-     */
-    private fun directWaveNegativeTtlMs(): Long {
-        val shift = directWaveFailCount.get().coerceAtMost(4)
-        return (DIRECT_WAVE_NEGATIVE_TTL_MS shl shift).coerceAtMost(DIRECT_WAVE_NEGATIVE_TTL_MAX_MS)
     }
 
     /** Race [candidates] concurrently, returning the first that connects (losers are closed). */
@@ -653,7 +652,11 @@ class MtProtoProxyServer(
         timeoutMs: Long,
         label: String,
     ): Pair<WebSocketBridge, WsCandidate>? {
-        if (candidates.isEmpty()) return null
+        // A host that completed a WebSocket upgrade and then relayed nothing is skipped for
+        // DEAD_OPEN_TTL. Otherwise the fastest dead handshake wins every race and the fronts
+        // that would have carried bytes are closed as losers.
+        val pool = candidates.filterNot { routeGate.isDeadOpen(it.host) }
+        if (pool.isEmpty()) return null
 
         // Carry bridge + winning candidate together so there's no race between "who won" and
         // "which endpoint won" (the candidate is needed later to cache a proven route).
@@ -674,7 +677,7 @@ class MtProtoProxyServer(
         // folding downstream.
         val failures = java.util.concurrent.ConcurrentLinkedQueue<String>()
         val dialSlots = Semaphore(WS_DIAL_CONCURRENCY)
-        val jobs = candidates.map { c ->
+        val jobs = pool.map { c ->
             serverScope.launch {
                 val b = WebSocketBridge { signalTraffic() }
                 val ok = try {
@@ -735,7 +738,7 @@ class MtProtoProxyServer(
         if (result == null && failures.isNotEmpty()) {
             val summary = failures.groupingBy { it }.eachCount()
                 .entries.joinToString(", ") { (klass, n) -> if (n > 1) "$klass ×$n" else klass }
-            onLog("[$label] all ${candidates.size} endpoint(s) failed: $summary", LogKind.WARNING)
+            onLog("[$label] all ${pool.size} endpoint(s) failed: $summary", LogKind.WARNING)
         }
         return result
     }
@@ -754,7 +757,8 @@ class MtProtoProxyServer(
         candidate: WsCandidate,
         connUp: AtomicLong,
         connDown: AtomicLong,
-        closeReason: AtomicReference<String>
+        closeReason: AtomicReference<String>,
+        openedAtEpoch: Int,
     ) {
         // Cannot throw here: relayInit is always 64 bytes and the same AES/CTR cipher was just built
         // for the crypto context. An unknown protocol only makes the splitter pass chunks through.
@@ -828,56 +832,58 @@ class MtProtoProxyServer(
         //     an order of magnitude before it could span the 15s a confirmation pair needs.
         //
         //     Detection latency is unchanged by the extra term: silence starts at the last byte
-        //     back, the first poll that can see STALL_SILENCE_MS of it lands up to one poll
-        //     interval late, the confirmation one interval after that — 105-120s — while a route
-        //     that was never alive is still caught at 9s by (1).
+        //     back, the first moment that can see STALL_SILENCE_MS of it is that deadline, and
+        //     the confirmation one poll interval after that — about 105s — while a route that
+        //     was never alive is still caught at 9s by (1).
+        //
+        //     An idle session parks on the next client byte and does not arm a timer. The 15s
+        //     interval is only the gap between the two confirmations, and the queue check
+        //     while an upload is still draining.
         //
         // The bar is deliberately high because tripping is expensive: it evicts the proven route
         // for EVERY session to this DC and kills this client's socket — and since the client then
         // redials and re-sends exactly the same data, a misfire that the data itself provokes
         // reproduces on every redial, i.e. it livelocks instead of recovering.
-        val watchdog = serverScope.async {
+        val kick = StallKick()
+        val watchdog = serverScope.launch {
             try {
-                kotlinx.coroutines.delay(STALL_FIRST_BYTE_MS)
-                var stalled = connDown.get() == 0L && connUp.get() > 0L &&
-                    wsBridge.queueSize() == 0L
-                var confirmations = 0
-                // Silence is measured from the later of the last byte back and the last poll that
-                // still had unsent bytes: when a long drain finishes, the far end has only just
-                // received the batch, and queueSize() does not count the tail already handed to
-                // the kernel send buffer. Restarting the clock gives the answer a full
-                // STALL_SILENCE_MS to arrive instead of evicting one poll pair after the queue
-                // empties on a backlog that took minutes to push.
-                var busyAt = sessionStart
-                while (!stalled) {
-                    kotlinx.coroutines.delay(STALL_POLL_INTERVAL_MS)
-                    val now = SystemClock.uptimeMillis()
-                    if (wsBridge.queueSize() > 0L) {
-                        // A pipelined batch of 512 KB upload.saveFilePart bodies is handed to us
-                        // over loopback in milliseconds but needs >100s on a 100 kbit/s uplink.
-                        // Nothing can come back until it lands, so drop the streak rather than
-                        // let a healthy upload confirm itself to death.
-                        busyAt = now
-                        confirmations = 0
-                        continue
-                    }
-                    val downAt = lastDownAt.get()
-                    val upAt = lastUpAt.get()
-                    // Unanswered demand, no answer for a whole window, and the demand is still
-                    // live — the last term is what keeps a merely idle session out of the count.
-                    val quiet = upAt > downAt &&
-                        now - maxOf(downAt, busyAt) >= STALL_SILENCE_MS &&
-                        now - upAt <= STALL_SILENCE_MS
-                    confirmations = if (quiet) confirmations + 1 else 0
-                    stalled = confirmations >= STALL_CONFIRMATIONS
-                }
-                routeCache.remove(cacheKey)
-                // Set the cause BEFORE closing the sockets: the relay loops fail on the closed
-                // sockets right after, and only the first reason wins the compareAndSet.
-                closeReason.compareAndSet("client-gone", "watchdog")
-                onLog("[$label] route stalled (no data back) — dropping & reconnecting", LogKind.WARNING)
-                try { wsBridge.close() } catch (_: Exception) {}
-                try { clientSocket.close() } catch (_: Exception) {}
+                runStallWatch(
+                    kick = kick,
+                    sessionStart = sessionStart,
+                    now = { SystemClock.uptimeMillis() },
+                    sample = {
+                        StallSample(
+                            lastUpAt.get(), lastDownAt.get(),
+                            connUp.get(), connDown.get(),
+                            wsBridge.queueSize(),
+                        )
+                    },
+                    onTrip = {
+                        // No downstream byte at all: this host upgraded and then blackholed.
+                        // Remember it, and if it was a direct front, skip the whole direct wave
+                        // on the redial. A stall after real bytes only drops the cached route.
+                        if (connDown.get() == 0L) {
+                            routeGate.markDeadOpen(candidate.host, openedAtEpoch)
+                            if (candidate.kind == "direct") {
+                                routeGate.recordDirectWaveFailure(openedAtEpoch)
+                            }
+                        }
+                        routeCache.remove(cacheKey)
+                        // Set the cause BEFORE closing the sockets: the relay loops fail on the
+                        // closed sockets right after, and only the first reason wins.
+                        closeReason.compareAndSet("client-gone", "watchdog")
+                        onLog("[$label] route stalled (no data back) — dropping & reconnecting", LogKind.WARNING)
+                        try { wsBridge.close() } catch (_: Exception) {}
+                        try { clientSocket.close() } catch (_: Exception) {}
+                    },
+                    skipFirstByte = false,
+                    firstByteMs = STALL_FIRST_BYTE_MS,
+                    silenceMs = STALL_SILENCE_MS,
+                    pollMs = STALL_POLL_INTERVAL_MS,
+                    confirmationsNeeded = STALL_CONFIRMATIONS,
+                )
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {}
         }
 
@@ -890,7 +896,10 @@ class MtProtoProxyServer(
                     val read = clientInput.read(buffer)
                     if (read <= 0) {
                         splitter.flush().forEach { wsBridge.send(it) }
-                        closeReason.compareAndSet("client-gone", "peer") // clean EOF from the client
+                        // Leave "client-gone". "peer" is reserved for the download loop, where the
+                        // client socket is still open. Labeling this EOF as peer made two short
+                        // Telegram closes (a small media fetch, an app backgrounding) look like a
+                        // dead route and evict a front that had already proven itself.
                         break
                     }
                     connUp.addAndGet(read.toLong())
@@ -904,6 +913,7 @@ class MtProtoProxyServer(
                         closeReason.compareAndSet("client-gone", "peer") // upstream stopped accepting
                         break
                     }
+                    kick.arm()
                 }
             } catch (e: Exception) {
                 // Watchdog/stop() close the sockets under us; only a live socket's failure is a cause.
@@ -928,6 +938,11 @@ class MtProtoProxyServer(
                     // First bytes back prove the route carries Telegram traffic → cache it.
                     if (connDown.getAndAdd(data.size.toLong()) == 0L) {
                         routeCache[cacheKey] = candidate
+                        routeGate.noteRouteProven(
+                            openedAtEpoch,
+                            candidate.host,
+                            candidate.kind == "direct",
+                        )
                     }
                     lastDownAt.set(SystemClock.uptimeMillis())
                     bytesDown.addAndGet(data.size.toLong())
@@ -972,9 +987,10 @@ class MtProtoProxyServer(
         targetIp: String,
         connUp: AtomicLong,
         connDown: AtomicLong,
-        closeReason: AtomicReference<String>
-    ) {
-        try {
+        closeReason: AtomicReference<String>,
+        label: String,
+    ): Boolean {
+        return try {
             // Socket(host, port) blocks in connect() with no timeout — a blackholed DC IP would
             // pin the coroutine for the full kernel SYN timeout. Bound it explicitly.
             val remoteSocket = Socket().apply { connect(InetSocketAddress(targetIp, 443), UPSTREAM_CONNECT_TIMEOUT_MS) }
@@ -988,13 +1004,54 @@ class MtProtoProxyServer(
                 remoteOutput.write(relayInit)
                 remoteOutput.flush()
 
+                // Same clock rules as the WebSocket watchdog: soTimeout stays 0 so a healthy
+                // idle MTProto session is not killed, and a DC that accepted TCP and then
+                // blackholed the payload is closed when the client is still asking.
+                val sessionStart = SystemClock.uptimeMillis()
+                val lastUpAt = AtomicLong(sessionStart)
+                val lastDownAt = AtomicLong(sessionStart)
+                val kick = StallKick()
+                // No 9s one-shot here. Unlike the WebSocket path there is no OkHttp queue to
+                // tell "still writing" from "on the wire", and write() itself blocks. The kick
+                // is armed only after flush, so a slow write is not mistaken for silence.
+                // Until the client sends, the watchdog is parked and holds no timer.
+                val watchdog = serverScope.launch {
+                    try {
+                        runStallWatch(
+                            kick = kick,
+                            sessionStart = sessionStart,
+                            now = { SystemClock.uptimeMillis() },
+                            sample = {
+                                StallSample(
+                                    lastUpAt.get(), lastDownAt.get(),
+                                    connUp.get(), connDown.get(),
+                                    queueBytes = 0L,
+                                )
+                            },
+                            onTrip = {
+                                closeReason.compareAndSet("client-gone", "watchdog")
+                                onLog("[$label] TCP route stalled (no data back) — dropping", LogKind.WARNING)
+                                try { clientSocket.close() } catch (_: Exception) {}
+                                try { remoteSocket.close() } catch (_: Exception) {}
+                            },
+                            skipFirstByte = true,
+                            firstByteMs = STALL_FIRST_BYTE_MS,
+                            silenceMs = STALL_SILENCE_MS,
+                            pollMs = STALL_POLL_INTERVAL_MS,
+                            confirmationsNeeded = STALL_CONFIRMATIONS,
+                        )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {}
+                }
+
                 val clientToRemote = serverScope.async {
                     try {
                         val buffer = ByteArray(65536)
                         while (running && !clientSocket.isClosed) {
                             val read = clientInput.read(buffer)
                             if (read <= 0) {
-                                closeReason.compareAndSet("client-gone", "peer") // clean EOF from the client
+                                // Client hung up. Not an upstream failure — see the WS upload loop.
                                 break
                             }
                             connUp.addAndGet(read.toLong())
@@ -1005,6 +1062,8 @@ class MtProtoProxyServer(
                             val reenc = ctx.tgEncryptor.update(plain)
                             remoteOutput.write(reenc)
                             remoteOutput.flush()
+                            lastUpAt.set(SystemClock.uptimeMillis())
+                            kick.arm()
                         }
                     } catch (e: Exception) {
                         // Sockets closed under us (stop()/watchdog) carry no information.
@@ -1024,6 +1083,7 @@ class MtProtoProxyServer(
                             }
                             connDown.addAndGet(read.toLong())
                             signalTraffic()
+                            lastDownAt.set(SystemClock.uptimeMillis())
                             bytesDown.addAndGet(read.toLong())
                             val chunk = buffer.copyOfRange(0, read)
                             val plain = ctx.tgDecryptor.update(chunk)
@@ -1038,13 +1098,18 @@ class MtProtoProxyServer(
                     }
                 }
 
-                select<Unit> {
-                    clientToRemote.onAwait { }
-                    remoteToClient.onAwait { }
+                try {
+                    select<Unit> {
+                        clientToRemote.onAwait { }
+                        remoteToClient.onAwait { }
+                    }
+                    try { clientSocket.close() } catch (_: Exception) {}
+                    try { remoteSocket.close() } catch (_: Exception) {}
+                    clientToRemote.cancel(); remoteToClient.cancel()
+                    true
+                } finally {
+                    watchdog.cancel()
                 }
-                try { clientSocket.close() } catch (_: Exception) {}
-                try { remoteSocket.close() } catch (_: Exception) {}
-                clientToRemote.cancel(); remoteToClient.cancel()
             } finally {
                 try { remoteSocket.close() } catch (_: Exception) {}
             }
@@ -1053,6 +1118,7 @@ class MtProtoProxyServer(
             throw e
         } catch (e: Exception) {
             onLog("TCP fallback error: ${e.message}", LogKind.ERROR)
+            false
         }
     }
     private companion object {
@@ -1065,13 +1131,6 @@ class MtProtoProxyServer(
         const val WS_WAVE_TIMEOUT_MS = 4_000L
         // Keep route races responsive without opening one TLS socket per candidate at once.
         const val WS_DIAL_CONCURRENCY = 3
-        // How long a lost direct wave suppresses it: short enough to notice a network fix within
-        // a couple of minutes, long enough that a hard-blocked direct path stops taxing every
-        // new connection with WS_WAVE_TIMEOUT_MS of dead waiting. This is the BASE of the
-        // exponential backoff — see directWaveNegativeTtlMs().
-        const val DIRECT_WAVE_NEGATIVE_TTL_MS = 120_000L
-        // Backoff cap: 120s << 4 = 32 min, clamped here to a round half hour.
-        const val DIRECT_WAVE_NEGATIVE_TTL_MAX_MS = 1_800_000L
         // One-shot "nothing has ever arrived" check. Well past the worst first-response latency
         // (relayInit + a DC round trip is sub-second even on a bad mobile link), short enough
         // that the redial happens while the user is still looking at the app. Kept at 9s: a dead

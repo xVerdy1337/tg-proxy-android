@@ -27,9 +27,18 @@ class WebSocketBridge(
         const val RECEIVE_CHANNEL_CAPACITY = 2048
         const val MAX_RECEIVE_BYTES = 8L * 1024 * 1024
         // Race candidates share one dispatcher, connection pool and thread set.
+        //
+        // readTimeout stays 0. OkHttp 4.12 clears only the socket SO_TIMEOUT when it
+        // upgrades to a WebSocket; the Okio read timeout installed for the HTTP handshake
+        // stays armed. A non-zero value then aborts an idle MTProto session: keepalive is
+        // 30–60s, and a client ping is a write, so it never resets the read timer. Dead
+        // routes are caught by the relay watchdog, not by this client.
+        // writeTimeout stays as a fuse for a socket that accepts no bytes. It resets as
+        // bytes are written, so a slow-but-moving upload survives; a window that stays
+        // closed for 30s fails the socket instead of holding the CPU wake lock forever.
         val BASE_CLIENT: OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(5, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.MILLISECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .pingInterval(0, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)

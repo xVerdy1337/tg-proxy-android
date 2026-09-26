@@ -82,10 +82,15 @@ class ProxyService : Service() {
         const val DEFAULT_PORT = 1443
 
         /**
-         * How long the wake lock outlives the latest traffic. This covers a burst finishing on a
-         * screen-off device without pinning an idle Telegram session; a later packet reacquires it.
+         * Tail after a burst whose bytes were still sitting in OkHttp's queue. In-flight bytes
+         * keep the lock via the queue poll; this is only the moment after that queue drains.
          */
-        private const val WAKE_LOCK_LINGER_MS = 12_000L
+        private const val WAKE_LOCK_LINGER_MS = 4_000L
+        /**
+         * Tail after a keepalive-sized poke that never filled the queue. The packet already woke
+         * the CPU, and several offset Telegram pings must not chain into a permanent hold.
+         */
+        private const val WAKE_LOCK_KEEPALIVE_LINGER_MS = 500L
         private const val WAKE_LOCK_QUEUE_POLL_MS = 2_000L
 
         /**
@@ -205,6 +210,12 @@ class ProxyService : Service() {
 
     /** Guarded by [wakeLockGate]: the armed idle-release job for the latest traffic burst. */
     private var pendingRelease: Job? = null
+
+    /**
+     * Guarded by [wakeLockGate]. Set when this hold saw a nonempty OkHttp queue, so the release
+     * uses the long tail. A hold that only copied a keepalive uses the short one.
+     */
+    private var wakeSawBacklog = false
 
     /**
      * Guarded by [wakeLockGate]: the live client count, re-read from the server rather than taken
@@ -492,6 +503,7 @@ class ProxyService : Service() {
             lastTrafficAt = SystemClock.uptimeMillis()
             acquireWakeLocks()
             if (pendingRelease != null) return
+            wakeSawBacklog = false
             pendingRelease = serviceScope.launch {
                 while (isActive) {
                     val waitMs = synchronized(wakeLockGate) {
@@ -506,19 +518,29 @@ class ProxyService : Service() {
                         // still has unsent bytes, then start the normal idle linger after drain.
                         val queuePending = proxyServer?.hasPendingWebSocketWrites() == true
                         if (queuePending) {
+                            wakeSawBacklog = true
                             lastTrafficAt = now
                             acquireWakeLocks()
                             WAKE_LOCK_QUEUE_POLL_MS
                         } else {
-                            (WAKE_LOCK_LINGER_MS - (now - lastTrafficAt))
-                                .coerceAtLeast(1L)
+                            val linger = if (wakeSawBacklog) {
+                                WAKE_LOCK_LINGER_MS
+                            } else {
+                                WAKE_LOCK_KEEPALIVE_LINGER_MS
+                            }
+                            (linger - (now - lastTrafficAt)).coerceAtLeast(1L)
                         }
                     }
                     delay(waitMs)
                     synchronized(wakeLockGate) {
                         val live = proxyServer?.connections ?: 0
                         liveConnections = live
-                        val idle = SystemClock.uptimeMillis() - lastTrafficAt >= WAKE_LOCK_LINGER_MS
+                        val linger = if (wakeSawBacklog) {
+                            WAKE_LOCK_LINGER_MS
+                        } else {
+                            WAKE_LOCK_KEEPALIVE_LINGER_MS
+                        }
+                        val idle = SystemClock.uptimeMillis() - lastTrafficAt >= linger
                         val queuePending = proxyServer?.hasPendingWebSocketWrites() == true
                         if (proxyGeneration.get() != generation || live == 0 || (idle && !queuePending)) {
                             pendingRelease = null
@@ -579,6 +601,7 @@ class ProxyService : Service() {
 
     /** The release itself. Must hold [wakeLockGate]. */
     private fun dropWakeLocks() {
+        wakeSawBacklog = false
         try {
             if (wakeLock?.isHeld == true) wakeLock?.release()
         } catch (_: Exception) {}
