@@ -49,7 +49,6 @@ object FakeTls {
     data class ClientHello(
         val clientRandom: ByteArray,
         val sessionId: ByteArray,
-        val timestamp: Long,
         // Cipher suites offered by the client, in its preference order. Needed so the
         // ServerHello can echo a suite the way a real server would, instead of a constant.
         val cipherSuites: List<Int> = emptyList()
@@ -71,7 +70,7 @@ object FakeTls {
 
         // First 28 bytes are the secret-derived HMAC tag — compare in constant time so the
         // network can't use response timing as an oracle to recover the tag byte-by-byte.
-        if (!java.security.MessageDigest.isEqual(expected.copyOf(28), clientRandom.copyOf(28))) {
+        if (!MessageDigest.isEqual(expected.copyOf(28), clientRandom.copyOf(28))) {
             return null
         }
 
@@ -86,7 +85,7 @@ object FakeTls {
         if (n >= SESSION_ID_OFFSET + SESSION_ID_LEN && (data[43].toInt() and 0xFF) == 0x20) {
             sessionId = data.copyOfRange(SESSION_ID_OFFSET, SESSION_ID_OFFSET + SESSION_ID_LEN)
         }
-        return ClientHello(clientRandom, sessionId, timestamp, parseCipherSuites(data))
+        return ClientHello(clientRandom, sessionId, parseCipherSuites(data))
     }
 
     /**
@@ -195,9 +194,6 @@ object FakeTls {
         mac.init(SecretKeySpec(key, "HmacSHA256"))
         return mac.doFinal(data)
     }
-
-    @Suppress("unused")
-    private fun sha256(data: ByteArray) = MessageDigest.getInstance("SHA-256").digest(data)
 }
 
 /**

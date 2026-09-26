@@ -37,7 +37,20 @@ class UdpAssociation(
     }
 
     @Volatile var lastUsed = System.currentTimeMillis(); private set
+    /** Written only under `this`, so a send cannot slip in between the last answer and the close. */
     @Volatile private var closed = false
+
+    /**
+     * DNS is request/response: once every query sent on this flow has its answer nothing else is
+     * coming, so the socket and its relay thread are released right away instead of idling until
+     * the service's UDP reaper gets to them. Each lookup is its own flow (fresh source port), so
+     * without this every resolution pinned a thread and a socket for 30-60s and kept the service's
+     * reap loop from going quiet.
+     */
+    private val requestResponse = serverPort == DNS_PORT
+
+    /** Guarded by `this`: queries sent on a [requestResponse] flow that have not been answered. */
+    private var awaitingReplies = 0
 
     fun start(): Boolean {
         val dst = peer
@@ -77,6 +90,10 @@ class UdpAssociation(
                     val data = dp.data.copyOf(dp.length)
                     val pkt = PacketUtils.buildUdp(serverIp, serverPort, clientIp, clientPort, data)
                     tunnel.writeToTun(pkt)
+                    if (requestResponse && answeredAll()) {
+                        release()
+                        break
+                    }
                 }
             } catch (_: Exception) {
                 close()
@@ -85,9 +102,24 @@ class UdpAssociation(
         return true
     }
 
-    fun onClientPayload(payload: ByteArray) {
-        if (closed) return
-        val dst = peer ?: return
+    /** Count one answer; when none are outstanding, mark the flow closed under the same lock. */
+    private fun answeredAll(): Boolean = synchronized(this) {
+        if (closed) return@synchronized false
+        awaitingReplies = maxOf(0, awaitingReplies - 1)
+        if (awaitingReplies == 0) closed = true
+        closed
+    }
+
+    /**
+     * Relay one client datagram. Returns false when this association has already closed, in which
+     * case the caller opens a new one for the same tuple rather than dropping the datagram.
+     */
+    fun onClientPayload(payload: ByteArray): Boolean {
+        val dst = peer ?: return false
+        synchronized(this) {
+            if (closed) return false
+            if (requestResponse) awaitingReplies++
+        }
         lastUsed = System.currentTimeMillis()
         try {
             // Same address the socket is connected to, so the explicit destination is redundant —
@@ -97,12 +129,23 @@ class UdpAssociation(
         } catch (_: Exception) {
             close()
         }
+        return true
     }
 
     fun close() {
-        if (closed) return
-        closed = true
+        synchronized(this) {
+            if (closed) return
+            closed = true
+        }
+        release()
+    }
+
+    private fun release() {
         try { socket.close() } catch (_: Exception) {}
-        tunnel.onConnectionClosed(key, udp = true)
+        tunnel.onUdpAssociationClosed(key, this)
+    }
+
+    private companion object {
+        const val DNS_PORT = 53
     }
 }

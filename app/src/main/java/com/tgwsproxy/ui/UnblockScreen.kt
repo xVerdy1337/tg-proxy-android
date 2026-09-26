@@ -8,7 +8,6 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,7 +25,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,7 +36,6 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
@@ -47,7 +44,6 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PriorityHigh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Tune
@@ -71,8 +67,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -85,7 +79,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -97,11 +90,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tgwsproxy.R
 import com.tgwsproxy.ui.theme.Accent
 import com.tgwsproxy.ui.theme.AccentSoft
-import com.tgwsproxy.ui.theme.Background
 import com.tgwsproxy.ui.theme.Border
 import com.tgwsproxy.ui.theme.Destructive
-import com.tgwsproxy.ui.theme.GlassBorder
-import com.tgwsproxy.ui.theme.GlassShadow
 import com.tgwsproxy.ui.theme.GlassSurfaceMuted
 import com.tgwsproxy.ui.theme.Mauve
 import com.tgwsproxy.ui.theme.OnAccent
@@ -118,7 +108,6 @@ import com.tgwsproxy.vpn.ByedpiPreset
 import com.tgwsproxy.vpn.ByedpiPresetCatalog
 import com.tgwsproxy.vpn.ByedpiPresetGroup
 import com.tgwsproxy.vpn.DesyncVpnService
-private val OkGreen = Success
 
 /**
  * Identity of a probed service is its RAW HOSTNAME — never the label we draw next to it.
@@ -330,7 +319,7 @@ private fun HeroUnblockCard(
         ) { label ->
             Text(
                 text = label,
-                color = if (running && !busy) OkGreen else TextPrimary,
+                color = if (running && !busy) Success else TextPrimary,
                 style = stateLabelStyle,
                 fontWeight = FontWeight.Light,
                 textAlign = TextAlign.Center,
@@ -375,7 +364,7 @@ private fun HeroUnblockCard(
                 Icon(
                     imageVector = Icons.Default.Language,
                     contentDescription = null,
-                    tint = if (state.allowDirectIpv6) OkGreen else TextSecondary,
+                    tint = if (state.allowDirectIpv6) Success else TextSecondary,
                     modifier = Modifier.size(16.dp),
                 )
                 Text(
@@ -387,7 +376,7 @@ private fun HeroUnblockCard(
                         },
                     ),
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (state.allowDirectIpv6) OkGreen else TextSecondary,
+                    color = if (state.allowDirectIpv6) Success else TextSecondary,
                     textAlign = TextAlign.Center,
                     maxLines = 2,
                 )
@@ -464,7 +453,7 @@ private fun AutoTuneCard(
             PanelCard {
                 Text(
                     stringResource(R.string.auto_tune_found, autoTune.foundLabel ?: ""),
-                    color = OkGreen, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold
+                    color = Success, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold
                 )
                 DnsSkippedNote(autoTune.unresolvedHosts)
                 Spacer(Modifier.height(10.dp))
@@ -632,16 +621,16 @@ private fun ServiceRow(
 ) {
     val (dotColor, statusText, working) = when {
         checking -> Triple(SurfaceVariant, stringResource(R.string.probe_checking), false)
-        forced == true -> Triple(OkGreen, stringResource(R.string.probe_works), true)
+        forced == true -> Triple(Success, stringResource(R.string.probe_works), true)
         forced == false -> Triple(Destructive, stringResource(R.string.probe_blocked), false)
         result == null -> Triple(SurfaceVariant, stringResource(R.string.probe_not_checked), false)
-        result.anyPass -> Triple(OkGreen, stringResource(R.string.probe_works), true)
+        result.anyPass -> Triple(Success, stringResource(R.string.probe_works), true)
         result.plain == com.tgwsproxy.net.HelloProbe.Outcome.BLOCKED -> Triple(Destructive, stringResource(R.string.probe_blocked), false)
         else -> Triple(Warning, stringResource(R.string.probe_failed), false)
     }
     val animatedDot by animateColorAsState(targetValue = dotColor, animationSpec = tween(250), label = "serviceDot")
     val statusColor = when {
-        working -> OkGreen
+        working -> Success
         dotColor == Destructive -> Destructive
         dotColor == Warning -> Warning
         else -> TextSecondary
@@ -671,7 +660,7 @@ private fun ServiceRow(
                     color = TextSecondary
                 )
             } else if (working) {
-                Icon(Icons.Default.Check, null, tint = OkGreen, modifier = Modifier.size(14.dp))
+                Icon(Icons.Default.Check, null, tint = Success, modifier = Modifier.size(14.dp))
             } else {
                 Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(animatedDot))
             }
@@ -885,7 +874,7 @@ private fun PresetCard(
             Spacer(Modifier.height(8.dp))
             Text(
                 stringResource(R.string.active_strategy, activeLabel),
-                color = OkGreen, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium
+                color = Success, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium
             )
         }
         Spacer(Modifier.height(8.dp))
@@ -1084,15 +1073,11 @@ private fun UnblockSettingsCard(
                     command = settings.byedpiCmd,
                     onSelect = onSelectPreset,
                 )
-                // Both toggles below only write prefs; DesyncVpnService reads them once in
-                // loadPrefs() on the way up, so a flip during a live session is stored and ignored
-                // until the tunnel restarts. Say so, exactly as the method picker does.
                 ToggleCard(
                     icon = Icons.Default.Bolt,
                     title = stringResource(R.string.block_quic),
                     subtitle = stringResource(R.string.block_quic_subtitle),
                     checked = settings.blockQuic,
-                    restartHint = stringResource(R.string.restart_vpn_after_change),
                     onChange = onBlockQuic,
                 )
                 ProbeCard(probe, onCheck)
@@ -1109,7 +1094,6 @@ private fun UnblockSettingsCard(
                     else
                         stringResource(R.string.all_apps_off_subtitle),
                     checked = settings.allApps,
-                    restartHint = stringResource(R.string.restart_vpn_after_change),
                     onChange = onAllApps
                 )
                 ToggleCard(
@@ -1117,7 +1101,6 @@ private fun UnblockSettingsCard(
                     title = stringResource(R.string.direct_ipv6),
                     subtitle = stringResource(R.string.direct_ipv6_subtitle),
                     checked = settings.allowDirectIpv6,
-                    restartHint = stringResource(R.string.restart_vpn_after_change),
                     onChange = onAllowDirectIpv6,
                 )
                 Row(
@@ -1205,7 +1188,7 @@ private fun ProbeCard(probe: ProbeUiState, onCheck: () -> Unit) {
                     stringResource(R.string.probe_simple_ok)
                 else
                     stringResource(R.string.probe_simple_fail),
-                color = if (anyWorks) OkGreen else Warning,
+                color = if (anyWorks) Success else Warning,
                 style = MaterialTheme.typography.labelSmall
             )
         }
@@ -1245,7 +1228,7 @@ private fun ProbeResultRow(r: ServiceProbe) {
 @Composable
 private fun RowScope.MethodPill(label: String, outcome: com.tgwsproxy.net.HelloProbe.Outcome?) {
     val color = when (outcome) {
-        com.tgwsproxy.net.HelloProbe.Outcome.PASS -> OkGreen
+        com.tgwsproxy.net.HelloProbe.Outcome.PASS -> Success
         com.tgwsproxy.net.HelloProbe.Outcome.BLOCKED -> Destructive
         com.tgwsproxy.net.HelloProbe.Outcome.ERROR -> Warning
         null -> SurfaceVariant
@@ -1385,11 +1368,6 @@ private fun ToggleCard(
     title: String,
     subtitle: String,
     checked: Boolean,
-    /**
-     * Set when the pref is only read by the service at start-up, so flipping it while the tunnel is
-     * up changes nothing until it is cycled — the same promise the method picker already makes.
-     */
-    restartHint: String? = null,
     onChange: (Boolean) -> Unit,
 ) {
     PanelCard {
@@ -1424,10 +1402,14 @@ private fun ToggleCard(
                 )
             )
         }
-        if (restartHint != null) {
-            Spacer(Modifier.height(8.dp))
-            Text(restartHint, color = TextSecondary, style = MaterialTheme.typography.labelSmall)
-        }
+        // Every toggle here is a pref the service reads only at start-up, so flipping it while the
+        // tunnel is up changes nothing until it is cycled.
+        Spacer(Modifier.height(8.dp))
+        Text(
+            stringResource(R.string.restart_vpn_after_change),
+            color = TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+        )
     }
 }
 
@@ -1563,13 +1545,11 @@ private fun UnblockRunningPreview() {
     UnblockPreviewContent(
         state = DesyncVpnService.VpnState(
             isRunning = true,
-            preset = DesyncVpnService.PRESET_AUTO,
             activeTcp = 4,
             bytesUp = 1_250_000,
             bytesDown = 24_800_000,
             connOk = 18,
             connFail = 1,
-            startedAt = System.currentTimeMillis() - 12 * 60 * 1000,
         ),
         autoTune = AutoTuneUiState(
             finished = true,
@@ -1645,7 +1625,6 @@ private fun UnblockNarrowLargeTextPreview() {
     UnblockPreviewContent(
         state = DesyncVpnService.VpnState(
             isStarting = true,
-            preset = DesyncVpnService.PRESET_AUTO,
         ),
         autoTune = AutoTuneUiState(),
     )

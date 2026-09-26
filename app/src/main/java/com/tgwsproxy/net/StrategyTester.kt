@@ -86,7 +86,7 @@ object StrategyTester {
     fun labelForCommand(context: Context, command: String): String? =
         labelResForCommand(command)?.let { context.getString(it) }
 
-    data class HostResult(val host: String, val ok: Boolean, val detail: String)
+    data class HostResult(val host: String, val ok: Boolean)
     data class StrategyResult(
         val strategy: Strategy,
         val hosts: List<HostResult>,
@@ -153,7 +153,7 @@ object StrategyTester {
     }
 
     /** Complete a real TLS handshake to [host] through the local SOCKS5 proxy on [socksPort]. */
-    private fun testHostThroughSocks(context: Context, host: String, port: Int, socksPort: Int): HostResult {
+    private fun testHostThroughSocks(host: String, port: Int, socksPort: Int): HostResult {
         var raw: Socket? = null
         try {
             val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", socksPort))
@@ -166,9 +166,9 @@ object StrategyTester {
             ssl.soTimeout = TLS_TIMEOUT_MS
             ssl.startHandshake() // real ClientHello w/ real SNI; throws if the DPI resets the flow
             try { ssl.close() } catch (_: Exception) {}
-            return HostResult(host, true, context.getString(R.string.tls_ok))
+            return HostResult(host, true)
         } catch (e: Exception) {
-            return HostResult(host, false, e.message ?: e.javaClass.simpleName)
+            return HostResult(host, false)
         } finally {
             try { raw?.close() } catch (_: Exception) {}
         }
@@ -178,7 +178,7 @@ object StrategyTester {
      * Run [strategy] through a fresh local byedpi instance on [port] and test every host in [hosts].
      * Caller MUST ensure the VPN is off. Returns per-host TLS results.
      */
-    fun testStrategy(context: Context, strategy: Strategy, hosts: List<String>, port: Int): StrategyResult {
+    fun testStrategy(strategy: Strategy, hosts: List<String>, port: Int): StrategyResult {
         val proxy = ByeDpiProxy()
         var loop: Thread? = null
         // Written by the loop thread, read by the finally below, so it has to publish safely.
@@ -219,14 +219,14 @@ object StrategyTester {
             if (!ready) {
                 StrategyResult(
                     strategy,
-                    hosts.map { HostResult(it, false, context.getString(R.string.byedpi_bad_command)) },
+                    hosts.map { HostResult(it, false) },
                 )
             } else {
                 // Test all hosts in parallel so a strategy's cost is max(host), not sum(host).
                 val results = arrayOfNulls<HostResult>(hosts.size)
                 val workers = hosts.mapIndexed { idx, host ->
                     thread(name = "probe-$host", isDaemon = true) {
-                        results[idx] = testHostThroughSocks(context, host, 443, port)
+                        results[idx] = testHostThroughSocks(host, 443, port)
                     }
                 }
                 // Derived from the two socket deadlines on purpose: a worker that is legitimately
@@ -236,7 +236,7 @@ object StrategyTester {
                 val budget = (SOCKS_CONNECT_TIMEOUT_MS + TLS_TIMEOUT_MS + 1000).toLong()
                 workers.forEach { try { it.join(budget) } catch (_: InterruptedException) {} }
                 StrategyResult(strategy, hosts.mapIndexed { idx, host ->
-                    results[idx] ?: HostResult(host, false, context.getString(R.string.timeout))
+                    results[idx] ?: HostResult(host, false)
                 })
             }
         } finally {

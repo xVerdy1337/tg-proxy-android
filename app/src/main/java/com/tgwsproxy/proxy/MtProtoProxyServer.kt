@@ -150,21 +150,12 @@ class MtProtoProxyServer(
         encodedCfLabels.map { decodeCfLabel(it) + ".co.uk" }
     }
 
-    // User-supplied CF domains: split on comma / semicolon / space, trimmed, de-duplicated.
-    private val userCfDomains: List<String> by lazy {
-        cfDomain.split(',', ';', ' ')
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
-    }
+    // User-supplied CF / Worker domains: split on comma / semicolon / space, trimmed, de-duplicated.
+    private val userCfDomains: List<String> by lazy { splitDomains(cfDomain) }
+    private val userCfWorkerDomains: List<String> by lazy { splitDomains(cfWorkerDomain) }
 
-    // User-supplied Cloudflare Worker domains: split on comma / semicolon / space, trimmed, deduped.
-    private val userCfWorkerDomains: List<String> by lazy {
-        cfWorkerDomain.split(',', ';', ' ')
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
-    }
+    private fun splitDomains(s: String): List<String> =
+        s.split(',', ';', ' ').map { it.trim() }.filter { it.isNotEmpty() }.distinct()
 
     fun start() {
         running = true
@@ -769,7 +760,9 @@ class MtProtoProxyServer(
         closeReason: AtomicReference<String>,
         openedAtEpoch: Int,
     ) {
-        val splitter = try { MsgSplitter(relayInit, protoInt) } catch (_: Exception) { null }
+        // Cannot throw here: relayInit is always 64 bytes and the same AES/CTR cipher was just built
+        // for the crypto context. An unknown protocol only makes the splitter pass chunks through.
+        val splitter = MsgSplitter(relayInit, protoInt)
         val cacheKey = "$dc/$isMedia"
 
         // Per-connection traffic lives in the caller's counters: the same numbers feed the
@@ -902,7 +895,7 @@ class MtProtoProxyServer(
                 while (running && !clientSocket.isClosed) {
                     val read = clientInput.read(buffer)
                     if (read <= 0) {
-                        splitter?.flush()?.forEach { wsBridge.send(it) }
+                        splitter.flush().forEach { wsBridge.send(it) }
                         // Leave "client-gone". "peer" is reserved for the download loop, where the
                         // client socket is still open. Labeling this EOF as peer made two short
                         // Telegram closes (a small media fetch, an app backgrounding) look like a
@@ -916,21 +909,9 @@ class MtProtoProxyServer(
                     val chunk = buffer.copyOfRange(0, read)
                     val plain = ctx.cltDecryptor.update(chunk)
                     val reenc = ctx.tgEncryptor.update(plain)
-                    if (splitter != null) {
-                        val parts = splitter.split(reenc)
-                        var ok = true
-                        for (p in parts) {
-                            if (!wsBridge.send(p)) { ok = false; break }
-                        }
-                        if (!ok) {
-                            closeReason.compareAndSet("client-gone", "peer") // upstream stopped accepting
-                            break
-                        }
-                    } else {
-                        if (!wsBridge.send(reenc)) {
-                            closeReason.compareAndSet("client-gone", "peer") // upstream stopped accepting
-                            break
-                        }
+                    if (!splitter.split(reenc).all { wsBridge.send(it) }) {
+                        closeReason.compareAndSet("client-gone", "peer") // upstream stopped accepting
+                        break
                     }
                     kick.arm()
                 }

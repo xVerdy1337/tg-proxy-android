@@ -16,8 +16,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import java.security.SecureRandom
 
 class ProxyViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -69,22 +71,19 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
     private var proxyService: ProxyService? = null
     private var serviceBound = false
     private var collectJob: Job? = null
-    // Survives the gap before the service binds. The activity reports screen visibility
-    // here so the service can stop its 1s stats pump while the app is backgrounded.
-    private var uiVisible = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as ProxyService.ProxyBinder
             proxyService = binder.getService()
             serviceBound = true
-            proxyService?.setUiVisible(uiVisible)
             collectServiceState()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            // The binding itself survives a service crash (the system rebinds on restart), so
+            // serviceBound stays true and onCleared still unbinds.
             proxyService = null
-            serviceBound = false
             collectJob?.cancel()
             collectJob = null
             _uiState.value = _uiState.value.copy(
@@ -123,34 +122,45 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun collectServiceState() {
         collectJob?.cancel()
+        val service = proxyService ?: return
+        // The binding outlives the visible screen (it lasts until the ViewModel is cleared), so
+        // collect only while the UI itself collects uiState. That also drops the service's
+        // stateflow subscription, which is what parks its stats pump while the app is backgrounded.
         collectJob = viewModelScope.launch {
-            proxyService?.serviceState?.collect { serviceState ->
-                _uiState.value = ProxyUiState(
-                    isLoading = false,
-                    isRunning = serviceState.isRunning,
-                    host = serviceState.host,
-                    port = serviceState.port,
-                    secret = serviceState.secret,
-                    connectionCount = serviceState.connectionCount,
-                    logs = serviceState.logs,
-                    proxyLink = serviceState.proxyLink,
-                    cfDomain = serviceState.cfDomain,
-                    cfWorkerDomain = serviceState.cfWorkerDomain,
-                    fakeTlsDomain = serviceState.fakeTlsDomain,
-                    bytesUp = serviceState.bytesUp,
-                    bytesDown = serviceState.bytesDown,
-                    startedAt = serviceState.startedAt,
-                    route = serviceState.route,
-                    // This rebuilds from scratch rather than copy()ing, so anything the service owns
-                    // has to be mapped here or it is silently dropped on the next emission — and the
-                    // service is exactly who knows why a start failed.
-                    error = serviceState.error,
-                    // The filter is UI-owned, not service-owned: carry it over explicitly or every
-                    // service emission would snap the chips back to All.
-                    logFilter = _uiState.value.logFilter
-                )
-            }
+            _uiState.subscriptionCount
+                .map { it > 0 }
+                .distinctUntilChanged()
+                .collectLatest { watching ->
+                    if (watching) service.serviceState.collect { serviceState -> applyServiceState(serviceState) }
+                }
         }
+    }
+
+    private fun applyServiceState(serviceState: ProxyService.ServiceState) {
+        _uiState.value = ProxyUiState(
+            isLoading = false,
+            isRunning = serviceState.isRunning,
+            host = serviceState.host,
+            port = serviceState.port,
+            secret = serviceState.secret,
+            connectionCount = serviceState.connectionCount,
+            logs = serviceState.logs,
+            proxyLink = serviceState.proxyLink,
+            cfDomain = serviceState.cfDomain,
+            cfWorkerDomain = serviceState.cfWorkerDomain,
+            fakeTlsDomain = serviceState.fakeTlsDomain,
+            bytesUp = serviceState.bytesUp,
+            bytesDown = serviceState.bytesDown,
+            startedAt = serviceState.startedAt,
+            route = serviceState.route,
+            // This rebuilds from scratch rather than copy()ing, so anything the service owns
+            // has to be mapped here or it is silently dropped on the next emission — and the
+            // service is exactly who knows why a start failed.
+            error = serviceState.error,
+            // The filter is UI-owned, not service-owned: carry it over explicitly or every
+            // service emission would snap the chips back to All.
+            logFilter = _uiState.value.logFilter
+        )
     }
 
     fun toggleProxy() {
@@ -200,9 +210,7 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
         // to be dropped silently. Write the same prefs the service itself writes; they are the
         // source of truth it reads on the next start.
         if (_uiState.value.isRunning) return
-        val bytes = ByteArray(16)
-        SecureRandom().nextBytes(bytes)
-        val secret = bytes.joinToString("") { "%02x".format(it) }
+        val secret = ProxyService.generateSecret()
         prefs().edit().putString(ProxyService.KEY_SECRET, secret).apply()
         val state = _uiState.value
         _uiState.value = state.copy(
@@ -243,11 +251,6 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             prefs().edit().putString(ProxyService.KEY_FAKE_TLS_DOMAIN, domain.trim()).apply()
         }
-    }
-
-    fun setUiVisible(visible: Boolean) {
-        uiVisible = visible
-        proxyService?.setUiVisible(visible)
     }
 
     fun setLogFilter(filter: LogFilter) {
@@ -293,7 +296,7 @@ data class ProxyUiState(
 enum class LogFilter { ALL, CONNECTIONS, PROBLEMS }
 
 private val CONNECTION_KINDS = setOf(
-    LogKind.CONN, LogKind.HANDSHAKE, LogKind.FAKE_TLS, LogKind.CLOUDFLARE, LogKind.WS, LogKind.PLAIN
+    LogKind.CONN, LogKind.HANDSHAKE, LogKind.CLOUDFLARE, LogKind.WS, LogKind.PLAIN
 )
 
 /**

@@ -1,7 +1,6 @@
 package com.tgwsproxy.vpn
 
 import java.net.DatagramSocket
-import java.net.Socket
 import java.util.concurrent.Executor
 
 /**
@@ -10,27 +9,27 @@ import java.util.concurrent.Executor
  */
 interface Tunnel {
     /**
-     * Shared pool for per-flow blocking relay loops. A cached pool (not raw `thread{}` per flow,
-     * nor a hard-capped dispatcher) reuses idle threads to cut allocation churn while still growing
-     * for many concurrent long-lived flows — a fixed cap would starve a VPN holding lots of idle
-     * sockets, since each flow's downstream pump occupies a thread for the flow's whole lifetime.
+     * Shared, bounded pool for per-flow blocking relay loops; each flow's pump occupies a thread
+     * for the flow's whole lifetime. Rejects work once full or stopped (callers drop the flow).
      */
     val relayExecutor: Executor
 
     /** Write a fully-built IP packet back into the TUN (delivered to the app). Thread-safe. */
     fun writeToTun(packet: ByteArray)
 
-    /** Exclude an upstream TCP socket from the VPN so it reaches the real network. */
-    fun protectTcp(socket: Socket): Boolean
-
     /** Exclude an upstream UDP socket from the VPN. */
     fun protectUdp(socket: DatagramSocket): Boolean
 
+    /** A TCP flow finished; drop it from the TCP table. */
+    fun onConnectionClosed(key: Long)
+
     /**
-     * A flow finished; drop it from the NAT table. [udp] selects which table to clean so a TCP
-     * flow can never evict a UDP association that happens to share the same (port,ip,port) tuple.
+     * A UDP association closed. The table drops the entry only while it still maps to
+     * [association]: a DNS flow closes itself from its reader thread, and a query reusing the same
+     * source port may already have installed a fresh association under that key, which a key-only
+     * removal would orphan.
      */
-    fun onConnectionClosed(key: Long, udp: Boolean)
+    fun onUdpAssociationClosed(key: Long, association: UdpAssociation)
 
     /**
      * Surface a human-readable diagnostic (e.g. "protect failed" / "connect: timeout") so the UI
