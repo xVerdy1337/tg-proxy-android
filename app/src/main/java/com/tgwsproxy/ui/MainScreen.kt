@@ -50,24 +50,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -75,7 +68,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -130,7 +122,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tgwsproxy.R
 import com.tgwsproxy.service.LogKind
 import com.tgwsproxy.service.LogLine
-import com.tgwsproxy.ui.theme.Background
 import com.tgwsproxy.ui.theme.Accent
 import com.tgwsproxy.ui.theme.Border
 import com.tgwsproxy.ui.theme.Destructive
@@ -237,7 +228,7 @@ fun MainScreen(
     }
 
     // The whole log is one item, so "within two items of the end" would be true for the entire
-    // scroll through an expanded 200-line log and every new line would yank the user back down.
+    // scroll through an expanded 300-line log and every new line would yank the user back down.
     // Only the genuinely-last item being on screen counts as being at the bottom.
     val isAtBottom by remember {
         derivedStateOf {
@@ -345,7 +336,6 @@ fun MainScreen(
                                 TelegramHero(
                                     uiState = uiState,
                                     onToggle = { viewModel.toggleProxy() },
-                                    onRetry = { viewModel.toggleProxy() },
                                     onOpenTelegram = {
                                         // No handler answers tg:// when Telegram is not installed,
                                         // and an unguarded ACTION_VIEW then crashes the click with
@@ -588,7 +578,6 @@ private fun MainTabButton(
 private fun TelegramHero(
     uiState: ProxyUiState,
     onToggle: () -> Unit,
-    onRetry: () -> Unit = {},
     onOpenTelegram: () -> Unit,
 ) {
     val running = uiState.isRunning
@@ -701,16 +690,12 @@ private fun TelegramHero(
         // A failed start has to say so under the dial, or it is indistinguishable from never having
         // pressed it. Shared with the Sites hero so the two cannot drift again — the comment here used
         // to claim «same treatment» while only one of them had the guards.
-        JevioHeroError(error = uiState.error, running = running, onRetry = onRetry)
+        JevioHeroError(error = uiState.error, running = running, onRetry = onToggle)
 
         if (running && uiState.proxyLink.isNotEmpty()) {
             Spacer(Modifier.height(20.dp))
             ActionButton(
                 label = stringResource(R.string.connect_telegram),
-                loading = false,
-                destructive = false,
-                enabled = true,
-                outlined = true,
                 onClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     onOpenTelegram()
@@ -766,79 +751,33 @@ private fun TelegramHero(
     }
 }
 
-/** Full-width primary/secondary action with a compact, stable touch shape. */
+/** Full-width outlined secondary action with a compact, stable touch shape. */
 @Composable
-private fun ActionButton(
-    label: String,
-    loading: Boolean,
-    destructive: Boolean,
-    enabled: Boolean,
-    outlined: Boolean = false,
-    onClick: () -> Unit,
-) {
+private fun ActionButton(label: String, onClick: () -> Unit) {
     val shape = RoundedCornerShape(16.dp)
     val interaction = remember { MutableInteractionSource() }
     val scale = rememberPressScale(interaction)
-    val reduceMotion = reducedMotionEnabled()
-    val bg = when {
-        outlined -> GlassSurfaceMuted
-        destructive -> GlassSurfaceMuted
-        !enabled -> SurfaceVariant
-        else -> Accent
-    }
-    val fg = when {
-        destructive -> Destructive
-        outlined -> TextPrimary
-        !enabled || loading -> TextMuted
-        else -> OnAccent
-    }
-    val border = when {
-        destructive -> BorderStroke(1.5.dp, Destructive)
-        outlined -> BorderStroke(1.dp, Primary.copy(alpha = 0.22f))
-        else -> null
-    }
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 58.dp)
-            .shadow(
-                elevation = if (!outlined && !destructive && enabled) 6.dp else 0.dp,
-                shape = shape,
-                ambientColor = GlassShadow,
-                spotColor = GlassShadow,
-            )
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
             .clip(shape)
-            .background(bg)
-            .then(if (border != null) Modifier.border(border, shape) else Modifier)
+            .background(GlassSurfaceMuted)
+            .border(BorderStroke(1.dp, Primary.copy(alpha = 0.22f)), shape)
             .clickable(
                 interactionSource = interaction,
                 indication = androidx.compose.foundation.LocalIndication.current,
-                enabled = enabled && !loading,
                 onClick = onClick,
             )
             .padding(horizontal = 24.dp, vertical = 12.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Crossfade(
-            targetState = loading,
-            animationSpec = tween(if (reduceMotion) 0 else 180, easing = JevioEaseOut),
-            label = "telegramButtonContent",
-        ) { showingProgress ->
-            if (showingProgress) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    strokeWidth = 2.dp,
-                    color = fg,
-                )
-            } else {
-                JevioButtonLabel(text = label, color = fg)
-            }
-        }
+        JevioButtonLabel(text = label, color = TextPrimary)
     }
 }
 
@@ -1377,14 +1316,13 @@ private fun SettingsCard(uiState: ProxyUiState, onSaveCfDomain: (String) -> Unit
 
 /**
  * Colour per log role. Only a lookup: the keyword matching that decides the role happens once, when
- * the line is created, because the whole 200-line log recomposes on every arriving line and nine
+ * the line is created, because the whole 300-line log recomposes on every arriving line and nine
  * case-insensitive scans × 200 lines per line was ~1800 substring searches for one new entry.
  */
 private fun logColor(kind: LogKind): Color = when (kind) {
     LogKind.ERROR -> Destructive
     LogKind.WARNING -> Warning
     LogKind.HANDSHAKE -> Mauve
-    LogKind.FAKE_TLS -> Primary
     LogKind.CLOUDFLARE -> Info
     LogKind.WS -> Info
     LogKind.PLAIN -> TextSecondary
@@ -1516,7 +1454,6 @@ private fun batteryOptimizationsIgnored(): Boolean {
     val lifecycleOwner = LocalLifecycleOwner.current
 
     fun isIgnoring(): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         return powerManager.isIgnoringBatteryOptimizations(context.packageName)
     }

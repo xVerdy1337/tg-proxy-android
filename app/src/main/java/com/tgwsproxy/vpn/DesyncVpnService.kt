@@ -50,7 +50,7 @@ import kotlin.concurrent.thread
  * VPN that captures the target apps' traffic and applies the DPI-desync to each new TLS
  * connection — the engine behind "разблокировать YouTube / Instagram".
  *
- * Flow: TUN → read IPv4 packets → TCP goes through [TcpConnection] (desync on the ClientHello),
+ * Flow: TUN → read IPv4 packets → TCP goes through [TcpConnection] into byedpi, which desyncs the ClientHello,
  * UDP through [UdpAssociation] (QUIC dropped when the toggle is on so apps fall back to TLS).
  * IPv6 can be allowed outside the IPv4-only TUN when Direct IPv6 is enabled, so IPv6-only networks
  * retain connectivity while the IPv4 path continues through the desync relay.
@@ -63,20 +63,14 @@ class DesyncVpnService : VpnService(), Tunnel {
         val isStarting: Boolean = false,
         /** True while sockets, native byedpi and the TUN interface are being closed. */
         val isStopping: Boolean = false,
-        val preset: String = PRESET_TLSREC,
-        /** Effective catalog id, or `custom` when a custom command is active. */
-        val effectivePreset: String? = null,
-        val blockQuic: Boolean = true,
         val scopeAllApps: Boolean = true,
         /** Whether the running VPN leaves IPv6 on the underlying network instead of the TUN. */
         val allowDirectIpv6: Boolean = false,
         val activeTcp: Int = 0,
-        val activeUdp: Int = 0,
         val bytesUp: Long = 0,
         val bytesDown: Long = 0,
         val connOk: Int = 0,
         val connFail: Int = 0,
-        val startedAt: Long = 0,
         val error: String? = null,
     )
 
@@ -103,30 +97,6 @@ class DesyncVpnService : VpnService(), Tunnel {
         // Local byedpi SOCKS5 endpoint that the userspace TCP relay dials.
         private const val DEFAULT_SOCKS_PORT = 1080
         private val SOCKS_PORT_CANDIDATES = intArrayOf(1080, 18080, 28080, 38080)
-
-        /**
-         * byedpi desync arguments are supplied by the shared catalog. A non-empty custom command
-         * in prefs overrides the selected catalog preset.
-         *
-         *   Авто (AUTO)   : cascading disorder+split across many offsets — the strongest general
-         *                  strategy, confirmed to unblock YouTube + Instagram on RU TSPU.
-         *   Метод A (TLSREC): split + tlsrec + a low-TTL FAKE decoy (`-f-1 -t8`) — use when the plain
-         *                  cascade isn't enough and the operator needs a poisoning packet.
-         *   Метод B (SPLIT) : a pure multi-point SNI split (no disorder) — lighter / lower-latency
-         *                  alternative for operators where disorder breaks the flow.
-         * Flags: -d disorder, -s split, -r tlsrec, -f fake, -t fake TTL, +s = cut at the SNI.
-         */
-        fun presetToByedpiArgs(preset: String): String = ByedpiPresetCatalog.commandFor(preset)
-
-        fun effectivePresetFor(preset: String, customCommand: String): String {
-            val migrated = ByedpiPresetCatalog.migrateCommand(customCommand.trim())
-            val command = if (migrated.isNotEmpty()) migrated else ByedpiPresetCatalog.commandFor(preset)
-            val direct = ByedpiPresetCatalog.byCommand(command)
-            if (direct != null) return direct.id
-            return ByedpiPresetCatalog.presets.firstOrNull {
-                ByedpiPresetCatalog.migrateCommand(it.command) == command
-            }?.id ?: "custom"
-        }
 
         /**
          * Tokenise a byedpi command line into an argv array (argv[0] = "ciadpi").
@@ -475,20 +445,12 @@ class DesyncVpnService : VpnService(), Tunnel {
     private val tcpMap = ConcurrentHashMap<Long, TcpConnection>()
     private val udpMap = ConcurrentHashMap<Long, UdpAssociation>()
     private val blockedQuic = ConcurrentHashMap<Long, Long>()
-    private val quicRejects = AtomicLong(0)
-    private val flowRejects = AtomicLong(0)
 
     private val bytesUp = AtomicLong(0)
     private val bytesDown = AtomicLong(0)
     private val connOk = AtomicLong(0)
     private val connFail = AtomicLong(0)
 
-    // The active preset name (PRESET_AUTO/TLSREC/SPLIT/OFF). Purely for reporting in
-    // VpnState.preset — the real desync strategy is the byedpi command built in loadPrefs().
-    // NOTE: byedpi (native ciadpi) is the data-path desync engine; the pure-Kotlin
-    // DesyncEngine is only used by the direct-connection HelloProbe/StrategyTester, not here.
-    private var activePreset: String = PRESET_AUTO
-    private var effectivePreset: String? = null
     private var blockQuic = true
     private var allApps = true
     private var allowDirectIpv6 = false
@@ -586,15 +548,13 @@ class DesyncVpnService : VpnService(), Tunnel {
         allowDirectIpv6 = p.getBoolean(KEY_ALLOW_DIRECT_IPV6, false)
         excludedUser = p.getStringSet(KEY_EXCLUDED_USER, emptySet())?.toSet() ?: emptySet()
         val preset = p.getString(KEY_PRESET, PRESET_AUTO) ?: PRESET_AUTO
-        activePreset = preset
         // Custom command wins; otherwise derive byedpi args from the preset.
         // migrateCommand, not the raw pref: a saved -A command written before the -T timeouts
         // existed has a dead auto-detect, and this path (tile, boot autostart) can launch it long
         // before the UI ever gets a chance to repair it.
         val rawCustom = (p.getString(KEY_BYEDPI_CMD, "") ?: "").trim()
         val custom = ByedpiPresetCatalog.migrateCommand(rawCustom)
-        val command = if (custom.isNotEmpty()) custom else presetToByedpiArgs(preset)
-        effectivePreset = effectivePresetFor(preset, rawCustom)
+        val command = if (custom.isNotEmpty()) custom else ByedpiPresetCatalog.commandFor(preset)
         socksPort = selectSocksPort()
         byedpiArgs = buildByedpiArgs(command, "127.0.0.1", socksPort)
     }
@@ -656,7 +616,7 @@ class DesyncVpnService : VpnService(), Tunnel {
                 try { byedpiExitCode = proxy.startProxy(args) }
                 catch (e: Throwable) {
                     // Keep the failure detail: exit code -1 alone is indistinguishable from a lost
-                    // bind race, and the two need different user-facing messages (see startVpn).
+                    // bind, and the two need different user-facing messages (see startByedpi).
                     byedpiStartError = e.message ?: e.javaClass.simpleName
                     byedpiExitCode = -1
                 }
@@ -673,21 +633,12 @@ class DesyncVpnService : VpnService(), Tunnel {
             if (!ready) {
                 val code = byedpiExitCode
                 val alive = byedpiThread?.isAlive == true
-                val reason = if (!alive && code == -1) {
-                    // Code -1 means startProxy threw before the engine reported an exit code.
-                    // Only blame the port when the failure actually looks like a lost bind; any
-                    // other exception gets the generic message with the real cause instead of a
-                    // misleading "port busy". Everything else goes through the structured
-                    // byedpiFailure() mapping.
-                    val err = byedpiStartError
-                    if (err != null && isBindFailure(err)) {
-                        getString(R.string.byedpi_port_busy, port)
-                    } else {
-                        getString(
-                            R.string.byedpi_start_failed,
-                            err ?: getString(R.string.vpn_fail_no_details),
-                        )
-                    }
+                val err = byedpiStartError
+                val reason = if (!alive && err != null) {
+                    // startProxy threw instead of returning, so there is no engine exit code to
+                    // map; show the exception. A native -1 is a lost bind and goes through
+                    // byedpiFailure() like every other code.
+                    getString(R.string.byedpi_start_failed, err)
                 } else {
                     val failure = byedpiFailure(code, alive, port)
                     failure.arg
@@ -749,17 +700,6 @@ class DesyncVpnService : VpnService(), Tunnel {
         byedpiStartError = null
     }
 
-    /**
-     * True if a startProxy failure looks like the listen bind losing the race (EADDRINUSE & co).
-     * byedpi reports every startup crash identically — the engine thread dies with exit code -1 —
-     * so the exception message is the only signal we have to tell "port busy" apart from a bad
-     * argument or a native crash.
-     */
-    private fun isBindFailure(msg: String): Boolean {
-        val m = msg.lowercase()
-        return "eaddrinuse" in m || "address already in use" in m || "bind" in m
-    }
-
     private fun startVpn() {
         // Atomically claim startup so double-tap / tile + UI can't race two byedpi instances.
         synchronized(this) {
@@ -769,9 +709,6 @@ class DesyncVpnService : VpnService(), Tunnel {
             _state.value = VpnState(
                 isRunning = false,
                 isStarting = true,
-                preset = activePreset,
-                effectivePreset = effectivePreset,
-                blockQuic = blockQuic,
                 scopeAllApps = allApps,
                 allowDirectIpv6 = allowDirectIpv6,
                 error = null,
@@ -875,12 +812,8 @@ class DesyncVpnService : VpnService(), Tunnel {
         _state.value = VpnState(
             isRunning = true,
             isStarting = false,
-            preset = presetString(),
-            effectivePreset = effectivePreset,
-            blockQuic = blockQuic,
             scopeAllApps = allApps,
             allowDirectIpv6 = allowDirectIpv6,
-            startedAt = System.currentTimeMillis(),
             error = null,
         )
 
@@ -936,7 +869,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         if (isSyn) {
             // Cap concurrent flows: drop the SYN if we're at the limit so a local flood can't
             // exhaust threads/memory. The client simply retries/times out — no resources spent.
-            if (tcpMap.size >= MAX_TCP_FLOWS) { flowRejects.incrementAndGet(); return }
+            if (tcpMap.size >= MAX_TCP_FLOWS) return
             // Counted only past the drop checks, like handleUdp: a flood of stale or rejected
             // packets would otherwise show up as upload traffic that never went anywhere.
             bytesUp.addAndGet(packet.size.toLong())
@@ -968,7 +901,6 @@ class DesyncVpnService : VpnService(), Tunnel {
         if (blockQuic && (blockedQuic.containsKey(key) ||
                     (dstPort == 443 && PacketUtils.isLikelyQuic(payload)))) {
             blockedQuic[key] = System.currentTimeMillis()
-            quicRejects.incrementAndGet()
             writeToTun(PacketUtils.buildIcmpPortUnreachable(packet))
             return
         }
@@ -987,7 +919,7 @@ class DesyncVpnService : VpnService(), Tunnel {
             udpMap.remove(key, existing)
         }
         // Cap concurrent UDP associations (same flood defense as TCP).
-        if (udpMap.size >= MAX_UDP_FLOWS) { flowRejects.incrementAndGet(); return }
+        if (udpMap.size >= MAX_UDP_FLOWS) return
         val assoc = UdpAssociation(
             clientIp = PacketUtils.srcIp(packet), clientPort = srcPort,
             serverIp = PacketUtils.dstIp(packet), serverPort = dstPort,
@@ -996,7 +928,7 @@ class DesyncVpnService : VpnService(), Tunnel {
         udpMap[key] = assoc
         // start() dispatches a reader onto relayExecutor — can reject when full/stopped.
         val started = try { assoc.start() } catch (_: java.util.concurrent.RejectedExecutionException) { false }
-        if (!started) { flowRejects.incrementAndGet(); udpMap.remove(key, assoc); assoc.close(); return }
+        if (!started) { udpMap.remove(key, assoc); assoc.close(); return }
         assoc.onClientPayload(payload)
     }
 
@@ -1014,15 +946,11 @@ class DesyncVpnService : VpnService(), Tunnel {
         }
     }
 
-    override fun protectTcp(socket: Socket): Boolean =
-        try { protect(socket) } catch (_: Exception) { false }
-
     override fun protectUdp(socket: DatagramSocket): Boolean =
         try { protect(socket) } catch (_: Exception) { false }
 
-    override fun onConnectionClosed(key: Long, udp: Boolean) {
-        if (udp) udpMap.remove(key) else tcpMap.remove(key)
-        if (udp) blockedQuic.remove(key)
+    override fun onConnectionClosed(key: Long) {
+        tcpMap.remove(key)
     }
 
     override fun onUdpAssociationClosed(key: Long, association: UdpAssociation) {
@@ -1048,24 +976,18 @@ class DesyncVpnService : VpnService(), Tunnel {
                 val uiWatching = _state.subscriptionCount.value > 0
                 val hasFlows = tcpMap.isNotEmpty() || udpMap.isNotEmpty() || blockedQuic.isNotEmpty()
                 // Only the UI consumes these stats. In the background, reap active flows every
-                // BACKGROUND_REAP_MS; when there are no flows at all, sleep longer instead of waking
-                // the CPU for an empty-map scan.
-                val interval = when {
-                    uiWatching -> 1000L
-                    hasFlows -> BACKGROUND_REAP_MS
-                    else -> NO_FLOW_POLL_MS
-                }
+                // BACKGROUND_REAP_MS; when there are no flows at all, wait for a subscriber (or
+                // NO_FLOW_POLL_MS) instead of waking the CPU for an empty-map scan.
                 if (!uiWatching && !hasFlows) {
                     withTimeoutOrNull(NO_FLOW_POLL_MS) {
                         _state.subscriptionCount.first { it > 0 }
                     }
                     continue
                 }
-                if (uiWatching || hasFlows) reapIdleFlows()
+                reapIdleFlows()
                 if (uiWatching) {
                     _state.value = _state.value.copy(
                         activeTcp = tcpMap.size,
-                        activeUdp = udpMap.size,
                         bytesUp = bytesUp.get(),
                         bytesDown = bytesDown.get(),
                         // VpnState keeps these as Int because the UI data class is its public
@@ -1075,7 +997,7 @@ class DesyncVpnService : VpnService(), Tunnel {
                         connFail = connFail.get().coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
                     )
                 }
-                delay(interval)
+                delay(if (uiWatching) 1000L else BACKGROUND_REAP_MS)
             }
         }
     }
@@ -1163,8 +1085,6 @@ class DesyncVpnService : VpnService(), Tunnel {
             TileService.requestListeningState(this, ComponentName(this, DesyncTileService::class.java))
         } catch (_: Exception) {}
     }
-
-    private fun presetString(): String = activePreset
 
     // ---- notification ----
 

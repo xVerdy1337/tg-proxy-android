@@ -28,29 +28,12 @@ object MtProtoConstants {
     val ZERO_64 = ByteArray(64) { 0 }
 }
 
-data class HandshakeResult(
+class HandshakeResult(
     val dcId: Int,
     val isMedia: Boolean,
     val protoTag: ByteArray,
     val clientDecPrekeyIv: ByteArray
-) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (javaClass != other?.javaClass) return false
-        other as HandshakeResult
-        return dcId == other.dcId && isMedia == other.isMedia &&
-                protoTag.contentEquals(other.protoTag) &&
-                clientDecPrekeyIv.contentEquals(other.clientDecPrekeyIv)
-    }
-
-    override fun hashCode(): Int {
-        var result = dcId
-        result = 31 * result + isMedia.hashCode()
-        result = 31 * result + protoTag.contentHashCode()
-        result = 31 * result + clientDecPrekeyIv.contentHashCode()
-        return result
-    }
-}
+)
 
 object MtProtoHandshake {
 

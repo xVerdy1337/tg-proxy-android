@@ -2,13 +2,5 @@
 <resources>
     <color name="background">#11120F</color>
     <color name="primary">#F5F3ED</color>
-    <!-- Warm end of the brand gradient. Must stay light: it is a filled-button background with
-         near-black text on top (see OnAccent in ui/theme/Color.kt). -->
-    <color name="accent">#EFB68C</color>
-    <color name="destructive">#EE7B72</color>
-    <color name="text_primary">#F5F3ED</color>
-    <color name="text_secondary">#C4C1B8</color>
-    <color name="surface">#1C1D19</color>
-    <color name="border">#67645C</color>
     <color name="icon_background">#11120F</color>
 </resources>

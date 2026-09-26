@@ -4,7 +4,7 @@ package com.tgwsproxy.vpn
  * Minimal IPv4 / TCP / UDP packet parsing & building for the userspace tunnel.
  *
  * The VpnService TUN gives us raw IP packets (no Ethernet framing). We only need IPv4 here —
- * IPv6 is dropped upstream to force apps onto IPv4 where the DPI-desync applies. Everything is
+ * IPv6 either never enters the TUN or bypasses it (Direct IPv6). Everything is
  * big-endian (network order). Helpers are intentionally allocation-light and dependency-free.
  */
 object PacketUtils {

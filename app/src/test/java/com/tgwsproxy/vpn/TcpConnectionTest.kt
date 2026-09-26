@@ -3,7 +3,6 @@ package com.tgwsproxy.vpn
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.net.DatagramSocket
-import java.net.Socket
 import java.util.concurrent.Executor
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -112,9 +111,9 @@ class TcpConnectionTest {
         override fun writeToTun(packet: ByteArray) {
             written.add(packet)
         }
-        override fun protectTcp(socket: Socket) = true
         override fun protectUdp(socket: DatagramSocket) = true
-        override fun onConnectionClosed(key: Long, udp: Boolean) = Unit
+        override fun onConnectionClosed(key: Long) = Unit
+        override fun onUdpAssociationClosed(key: Long, association: UdpAssociation) = Unit
         override fun reportError(msg: String) = Unit
         override fun onConnectResult(success: Boolean) = Unit
     }
@@ -122,9 +121,9 @@ class TcpConnectionTest {
     private object NoopTunnel : Tunnel {
         override val relayExecutor = Executor { }
         override fun writeToTun(packet: ByteArray) = Unit
-        override fun protectTcp(socket: Socket) = true
         override fun protectUdp(socket: DatagramSocket) = true
-        override fun onConnectionClosed(key: Long, udp: Boolean) = Unit
+        override fun onConnectionClosed(key: Long) = Unit
+        override fun onUdpAssociationClosed(key: Long, association: UdpAssociation) = Unit
         override fun reportError(msg: String) = Unit
         override fun onConnectResult(success: Boolean) = Unit
     }

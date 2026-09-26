@@ -174,7 +174,6 @@ class FakeTlsTest {
     private fun clientHello(cipherSuites: List<Int> = listOf(0x1301)) = FakeTls.ClientHello(
         clientRandom = ByteArray(32) { (it * 3).toByte() },
         sessionId = ByteArray(32) { (it + 11).toByte() },
-        timestamp = 0L,
         cipherSuites = cipherSuites
     )
 

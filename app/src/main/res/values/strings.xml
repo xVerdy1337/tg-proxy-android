@@ -35,7 +35,6 @@
     <string name="settings">Settings</string>
     <string name="off">Off</string>
     <string name="on_with_value">On · %1$s</string>
-    <string name="selected">Selected</string>
     <string name="done">Done</string>
     <string name="apply">Apply</string>
     <string name="reset">Reset</string>
@@ -270,9 +269,6 @@
     <string name="byedpi_socks_not_ready">byedpi SOCKS not ready on 127.0.0.1:%1$d</string>
     <string name="byedpi_start_failed">byedpi failed to start: %1$s</string>
     <string name="byedpi_start_failed_short">byedpi failed to start</string>
-    <string name="tls_ok">TLS ok</string>
-    <string name="byedpi_bad_command">byedpi did not start (bad command)</string>
-    <string name="timeout">timeout</string>
     <string name="probe_no_response">no response (silent drop/throttle)</string>
     <string name="probe_closed_fin">closed with no response (FIN)</string>
     <string name="probe_server_hello">TLS ServerHello received</string>
@@ -283,15 +279,9 @@
     <string name="probe_error">error</string>
 
     <!-- Strategy labels -->
-    <string name="strategy_cascade_disorder_split">Cascade disorder+split</string>
-    <string name="strategy_split_tlsrec_fake">Split+tlsrec+FAKE (TTL 8)</string>
     <string name="strategy_fake_split_ttl6">FAKE split (TTL 6)</string>
-    <string name="strategy_cascade_split">Cascade split</string>
-    <string name="strategy_oob_auto">OOB + auto</string>
-    <string name="strategy_disorder_oob">Disorder + OOB</string>
     <string name="strategy_fake_ttl8_split">FAKE (TTL 8) + split</string>
     <string name="strategy_cascade_step2">Cascade (step 2)</string>
-    <string name="strategy_tlsrec_split_double">tlsrec + split (double)</string>
     <string name="strategy_mix_disorder_split">Mix disorder/split</string>
 
     <!-- Preset groups -->

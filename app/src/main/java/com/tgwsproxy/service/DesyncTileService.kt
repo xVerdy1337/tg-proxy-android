@@ -16,7 +16,7 @@ import com.tgwsproxy.vpn.DesyncVpnService
 /**
  * Quick Settings tile to toggle the DPI-bypass VPN straight from the notification shade.
  *
- * Distinct from [ProxyTileService], which controls the legacy SOCKS proxy. Starting a VpnService
+ * Distinct from [ProxyTileService], which controls the Telegram proxy. Starting a VpnService
  * needs user consent: if it hasn't been granted yet we open the app so the system dialog can show;
  * once granted, the tile starts/stops the service directly.
  */

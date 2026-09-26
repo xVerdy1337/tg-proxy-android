@@ -32,7 +32,6 @@ class MsgSplitter(relayInit: ByteArray, private val protoInt: Long) {
         ) { "relayInit too short: ${relayInit.size} bytes" }
     }
 
-
     private val dec: Cipher = Cipher.getInstance("AES/CTR/NoPadding").apply {
         val key = relayInit.copyOfRange(MtProtoConstants.SKIP_LEN, MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN)
         val iv = relayInit.copyOfRange(
@@ -40,17 +39,14 @@ class MsgSplitter(relayInit: ByteArray, private val protoInt: Long) {
             MtProtoConstants.SKIP_LEN + MtProtoConstants.PREKEY_LEN + MtProtoConstants.IV_LEN
         )
         init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+        // Mirror the relay encryptor's ZERO_64 fast-forward so keystreams align.
+        update(MtProtoConstants.ZERO_64)
     }
 
     // Unconsumed cipher bytes and their decrypted plaintext, kept in lock-step.
     private var cipherBuf = ByteArray(0)
     private var plainBuf = ByteArray(0)
     private var disabled = false
-
-    init {
-        // Mirror the relay encryptor's ZERO_64 fast-forward so keystreams align.
-        dec.update(MtProtoConstants.ZERO_64)
-    }
 
     fun split(chunk: ByteArray): List<ByteArray> {
         if (chunk.isEmpty()) return emptyList()

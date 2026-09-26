@@ -20,7 +20,6 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import java.security.SecureRandom
 
 class ProxyViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -82,8 +81,9 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            // The binding itself survives a service crash (the system rebinds on restart), so
+            // serviceBound stays true and onCleared still unbinds.
             proxyService = null
-            serviceBound = false
             collectJob?.cancel()
             collectJob = null
             _uiState.value = _uiState.value.copy(
@@ -210,9 +210,7 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
         // to be dropped silently. Write the same prefs the service itself writes; they are the
         // source of truth it reads on the next start.
         if (_uiState.value.isRunning) return
-        val bytes = ByteArray(16)
-        SecureRandom().nextBytes(bytes)
-        val secret = bytes.joinToString("") { "%02x".format(it) }
+        val secret = ProxyService.generateSecret()
         prefs().edit().putString(ProxyService.KEY_SECRET, secret).apply()
         val state = _uiState.value
         _uiState.value = state.copy(
@@ -298,7 +296,7 @@ data class ProxyUiState(
 enum class LogFilter { ALL, CONNECTIONS, PROBLEMS }
 
 private val CONNECTION_KINDS = setOf(
-    LogKind.CONN, LogKind.HANDSHAKE, LogKind.FAKE_TLS, LogKind.CLOUDFLARE, LogKind.WS, LogKind.PLAIN
+    LogKind.CONN, LogKind.HANDSHAKE, LogKind.CLOUDFLARE, LogKind.WS, LogKind.PLAIN
 )
 
 /**

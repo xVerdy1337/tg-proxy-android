@@ -129,6 +129,10 @@ class WebSocketBridge(
 
             private fun failSession(ws: WebSocket, session: ReceiveSession) {
                 ws.cancel()
+                markClosed(session)
+            }
+
+            private fun markClosed(session: ReceiveSession) {
                 synchronized(sessionLock) {
                     if (receiveSession === session) {
                         isConnected = false
@@ -146,24 +150,12 @@ class WebSocketBridge(
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
-                synchronized(sessionLock) {
-                    if (receiveSession === session) {
-                        isConnected = false
-                        isClosed = true
-                        channel.close()
-                    }
-                }
+                markClosed(session)
                 latch.countDown()
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                synchronized(sessionLock) {
-                    if (receiveSession === session) {
-                        isConnected = false
-                        isClosed = true
-                        channel.close()
-                    }
-                }
+                markClosed(session)
                 latch.countDown()
             }
         })

@@ -1,8 +1,6 @@
 package com.tgwsproxy.ui.theme
 
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 
 // === Jevio matte dark ===
 // Deep neutral canvas, matte charcoal surfaces and a single high-visibility accent drawn from the
@@ -20,11 +18,9 @@ val SurfaceElevated = Color(0xFF262722)
 val SurfaceVariant = Color(0xFF33352E)
 
 val Primary = Color(0xFFF5F3ED)
-val PrimaryDark = Color(0xFFD0CCC2)
 val PrimaryLight = Color(0xFFFFFFFF)
 
 val Mauve = Color(0xFFC9C6BD)
-val MauveLight = Color(0xFF96938B)
 
 val Cream = Color(0xFF151611)
 
@@ -68,10 +64,6 @@ val Warning = Color(0xFFB68A1A)
 val Info = Color(0xFF9BCBFF)
 val Success = Color(0xFF2FA35D)
 val LogSurface = Color(0xCC23251F)
-
-/** Solid accent fill (kept as Brush for existing call sites). */
-val AccentGradient: Brush
-    get() = SolidColor(Accent)
 
 /** Text/icon on filled primary buttons. */
 val OnAccent = Background

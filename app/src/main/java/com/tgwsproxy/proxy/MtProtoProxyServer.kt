@@ -160,21 +160,12 @@ class MtProtoProxyServer(
         encodedCfLabels.map { decodeCfLabel(it) + ".co.uk" }
     }
 
-    // User-supplied CF domains: split on comma / semicolon / space, trimmed, de-duplicated.
-    private val userCfDomains: List<String> by lazy {
-        cfDomain.split(',', ';', ' ')
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
-    }
+    // User-supplied CF / Worker domains: split on comma / semicolon / space, trimmed, de-duplicated.
+    private val userCfDomains: List<String> by lazy { splitDomains(cfDomain) }
+    private val userCfWorkerDomains: List<String> by lazy { splitDomains(cfWorkerDomain) }
 
-    // User-supplied Cloudflare Worker domains: split on comma / semicolon / space, trimmed, deduped.
-    private val userCfWorkerDomains: List<String> by lazy {
-        cfWorkerDomain.split(',', ';', ' ')
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
-    }
+    private fun splitDomains(s: String): List<String> =
+        s.split(',', ';', ' ').map { it.trim() }.filter { it.isNotEmpty() }.distinct()
 
     fun start() {
         running = true
@@ -765,7 +756,9 @@ class MtProtoProxyServer(
         connDown: AtomicLong,
         closeReason: AtomicReference<String>
     ) {
-        val splitter = try { MsgSplitter(relayInit, protoInt) } catch (_: Exception) { null }
+        // Cannot throw here: relayInit is always 64 bytes and the same AES/CTR cipher was just built
+        // for the crypto context. An unknown protocol only makes the splitter pass chunks through.
+        val splitter = MsgSplitter(relayInit, protoInt)
         val cacheKey = "$dc/$isMedia"
 
         // Per-connection traffic lives in the caller's counters: the same numbers feed the
@@ -896,7 +889,7 @@ class MtProtoProxyServer(
                 while (running && !clientSocket.isClosed) {
                     val read = clientInput.read(buffer)
                     if (read <= 0) {
-                        splitter?.flush()?.forEach { wsBridge.send(it) }
+                        splitter.flush().forEach { wsBridge.send(it) }
                         closeReason.compareAndSet("client-gone", "peer") // clean EOF from the client
                         break
                     }
@@ -907,21 +900,9 @@ class MtProtoProxyServer(
                     val chunk = buffer.copyOfRange(0, read)
                     val plain = ctx.cltDecryptor.update(chunk)
                     val reenc = ctx.tgEncryptor.update(plain)
-                    if (splitter != null) {
-                        val parts = splitter.split(reenc)
-                        var ok = true
-                        for (p in parts) {
-                            if (!wsBridge.send(p)) { ok = false; break }
-                        }
-                        if (!ok) {
-                            closeReason.compareAndSet("client-gone", "peer") // upstream stopped accepting
-                            break
-                        }
-                    } else {
-                        if (!wsBridge.send(reenc)) {
-                            closeReason.compareAndSet("client-gone", "peer") // upstream stopped accepting
-                            break
-                        }
+                    if (!splitter.split(reenc).all { wsBridge.send(it) }) {
+                        closeReason.compareAndSet("client-gone", "peer") // upstream stopped accepting
+                        break
                     }
                 }
             } catch (e: Exception) {
@@ -992,8 +973,8 @@ class MtProtoProxyServer(
         connUp: AtomicLong,
         connDown: AtomicLong,
         closeReason: AtomicReference<String>
-    ): Boolean {
-        return try {
+    ) {
+        try {
             // Socket(host, port) blocks in connect() with no timeout — a blackholed DC IP would
             // pin the coroutine for the full kernel SYN timeout. Bound it explicitly.
             val remoteSocket = Socket().apply { connect(InetSocketAddress(targetIp, 443), UPSTREAM_CONNECT_TIMEOUT_MS) }
@@ -1064,7 +1045,6 @@ class MtProtoProxyServer(
                 try { clientSocket.close() } catch (_: Exception) {}
                 try { remoteSocket.close() } catch (_: Exception) {}
                 clientToRemote.cancel(); remoteToClient.cancel()
-                true
             } finally {
                 try { remoteSocket.close() } catch (_: Exception) {}
             }
@@ -1073,7 +1053,6 @@ class MtProtoProxyServer(
             throw e
         } catch (e: Exception) {
             onLog("TCP fallback error: ${e.message}", LogKind.ERROR)
-            false
         }
     }
     private companion object {

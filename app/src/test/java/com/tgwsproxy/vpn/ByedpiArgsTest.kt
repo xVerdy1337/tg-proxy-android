@@ -111,26 +111,6 @@ class ByedpiArgsTest {
         assertEquals(120L, DesyncVpnService.readinessRetryDelay(99))
     }
 
-    @Test
-    fun effectivePresetUsesCatalogForEmptyCustomCommand() {
-        assertEquals(DesyncVpnService.PRESET_AUTO,
-            DesyncVpnService.effectivePresetFor(DesyncVpnService.PRESET_AUTO, ""))
-    }
-
-    @Test
-    fun effectivePresetRecognizesMigratedCatalogCommand() {
-        val legacy = ByedpiPresetCatalog.commandFor(DesyncVpnService.PRESET_AUTO)
-            .removePrefix("-T10 ")
-        assertEquals(DesyncVpnService.PRESET_AUTO,
-            DesyncVpnService.effectivePresetFor(DesyncVpnService.PRESET_AUTO, legacy))
-    }
-
-    @Test
-    fun effectivePresetMarksUnknownCommandAsCustom() {
-        assertEquals("custom",
-            DesyncVpnService.effectivePresetFor(DesyncVpnService.PRESET_AUTO, "-s 999"))
-    }
-
     /** The strategy tail — what actually reaches getopt after our pinned listen endpoint. */
     private fun strategy(command: String): List<String> = args(command).drop(PINNED.size)
 
