@@ -41,32 +41,20 @@ import java.security.SecureRandom
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.concurrent.thread
 
 /**
  * Colour role of a log line, decided once — when the line is created. The log pane draws the whole
  * (300-line capped) log as a single list item, so deriving this in composition meant re-scanning
- * every line for seven keywords on every arriving line. MtProtoProxyServer reports the kind
- * explicitly through its onLog callback; [classifyLog] only guesses for our own string-only calls.
+ * every line for seven keywords on every arriving line. Every caller of addLog states the kind.
  */
-enum class LogKind { ERROR, WARNING, HANDSHAKE, FAKE_TLS, CLOUDFLARE, WS, PLAIN, DEBUG, CONN }
+enum class LogKind { ERROR, WARNING, HANDSHAKE, CLOUDFLARE, WS, PLAIN, DEBUG, CONN }
 
 /**
  * One log line plus what the UI needs to draw and track it. [seq] never repeats, which is the only
  * thing that still changes once the log sits at its cap and the list stops growing.
  */
 data class LogLine(val seq: Long, val text: String, val kind: LogKind)
-
-/** Keyword order matters: "handshake failed" is a warning, not a handshake. */
-private fun classifyLog(text: String): LogKind = when {
-    text.contains("ERROR", ignoreCase = true) -> LogKind.ERROR
-    text.contains("failed", ignoreCase = true) -> LogKind.WARNING
-    text.contains("WARN", ignoreCase = true) -> LogKind.WARNING
-    text.contains("handshake ok", ignoreCase = true) -> LogKind.HANDSHAKE
-    text.contains("Fake TLS", ignoreCase = true) -> LogKind.FAKE_TLS
-    text.contains("Cloudflare", ignoreCase = true) -> LogKind.CLOUDFLARE
-    text.contains("WS connected", ignoreCase = true) -> LogKind.WS
-    else -> LogKind.PLAIN
-}
 
 class ProxyService : Service() {
 
@@ -103,7 +91,15 @@ class ProxyService : Service() {
         /**
          * Build the tg:// proxy link. Pure helper so the UI can render the link
          * immediately from persisted prefs without waiting for the service to bind.
+         * With a Fake-TLS domain it emits an `ee` secret (secret + hex(domain)) so Telegram wraps
+         * the stream in TLS-to-that-domain; otherwise the `dd` (secure/padded) secret.
          */
+        fun generateSecret(): String {
+            val bytes = ByteArray(16)
+            SecureRandom().nextBytes(bytes)
+            return bytes.joinToString("") { "%02x".format(it) }
+        }
+
         fun buildProxyLink(host: String, port: Int, secret: String, fakeTlsDomain: String = ""): String {
             val domain = fakeTlsDomain.trim()
             return if (domain.isNotEmpty()) {
@@ -148,7 +144,6 @@ class ProxyService : Service() {
     // @Volatile: written by the start coroutine on IO, read from the accept thread and from each
     // client's thread inside the wake-lock gate to get the authoritative connection count.
     @Volatile private var proxyServer: MtProtoProxyServer? = null
-    private var statsJob: Job? = null
 
     /**
      * The teardown launched by the last [stopProxy], or null. [startProxy] waits it out before it
@@ -176,8 +171,8 @@ class ProxyService : Service() {
      * anything interesting within seconds. Instead of appending, a repeat rewrites the previous
      * entry in place with a " ×N" suffix — see [addLog]. [lastLogBaseText] keeps the entry's
      * original timestamped text so the suffix replaces the old one instead of stacking on it, and
-     * [lastLogEntrySeq] anchors the merge to a specific entry so a clearLogs() that raced a flood
-     * cannot glue a repeat onto an unrelated line.
+     * [lastLogEntrySeq] anchors the merge to a specific entry so a repeat that lands after
+     * startProxy() replaced the list cannot glue itself onto an unrelated line.
      */
     private val logMergeGate = Any()
     private var lastRawLogLine: String? = null
@@ -258,14 +253,6 @@ class ProxyService : Service() {
             )
         }
     }
-
-    /**
-     * Build the tg:// proxy link. With a Fake-TLS domain we emit an `ee` secret
-     * (secret + hex(domain)) so Telegram wraps the stream in TLS-to-that-domain; otherwise
-     * we use the `dd` (secure/padded) secret on the raw path.
-     */
-    private fun buildProxyLink(host: String, port: Int, secret: String, fakeTlsDomain: String = ""): String =
-        Companion.buildProxyLink(host, port, secret, fakeTlsDomain)
 
     /** Returns the persisted secret, generating and saving one on first run. */
     private fun getOrCreateSecret(): String {
@@ -374,10 +361,8 @@ class ProxyService : Service() {
         val proxyLink = buildProxyLink(host, port, secret, fakeTlsDomain)
 
         // Stamped outside update() like every other line — see newLogLine for why the seq must
-        // not be re-taken per lambda retry. Classified explicitly: addLog's keyword fallback
-        // exists for one-line calls, not for entries built by hand.
-        val startingText = getString(R.string.proxy_starting)
-        val startingEntry = newLogLine(startingText, classifyLog(startingText))
+        // not be re-taken per lambda retry.
+        val startingEntry = newLogLine(getString(R.string.proxy_starting), LogKind.PLAIN)
 
         _serviceState.update {
             it.copy(
@@ -438,7 +423,7 @@ class ProxyService : Service() {
             } catch (e: Exception) {
                 // The raw exception text stays in the log for support; the state carries the
                 // version the user can act on.
-                addLog(getString(R.string.error_with_message, e.message))
+                addLog(getString(R.string.error_with_message, e.message), LogKind.ERROR)
                 // Retire the half-started run: start() may have bound the listener before throwing,
                 // and leaving the reference and generation as-is would keep a zombie socket holding
                 // the port and let this run's late connection callbacks touch wake locks that no
@@ -572,7 +557,7 @@ class ProxyService : Service() {
             ).apply { setReferenceCounted(false) }
         } catch (e: Exception) {
             // Best-effort: a null lock simply means acquire/release is a no-op.
-            addLog("Wake lock setup failed: ${e.message}")
+            addLog("Wake lock setup failed: ${e.message}", LogKind.WARNING)
         }
     }
 
@@ -660,8 +645,7 @@ class ProxyService : Service() {
      * with the UI still open keeps the counters moving.
      */
     private fun startStatsPump() {
-        statsJob?.cancel()
-        statsJob = serviceScope.launch {
+        serviceScope.launch {
             _serviceState.subscriptionCount
                 .map { it > 0 }
                 .distinctUntilChanged()
@@ -719,18 +703,13 @@ class ProxyService : Service() {
             generation = networkGeneration
             pendingNetworkReset = serviceScope.launch {
                 delay(700)
+                // Re-check the run and network generation after the settle delay. A stop/start or a
+                // newer network callback must own the next reset, never this stale job.
                 val server = synchronized(wakeLockGate) {
                     if (generation != networkGeneration || !_serviceState.value.isRunning) return@launch
                     liveConnections = proxyServer?.connections ?: 0
                     proxyServer
                 } ?: return@launch
-                // Re-check the run and network generation after the settle delay. A stop/start or a
-                // newer network callback must own the next reset, never this stale job.
-                synchronized(wakeLockGate) {
-                    if (generation != networkGeneration || !_serviceState.value.isRunning || proxyServer !== server) {
-                        return@launch
-                    }
-                }
                 try { server.resetConnections() } catch (_: Exception) {}
             }
         }
@@ -768,16 +747,6 @@ class ProxyService : Service() {
         }
     }
 
-    fun clearLogs() {
-        // Also drop the collapse anchor: after a clear there is no previous entry to rewrite,
-        // and a stale one would only force addLog down its re-anchor fallback on the next repeat.
-        synchronized(logMergeGate) {
-            lastRawLogLine = null
-            lastLogRepeat = 0
-        }
-        _serviceState.update { it.copy(logs = emptyList()) }
-    }
-
     private val logTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
     /**
@@ -791,16 +760,14 @@ class ProxyService : Service() {
      * Append a line, or fold it into the previous one when it repeats verbatim.
      *
      * [kind] comes from the caller — MtProtoProxyServer knows what it is logging and says so
-     * explicitly. Passing nothing keeps the old keyword-guessing via [classifyLog] as a fallback
-     * for this service's own string-only calls.
+     * explicitly.
      */
-    fun addLog(line: String, kind: LogKind? = null) {
-        val resolvedKind = kind ?: classifyLog(line)
+    private fun addLog(line: String, kind: LogKind) {
         val timestamp = LocalTime.now().format(logTimeFormatter)
         val text = "[$timestamp] $line"
         // Stamped and the repeat decision taken outside update(): its lambda re-runs under CAS
         // contention, and both the seq and the repeat counter must move exactly once per line.
-        val entry = newLogLine(text, resolvedKind)
+        val entry = newLogLine(text, kind)
         val repeat: Int
         synchronized(logMergeGate) {
             if (line == lastRawLogLine) {
@@ -824,7 +791,7 @@ class ProxyService : Service() {
                 state.copy(logs = state.logs.dropLast(1) + merged)
             } else {
                 if (repeat > 1) {
-                    // A repeat whose anchor entry vanished (clearLogs raced a flood). Append it
+                    // A repeat whose anchor entry vanished (startProxy replaced the list). Append it
                     // fresh and re-anchor onto the new entry; the assignments are idempotent, so
                     // update() re-running this lambda under contention cannot corrupt them.
                     synchronized(logMergeGate) {
@@ -836,12 +803,6 @@ class ProxyService : Service() {
                 state.copy(logs = (state.logs + entry).takeLast(MAX_LOG_LINES))
             }
         }
-    }
-
-    private fun generateSecret(): String {
-        val bytes = ByteArray(16)
-        SecureRandom().nextBytes(bytes)
-        return bytes.joinToString("") { "%02x".format(it) }
     }
 
     private fun createNotificationChannel() {
@@ -868,7 +829,7 @@ class ProxyService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        // Tapping "Остановить прокси" in the shade stops the proxy without opening the app.
+        // The notification's disable action stops the proxy without opening the app.
         val stopIntent = Intent(this, ProxyService::class.java).apply {
             action = ACTION_STOP
         }
@@ -879,7 +840,7 @@ class ProxyService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-                val statusLine = getString(R.string.proxy_notification_text)
+        val statusLine = getString(R.string.proxy_notification_text)
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.proxy_notification_title))
@@ -908,9 +869,14 @@ class ProxyService : Service() {
         proxyGeneration.incrementAndGet()
         // Safety net: make sure locks are gone even if onDestroy hits before stopProxy.
         releaseWakeLocks()
-        statsJob?.cancel()
         unregisterNetworkCallback()
-        // proxyServer already stopped in stopProxy(); cancel remaining coroutines
+        // Null after a normal stopProxy(). When the system destroys us directly the listener is
+        // still bound, and cancelling serviceScope does not interrupt its blocking accept(), so it
+        // would keep the port until the process dies. stop() can block, hence the thread.
+        proxyServer?.let { server ->
+            proxyServer = null
+            thread(name = "proxy-destroy", isDaemon = true) { runCatching { server.stop() } }
+        }
         serviceScope.cancel()
     }
 }

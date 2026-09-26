@@ -1384,7 +1384,6 @@ private fun logColor(kind: LogKind): Color = when (kind) {
     LogKind.ERROR -> Destructive
     LogKind.WARNING -> Warning
     LogKind.HANDSHAKE -> Mauve
-    LogKind.FAKE_TLS -> Primary
     LogKind.CLOUDFLARE -> Info
     LogKind.WS -> Info
     LogKind.PLAIN -> TextSecondary
