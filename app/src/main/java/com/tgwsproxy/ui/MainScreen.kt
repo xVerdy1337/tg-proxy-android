@@ -110,6 +110,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.runtime.saveable.rememberSaveable
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -176,8 +181,8 @@ private fun formatUptime(context: android.content.Context, startedAt: Long, now:
     if (startedAt <= 0) return context.getString(R.string.em_dash)
     val s = ((now - startedAt) / 1000).coerceAtLeast(0)
     val h = s / 3600; val m = (s % 3600) / 60; val sec = s % 60
-    return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, sec)
-    else String.format(Locale.US, "%02d:%02d", m, sec)
+    // Always h:mm:ss: a bare "07:00" reads as seven o'clock or seven hours as easily as 7 minutes.
+    return String.format(Locale.US, "%d:%02d:%02d", h, m, sec)
 }
 
 private fun routeLabel(context: android.content.Context, route: String): String = when (route) {
@@ -206,7 +211,10 @@ fun MainScreen(
     }
     val context = LocalContext.current
     val listState = rememberLazyListState()
-    var tab by remember { mutableStateOf(MainTab.Telegram) }
+    var tab by rememberSaveable { mutableStateOf(MainTab.Telegram) }
+    val sitesRunning by remember(desyncVm) {
+        desyncVm.vpnState.map { it.isRunning }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = desyncVm.vpnState.value.isRunning)
     var logsExpanded by remember { mutableStateOf(false) }
     var tgAdvancedOpen by remember { mutableStateOf(false) }
     var showOnboarding by remember { mutableStateOf(shouldShowOnboarding(context)) }
@@ -327,7 +335,12 @@ fun MainScreen(
                         item(key = "update-banner") { UpdateBanner(url = updateUrl) }
                     }
                     item(key = "main-tabs") {
-                        MainTabRow(selected = tab, onSelect = { tab = it })
+                        MainTabRow(
+                            selected = tab,
+                            telegramRunning = uiState.isRunning,
+                            sitesRunning = sitesRunning,
+                            onSelect = { tab = it },
+                        )
                     }
 
                     when (tab) {
@@ -467,7 +480,12 @@ fun MainScreen(
 }
 
 @Composable
-private fun MainTabRow(selected: MainTab, onSelect: (MainTab) -> Unit) {
+private fun MainTabRow(
+    selected: MainTab,
+    telegramRunning: Boolean,
+    sitesRunning: Boolean,
+    onSelect: (MainTab) -> Unit,
+) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -508,12 +526,14 @@ private fun MainTabRow(selected: MainTab, onSelect: (MainTab) -> Unit) {
                     // Brand, not localizable copy: the tab names the Telegram product itself.
                     label = "Telegram",
                     selected = selected == MainTab.Telegram,
+                    running = telegramRunning,
                     onClick = { onSelect(MainTab.Telegram) },
                     modifier = Modifier.weight(1f),
                 )
                 MainTabButton(
                     label = stringResource(R.string.tab_sites),
                     selected = selected == MainTab.Sites,
+                    running = sitesRunning,
                     onClick = { onSelect(MainTab.Sites) },
                     modifier = Modifier.weight(1f),
                 )
@@ -526,9 +546,11 @@ private fun MainTabRow(selected: MainTab, onSelect: (MainTab) -> Unit) {
 private fun MainTabButton(
     label: String,
     selected: Boolean,
+    running: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val runningDescription = stringResource(R.string.a11y_tab_running)
     val haptic = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
     val scale = rememberPressScale(interaction)
@@ -550,22 +572,37 @@ private fun MainTabButton(
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 }
                 onClick()
-            },
+            }
+            .semantics { if (running) stateDescription = runningDescription },
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = label,
-            // The selected tab sits on the accent-filled indicator, so its label has to flip to
-            // OnAccent like every other filled surface in the app. Left as TextPrimary it was cream
-            // on peach — 1.6:1, and 1.0:1 back when the accent was lime, i.e. the label of whichever
-            // tab you were on was the least readable text on screen.
-            color = if (selected) OnAccent else TextPrimary,
-            fontWeight = FontWeight.Medium,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // Lets you see the other service is still on without switching tabs. On the selected
+            // segment the dot goes OnAccent: green on the peach fill is under 3:1, and the hero
+            // right below already spells out that tab's state.
+            if (running) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(if (selected) OnAccent else Success)
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(
+                text = label,
+                // The selected tab sits on the accent-filled indicator, so its label has to flip to
+                // OnAccent like every other filled surface in the app. Left as TextPrimary it was
+                // cream on peach — 1.6:1, and 1.0:1 back when the accent was lime, i.e. the label of
+                // whichever tab you were on was the least readable text on screen.
+                color = if (selected) OnAccent else TextPrimary,
+                fontWeight = FontWeight.Medium,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
@@ -592,7 +629,7 @@ private fun TelegramHero(
     val stateLabel = when {
         busy && running -> stringResource(R.string.state_stopping)
         busy -> stringResource(R.string.state_starting)
-        running -> stringResource(R.string.state_active)
+        running -> stringResource(R.string.state_on)
         else -> stringResource(R.string.state_off)
     }
 
@@ -727,7 +764,7 @@ private fun TelegramHero(
                             modifier = Modifier.weight(1f),
                         )
                         MiniStat(
-                            label = stringResource(R.string.stat_connections),
+                            label = stringResource(R.string.stat_conns),
                             value = uiState.connectionCount.toString(),
                             modifier = Modifier.weight(1f),
                         )
@@ -735,12 +772,12 @@ private fun TelegramHero(
                     Spacer(Modifier.height(10.dp))
                     Row(modifier = Modifier.fillMaxWidth()) {
                         MiniStat(
-                            label = stringResource(R.string.stat_up),
+                            label = stringResource(R.string.stat_sent),
                             value = formatBytes(LocalContext.current, uiState.bytesUp),
                             modifier = Modifier.weight(1f),
                         )
                         MiniStat(
-                            label = stringResource(R.string.stat_down),
+                            label = stringResource(R.string.stat_received),
                             value = formatBytes(LocalContext.current, uiState.bytesDown),
                             modifier = Modifier.weight(1f),
                         )
@@ -1781,7 +1818,12 @@ private fun TelegramPreviewContent(uiState: ProxyUiState) {
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 PreviewBrandHeader()
-                MainTabRow(selected = MainTab.Telegram, onSelect = {})
+                MainTabRow(
+                    selected = MainTab.Telegram,
+                    telegramRunning = uiState.isRunning,
+                    sitesRunning = uiState.isRunning,
+                    onSelect = {},
+                )
                 TelegramHero(
                     uiState = uiState,
                     onToggle = {},
@@ -1880,7 +1922,12 @@ private fun FullMainScreenPreview() {
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 PreviewBrandHeader()
-                MainTabRow(selected = MainTab.Telegram, onSelect = {})
+                MainTabRow(
+                    selected = MainTab.Telegram,
+                    telegramRunning = proxyState.isRunning,
+                    sitesRunning = false,
+                    onSelect = {},
+                )
                 TelegramHero(
                     uiState = proxyState,
                     onToggle = {},
