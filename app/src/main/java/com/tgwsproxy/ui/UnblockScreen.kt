@@ -346,8 +346,10 @@ private fun HeroUnblockCard(
             maxLines = 2,
         )
         Text(
-            text = if (state.scopeAllApps) {
-                stringResource(R.string.sites_scope_all_apps, excludedCount)
+            text = if (state.scopeAllApps && excludedCount == 0) {
+                stringResource(R.string.sites_scope_all_apps)
+            } else if (state.scopeAllApps) {
+                stringResource(R.string.sites_scope_all_apps_except, excludedCount)
             } else {
                 stringResource(R.string.sites_scope_selected_apps)
             },
@@ -698,37 +700,32 @@ private fun LiveStatsCard(state: DesyncVpnService.VpnState) {
         // tabular digits, so the widest of them ("24.80 GB") wants ~88dp, and that grows with the
         // user's text size, which a fixed dp threshold cannot see at all.
         val minColumn = 88.dp * LocalDensity.current.fontScale
+        // Connections on one row, traffic on the other: the old 3+2 grid mixed the two and left
+        // an empty slot at the end of the second row.
+        val active = stringResource(R.string.stat_conns)
+        val ok = stringResource(R.string.stat_connected)
+        val failed = stringResource(R.string.stat_failed)
         BoxWithConstraints(Modifier.fillMaxWidth()) {
-            if (maxWidth / 3 < minColumn) {
-                Column(Modifier.fillMaxWidth()) {
+            val narrow = maxWidth / 3 < minColumn
+            Column(Modifier.fillMaxWidth()) {
+                if (narrow) {
                     Row(Modifier.fillMaxWidth()) {
-                        StatItem(stringResource(R.string.stat_conns), "${state.activeTcp}", Modifier.weight(1f))
-                        StatItem(stringResource(R.string.stat_sent), formatBytesShort(context, state.bytesUp), Modifier.weight(1f))
+                        StatItem(active, "${state.activeTcp}", Modifier.weight(1f))
+                        StatItem(ok, "${state.connOk}", Modifier.weight(1f))
                     }
                     Spacer(Modifier.height(12.dp))
+                    StatItem(failed, "${state.connFail}", Modifier.fillMaxWidth())
+                } else {
                     Row(Modifier.fillMaxWidth()) {
-                        StatItem(stringResource(R.string.stat_received), formatBytesShort(context, state.bytesDown), Modifier.weight(1f))
-                        StatItem(stringResource(R.string.stat_connected), "${state.connOk}", Modifier.weight(1f))
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Row(Modifier.fillMaxWidth()) {
-                        StatItem(stringResource(R.string.stat_failed), "${state.connFail}", Modifier.weight(1f))
-                        Spacer(Modifier.weight(1f))
+                        StatItem(active, "${state.activeTcp}", Modifier.weight(1f))
+                        StatItem(ok, "${state.connOk}", Modifier.weight(1f))
+                        StatItem(failed, "${state.connFail}", Modifier.weight(1f))
                     }
                 }
-            } else {
-                Column(Modifier.fillMaxWidth()) {
-                    Row(Modifier.fillMaxWidth()) {
-                        StatItem(stringResource(R.string.stat_conns), "${state.activeTcp}", Modifier.weight(1f))
-                        StatItem(stringResource(R.string.stat_sent), formatBytesShort(context, state.bytesUp), Modifier.weight(1f))
-                        StatItem(stringResource(R.string.stat_received), formatBytesShort(context, state.bytesDown), Modifier.weight(1f))
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Row(Modifier.fillMaxWidth()) {
-                        StatItem(stringResource(R.string.stat_connected), "${state.connOk}", Modifier.weight(1f))
-                        StatItem(stringResource(R.string.stat_failed), "${state.connFail}", Modifier.weight(1f))
-                        Spacer(Modifier.weight(1f))
-                    }
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth()) {
+                    StatItem(stringResource(R.string.stat_sent), formatBytesShort(context, state.bytesUp), Modifier.weight(1f))
+                    StatItem(stringResource(R.string.stat_received), formatBytesShort(context, state.bytesDown), Modifier.weight(1f))
                 }
             }
         }
