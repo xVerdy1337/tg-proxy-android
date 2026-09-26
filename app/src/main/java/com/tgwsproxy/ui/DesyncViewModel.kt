@@ -53,17 +53,11 @@ data class ServiceProbe(
     val split: HelloProbe.Outcome? = null,
 ) {
     val anyPass: Boolean get() = tlsrec == HelloProbe.Outcome.PASS || split == HelloProbe.Outcome.PASS
-    val bestPreset: String? get() = when {
-        tlsrec == HelloProbe.Outcome.PASS -> DesyncVpnService.PRESET_TLSREC
-        split == HelloProbe.Outcome.PASS -> DesyncVpnService.PRESET_SPLIT
-        else -> null
-    }
 }
 
 data class ProbeUiState(
     val checking: Boolean = false,
     val results: List<ServiceProbe> = emptyList(),
-    val finishedAt: Long = 0L,
 )
 
 /** Progress + outcome of the automatic strategy tuner ("Подобрать автоматически"). */
@@ -89,7 +83,6 @@ data class AutoTuneUiState(
     val validating: Boolean = false,
     val finished: Boolean = false,
     val foundLabel: String? = null,
-    val foundCommand: String? = null,
     val error: String? = null,
     /** Per-host TLS-handshake result from the last/winning strategy (host → reachable). */
     val hostOk: Map<String, Boolean> = emptyMap(),
@@ -202,7 +195,6 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
             _probe.value = ProbeUiState(
                 checking = false,
                 results = results,
-                finishedAt = System.currentTimeMillis(),
             )
         }
     }
@@ -360,7 +352,7 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                     _autoTune.update { it.copy(currentLabel = app.getString(s.labelRes)) }
                     val port = freeAutoTunePort(avoid = lastPort)
                     lastPort = port
-                    val res = StrategyTester.testStrategy(app, s, sweepHosts, port = port)
+                    val res = StrategyTester.testStrategy(s, sweepHosts, port = port)
                     // Refused before it ran: something else claimed the engine between candidates —
                     // the documented way in is the user enabling the VPN from the quick-settings
                     // tile, which the pre-check above cannot see coming. The candidate was never
@@ -409,7 +401,6 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                     if (res.allOk) {
                         _autoTune.update { it.copy(validating = true) }
                         val confirmation = StrategyTester.testStrategy(
-                            app,
                             s,
                             sweepHosts,
                             port = freeAutoTunePort(avoid = lastPort),
@@ -471,7 +462,6 @@ class DesyncViewModel(application: Application) : AndroidViewModel(application) 
                 _autoTune.value = AutoTuneUiState(
                     finished = true,
                     foundLabel = app.getString(found.labelRes),
-                    foundCommand = found.command,
                     hostOk = bestHosts,
                     unresolvedHosts = unresolved,
                 )

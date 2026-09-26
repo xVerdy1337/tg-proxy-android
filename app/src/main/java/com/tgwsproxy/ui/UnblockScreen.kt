@@ -1563,13 +1563,11 @@ private fun UnblockRunningPreview() {
     UnblockPreviewContent(
         state = DesyncVpnService.VpnState(
             isRunning = true,
-            preset = DesyncVpnService.PRESET_AUTO,
             activeTcp = 4,
             bytesUp = 1_250_000,
             bytesDown = 24_800_000,
             connOk = 18,
             connFail = 1,
-            startedAt = System.currentTimeMillis() - 12 * 60 * 1000,
         ),
         autoTune = AutoTuneUiState(
             finished = true,
@@ -1645,7 +1643,6 @@ private fun UnblockNarrowLargeTextPreview() {
     UnblockPreviewContent(
         state = DesyncVpnService.VpnState(
             isStarting = true,
-            preset = DesyncVpnService.PRESET_AUTO,
         ),
         autoTune = AutoTuneUiState(),
     )

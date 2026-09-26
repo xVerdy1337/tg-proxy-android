@@ -346,7 +346,7 @@ class TcpConnection(
                             // exhausted window must never be bypassed. ACK processing calls notifyAll,
                             // while the timeout is only a lost-notification safety net.
                             val inFlight = (sndNxt - clientAck) and 0xFFFFFFFFL
-                            val avail = if (seenClientAck) clientWindow.toLong() - inFlight else Long.MAX_VALUE
+                            val avail = downstreamAvailableWindow(inFlight, clientWindow, seenClientAck)
                             if (avail > 0) {
                                 val take = minOf((chunk.size - sent).toLong(), avail).toInt()
                                 val pkt = PacketUtils.buildTcp(
@@ -425,7 +425,7 @@ class TcpConnection(
         pendingToUpstream.clear()
         pendingToUpstreamBytes = 0
         try { upstream?.close() } catch (_: Exception) {}
-        tunnel.onConnectionClosed(key, udp = false)
+        tunnel.onConnectionClosed(key)
     }
 
     fun close() {
