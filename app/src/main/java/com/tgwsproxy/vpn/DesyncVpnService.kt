@@ -419,6 +419,10 @@ class DesyncVpnService : VpnService(), Tunnel {
         // With no captured flows there is nothing to reap. A slower check avoids waking the CPU
         // every few seconds while an always-on VPN is idle in the background.
         private const val NO_FLOW_POLL_MS = 60_000L
+        // Background reap cadence while flows exist. Only the reaper runs then, and its idle
+        // thresholds are 30s (UDP) and 120s (TCP), so checking every 30s still frees a dead flow
+        // within one extra period while waking a third as often as the old 10s loop.
+        private const val BACKGROUND_REAP_MS = 30_000L
         // Idle TCP flows are reaped after this long with no client/server activity, so half-open
         // or abandoned flows can't accumulate threads/sockets forever (no TCP FIN/RST required).
         private const val TCP_IDLE_MS = 120_000L
@@ -805,6 +809,10 @@ class DesyncVpnService : VpnService(), Tunnel {
             .addDnsServer("1.1.1.1")
 
         if (allowDirectIpv6) builder.allowFamily(OsConstants.AF_INET6)
+        // Since Android 10 a VPN is reported as metered unless it says otherwise, which made every
+        // app see Wi-Fi as mobile data while Jevio ran (YouTube dropping to data-saver quality,
+        // Play updates waiting). Unmetered here means "inherit from the underlying network".
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
 
         if (allApps) {
             // Our own app must bypass the TUN (byedpi's upstream socket reaches the net directly).
@@ -971,20 +979,24 @@ class DesyncVpnService : VpnService(), Tunnel {
         if (payload.isEmpty()) return
         bytesUp.addAndGet(packet.size.toLong())
 
-        var assoc = udpMap[key]
-        if (assoc == null) {
-            // Cap concurrent UDP associations (same flood defense as TCP).
-            if (udpMap.size >= MAX_UDP_FLOWS) { flowRejects.incrementAndGet(); return }
-            assoc = UdpAssociation(
-                clientIp = PacketUtils.srcIp(packet), clientPort = srcPort,
-                serverIp = PacketUtils.dstIp(packet), serverPort = dstPort,
-                tunnel = this, key = key
-            )
-            udpMap[key] = assoc
-            // start() dispatches a reader onto relayExecutor — can reject when full/stopped.
-            val started = try { assoc.start() } catch (_: java.util.concurrent.RejectedExecutionException) { false }
-            if (!started) { flowRejects.incrementAndGet(); udpMap.remove(key); assoc.close(); return }
+        val existing = udpMap[key]
+        if (existing != null) {
+            if (existing.onClientPayload(payload)) return
+            // Closed under us, typically a DNS flow that just delivered its last answer while the
+            // app sent another query from the same port. Replace it instead of dropping the query.
+            udpMap.remove(key, existing)
         }
+        // Cap concurrent UDP associations (same flood defense as TCP).
+        if (udpMap.size >= MAX_UDP_FLOWS) { flowRejects.incrementAndGet(); return }
+        val assoc = UdpAssociation(
+            clientIp = PacketUtils.srcIp(packet), clientPort = srcPort,
+            serverIp = PacketUtils.dstIp(packet), serverPort = dstPort,
+            tunnel = this, key = key
+        )
+        udpMap[key] = assoc
+        // start() dispatches a reader onto relayExecutor — can reject when full/stopped.
+        val started = try { assoc.start() } catch (_: java.util.concurrent.RejectedExecutionException) { false }
+        if (!started) { flowRejects.incrementAndGet(); udpMap.remove(key, assoc); assoc.close(); return }
         assoc.onClientPayload(payload)
     }
 
@@ -1013,6 +1025,11 @@ class DesyncVpnService : VpnService(), Tunnel {
         if (udp) blockedQuic.remove(key)
     }
 
+    override fun onUdpAssociationClosed(key: Long, association: UdpAssociation) {
+        udpMap.remove(key, association)
+        blockedQuic.remove(key)
+    }
+
     override fun reportError(msg: String) {
         // Keep only the most recent reason; the stats loop preserves it via copy().
         _state.value = _state.value.copy(error = msg)
@@ -1031,11 +1048,11 @@ class DesyncVpnService : VpnService(), Tunnel {
                 val uiWatching = _state.subscriptionCount.value > 0
                 val hasFlows = tcpMap.isNotEmpty() || udpMap.isNotEmpty() || blockedQuic.isNotEmpty()
                 // Only the UI consumes these stats. In the background, reap active flows every
-                // ~10s; when there are no flows at all, sleep longer instead of waking the CPU
-                // every few seconds for an empty-map scan.
+                // BACKGROUND_REAP_MS; when there are no flows at all, sleep longer instead of waking
+                // the CPU for an empty-map scan.
                 val interval = when {
                     uiWatching -> 1000L
-                    hasFlows -> 10000L
+                    hasFlows -> BACKGROUND_REAP_MS
                     else -> NO_FLOW_POLL_MS
                 }
                 if (!uiWatching && !hasFlows) {
@@ -1066,13 +1083,13 @@ class DesyncVpnService : VpnService(), Tunnel {
     private fun reapIdleFlows() {
         val now = System.currentTimeMillis()
         for ((k, a) in udpMap) {
-            if (now - a.lastUsed > UDP_IDLE_MS) { a.close(); udpMap.remove(k) }
+            if (now - a.lastUsed > UDP_IDLE_MS) { a.close(); udpMap.remove(k, a) }
         }
         blockedQuic.entries.removeIf { now - it.value > UDP_IDLE_MS }
         // TCP flows have no FIN/RST guarantee (a half-open flow never closes itself), so reap any
         // that are closed or idle past TCP_IDLE_MS — close() removes the entry via onConnectionClosed.
         for ((k, c) in tcpMap) {
-            if (c.isIdle(TCP_IDLE_MS)) { c.close(); tcpMap.remove(k) }
+            if (c.isIdle(TCP_IDLE_MS)) { c.close(); tcpMap.remove(k, c) }
         }
     }
 

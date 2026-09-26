@@ -33,6 +33,15 @@ interface Tunnel {
     fun onConnectionClosed(key: Long, udp: Boolean)
 
     /**
+     * A UDP association closed. Separate from [onConnectionClosed] so the table can drop the entry
+     * only while it still maps to [association]: a DNS flow closes itself from its reader thread,
+     * and a query reusing the same source port may already have installed a fresh association under
+     * that key, which a key-only removal would orphan.
+     */
+    fun onUdpAssociationClosed(key: Long, association: UdpAssociation) =
+        onConnectionClosed(key, udp = true)
+
+    /**
      * Surface a human-readable diagnostic (e.g. "protect failed" / "connect: timeout") so the UI
      * can show *why* connections are dying. Used to debug the userspace data path on-device.
      */

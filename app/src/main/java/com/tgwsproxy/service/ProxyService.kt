@@ -31,6 +31,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.net.BindException
@@ -182,11 +185,6 @@ class ProxyService : Service() {
     private var lastLogEntrySeq = 0L
     private var lastLogRepeat = 0
 
-    // True while the UI is bound to us. The 1s stats pump is only useful when someone is
-    // actually watching the screen; when the app is closed we poll far less often to avoid
-    // waking the CPU every second 24/7 (battery win on an always-on background proxy).
-    @Volatile private var uiBound = false
-
     // Watches Wi-Fi ↔ mobile transitions so active sessions reconnect on the new network.
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -233,28 +231,13 @@ class ProxyService : Service() {
         fun getService(): ProxyService = this@ProxyService
     }
 
-    override fun onBind(intent: Intent?): IBinder {
-        uiBound = true
-        startStatsPump()
-        return binder
-    }
-
-    override fun onUnbind(intent: Intent?): Boolean {
-        uiBound = false
-        statsJob?.cancel()
-        statsJob = null
-        return true // allow onRebind when the UI comes back
-    }
-
-    override fun onRebind(intent: Intent?) {
-        uiBound = true
-        startStatsPump()
-    }
+    override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         createWakeLocks()
+        startStatsPump()
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         // Restore the saved Cloudflare-proxy domain so the UI reflects it on launch.
         val savedDomain = prefs.getString(KEY_CF_DOMAIN, "") ?: ""
@@ -617,8 +600,6 @@ class ProxyService : Service() {
     }
 
     private fun stopProxy() {
-        statsJob?.cancel()
-        statsJob = null
         unregisterNetworkCallback()
         // Invalidates any start still queued behind an earlier teardown: it must not bind now. It
         // also retires this run's connection callbacks, and must therefore stay AHEAD of the
@@ -668,20 +649,35 @@ class ProxyService : Service() {
         }
     }
 
-    /** Poll live counters only while the UI is visible; traffic forwarding does not depend on it. */
+    /**
+     * Poll live counters only while someone collects [serviceState]; traffic forwarding does not
+     * depend on it. Being bound is not enough: the ViewModel keeps its binding while the app sits in
+     * the background, and it drops its collection when the screen stops, so the subscription count
+     * is the signal that the counters are actually on screen. With no subscriber this coroutine is
+     * suspended on the count and schedules nothing.
+     *
+     * Runs for the service's whole lifetime rather than per proxy run, so a stop followed by a start
+     * with the UI still open keeps the counters moving.
+     */
     private fun startStatsPump() {
         statsJob?.cancel()
         statsJob = serviceScope.launch {
-            while (isActive && uiBound) {
-                val server = proxyServer
-                if (server != null) {
-                    val up = server.bytesUp.get()
-                    val down = server.bytesDown.get()
-                    val route = server.lastRoute
-                    _serviceState.update { it.copy(bytesUp = up, bytesDown = down, route = route) }
+            _serviceState.subscriptionCount
+                .map { it > 0 }
+                .distinctUntilChanged()
+                .collectLatest { watching ->
+                    // delay() is the cancellation point when the last subscriber leaves.
+                    while (watching) {
+                        val server = proxyServer
+                        if (server != null) {
+                            val up = server.bytesUp.get()
+                            val down = server.bytesDown.get()
+                            val route = server.lastRoute
+                            _serviceState.update { it.copy(bytesUp = up, bytesDown = down, route = route) }
+                        }
+                        delay(1000)
+                    }
                 }
-                delay(1000)
-            }
         }
     }
 

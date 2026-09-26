@@ -124,6 +124,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tgwsproxy.R
@@ -607,10 +608,16 @@ private fun TelegramHero(
     }
 
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(running) {
-        while (running) {
-            now = System.currentTimeMillis()
-            delay(1000)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(running, lifecycleOwner) {
+        if (!running) return@LaunchedEffect
+        // A LaunchedEffect keeps running while the activity is stopped, so without the lifecycle
+        // gate this ticked every second for as long as the app sat in recents.
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                now = System.currentTimeMillis()
+                delay(1000)
+            }
         }
     }
 

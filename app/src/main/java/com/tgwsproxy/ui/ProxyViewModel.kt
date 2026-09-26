@@ -16,6 +16,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.security.SecureRandom
 
@@ -119,34 +122,45 @@ class ProxyViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun collectServiceState() {
         collectJob?.cancel()
+        val service = proxyService ?: return
+        // The binding outlives the visible screen (it lasts until the ViewModel is cleared), so
+        // collect only while the UI itself collects uiState. That also drops the service's
+        // stateflow subscription, which is what parks its stats pump while the app is backgrounded.
         collectJob = viewModelScope.launch {
-            proxyService?.serviceState?.collect { serviceState ->
-                _uiState.value = ProxyUiState(
-                    isLoading = false,
-                    isRunning = serviceState.isRunning,
-                    host = serviceState.host,
-                    port = serviceState.port,
-                    secret = serviceState.secret,
-                    connectionCount = serviceState.connectionCount,
-                    logs = serviceState.logs,
-                    proxyLink = serviceState.proxyLink,
-                    cfDomain = serviceState.cfDomain,
-                    cfWorkerDomain = serviceState.cfWorkerDomain,
-                    fakeTlsDomain = serviceState.fakeTlsDomain,
-                    bytesUp = serviceState.bytesUp,
-                    bytesDown = serviceState.bytesDown,
-                    startedAt = serviceState.startedAt,
-                    route = serviceState.route,
-                    // This rebuilds from scratch rather than copy()ing, so anything the service owns
-                    // has to be mapped here or it is silently dropped on the next emission — and the
-                    // service is exactly who knows why a start failed.
-                    error = serviceState.error,
-                    // The filter is UI-owned, not service-owned: carry it over explicitly or every
-                    // service emission would snap the chips back to All.
-                    logFilter = _uiState.value.logFilter
-                )
-            }
+            _uiState.subscriptionCount
+                .map { it > 0 }
+                .distinctUntilChanged()
+                .collectLatest { watching ->
+                    if (watching) service.serviceState.collect { serviceState -> applyServiceState(serviceState) }
+                }
         }
+    }
+
+    private fun applyServiceState(serviceState: ProxyService.ServiceState) {
+        _uiState.value = ProxyUiState(
+            isLoading = false,
+            isRunning = serviceState.isRunning,
+            host = serviceState.host,
+            port = serviceState.port,
+            secret = serviceState.secret,
+            connectionCount = serviceState.connectionCount,
+            logs = serviceState.logs,
+            proxyLink = serviceState.proxyLink,
+            cfDomain = serviceState.cfDomain,
+            cfWorkerDomain = serviceState.cfWorkerDomain,
+            fakeTlsDomain = serviceState.fakeTlsDomain,
+            bytesUp = serviceState.bytesUp,
+            bytesDown = serviceState.bytesDown,
+            startedAt = serviceState.startedAt,
+            route = serviceState.route,
+            // This rebuilds from scratch rather than copy()ing, so anything the service owns
+            // has to be mapped here or it is silently dropped on the next emission — and the
+            // service is exactly who knows why a start failed.
+            error = serviceState.error,
+            // The filter is UI-owned, not service-owned: carry it over explicitly or every
+            // service emission would snap the chips back to All.
+            logFilter = _uiState.value.logFilter
+        )
     }
 
     fun toggleProxy() {
