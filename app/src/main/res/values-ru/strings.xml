@@ -8,7 +8,7 @@
     <string name="proxy_notification_channel_name">Jevio Unblocker</string>
     <string name="proxy_notification_channel_desc">Статус работы прокси Jevio Unblocker</string>
     <string name="notification_disable">Отключить</string>
-    <string name="connect_telegram">Подключить Telegram</string>
+    <string name="connect_telegram">Добавить в Telegram</string>
     <string name="secret">Секрет</string>
     <string name="logs">Логи</string>
     <string name="tile_label">Jevio Unblocker</string>
@@ -48,7 +48,6 @@
     <string name="log_filter_problems">Проблемы</string>
     <string name="state_stopping">Остановка…</string>
     <string name="state_starting">Запуск…</string>
-    <string name="state_active">Активен</string>
     <string name="state_off">Выключен</string>
     <string name="state_on">Включён</string>
     <string name="state_tuning">Подбор…</string>
@@ -62,10 +61,7 @@
     <string name="route_direct">Прямое</string>
     <string name="local_proxy_for_telegram">Локальный прокси для Telegram</string>
     <string name="one_tap_telegram">Один тап — и Telegram без блокировок</string>
-    <string name="stat_uptime">Аптайм</string>
-    <string name="stat_connections">Связи</string>
-    <string name="stat_up">Вверх</string>
-    <string name="stat_down">Вниз</string>
+    <string name="stat_uptime">Время работы</string>
     <string name="tg_settings_subtitle">Сервер, секрет, Fake TLS, Cloudflare</string>
 
     <string name="server">Сервер</string>
@@ -117,7 +113,8 @@
     <string name="sites_starting_hint">Поднимаем локальный обход</string>
     <string name="sites_running_hint">YouTube и Instagram без блокировок</string>
     <string name="sites_idle_hint">Локальный обход без внешнего VPN</string>
-    <string name="sites_scope_all_apps">Все приложения; исключено: %1$d</string>
+    <string name="sites_scope_all_apps">Все приложения</string>
+    <string name="sites_scope_all_apps_except">Все приложения · в исключениях: %1$d</string>
     <string name="sites_scope_selected_apps">Выбранные приложения: YouTube и Instagram</string>
     <string name="sites_ipv4_jevio_ipv6_direct">IPv4 через Jevio · IPv6 напрямую</string>
     <string name="sites_ipv4_jevio_ipv6_blocked">IPv4 через Jevio · IPv6 заблокирован</string>
@@ -141,11 +138,12 @@
     <string name="probe_blocked">заблокировано</string>
     <string name="probe_not_checked">не проверено</string>
     <string name="probe_failed">не удалось</string>
-    <string name="stat_conns">Соединения</string>
+    <string name="stat_conns">Активные</string>
     <string name="stat_sent">Отправлено</string>
     <string name="stat_received">Получено</string>
-    <string name="stat_connected">Подключено</string>
-    <string name="stat_failed">Не дошло</string>
+    <string name="stat_connected">Успешные</string>
+    <string name="stat_failed">Неудачные</string>
+    <string name="a11y_tab_running">работает</string>
     <string name="diagnostics">Диагностика</string>
     <string name="custom_byedpi_cmd">Своя команда byedpi. Проверь её на своей сети перед постоянным использованием.</string>
     <string name="bypass_method">Метод обхода</string>

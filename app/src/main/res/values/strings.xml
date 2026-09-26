@@ -8,7 +8,7 @@
     <string name="proxy_notification_channel_name">Jevio Unblocker</string>
     <string name="proxy_notification_channel_desc">Jevio Unblocker proxy status</string>
     <string name="notification_disable">Disable</string>
-    <string name="connect_telegram">Connect Telegram</string>
+    <string name="connect_telegram">Add to Telegram</string>
     <string name="secret">Secret</string>
     <string name="logs">Logs</string>
     <string name="tile_label">Jevio Unblocker</string>
@@ -50,7 +50,6 @@
     <string name="log_filter_problems">Problems</string>
     <string name="state_stopping">Stopping…</string>
     <string name="state_starting">Starting…</string>
-    <string name="state_active">Active</string>
     <string name="state_off">Off</string>
     <string name="state_on">On</string>
     <string name="state_tuning">Tuning…</string>
@@ -65,9 +64,6 @@
     <string name="local_proxy_for_telegram">Local proxy for Telegram</string>
     <string name="one_tap_telegram">One tap — Telegram without blocks</string>
     <string name="stat_uptime">Uptime</string>
-    <string name="stat_connections">Connections</string>
-    <string name="stat_up">Up</string>
-    <string name="stat_down">Down</string>
     <string name="tg_settings_subtitle">Server, secret, Fake TLS, Cloudflare</string>
 
     <!-- Proxy info -->
@@ -124,7 +120,8 @@
     <string name="sites_starting_hint">Starting local bypass</string>
     <string name="sites_running_hint">YouTube and Instagram without blocks</string>
     <string name="sites_idle_hint">Local bypass with no external VPN</string>
-    <string name="sites_scope_all_apps">All apps; %1$d excluded</string>
+    <string name="sites_scope_all_apps">All apps</string>
+    <string name="sites_scope_all_apps_except">All apps · %1$d excluded</string>
     <string name="sites_scope_selected_apps">Selected apps: YouTube and Instagram</string>
     <string name="sites_ipv4_jevio_ipv6_direct">IPv4 via Jevio · IPv6 direct</string>
     <string name="sites_ipv4_jevio_ipv6_blocked">IPv4 via Jevio · IPv6 blocked</string>
@@ -158,11 +155,12 @@
     <string name="probe_blocked">blocked</string>
     <string name="probe_not_checked">not checked</string>
     <string name="probe_failed">failed</string>
-    <string name="stat_conns">Connections</string>
+    <string name="stat_conns">Active</string>
     <string name="stat_sent">Sent</string>
     <string name="stat_received">Received</string>
-    <string name="stat_connected">Connected</string>
+    <string name="stat_connected">Succeeded</string>
     <string name="stat_failed">Failed</string>
+    <string name="a11y_tab_running">running</string>
     <string name="diagnostics">Diagnostics</string>
     <string name="custom_byedpi_cmd">Custom byedpi command. Test it on your network before permanent use.</string>
     <string name="bypass_method">Bypass method</string>

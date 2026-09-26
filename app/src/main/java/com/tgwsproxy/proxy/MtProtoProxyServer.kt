@@ -14,7 +14,6 @@ import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -177,9 +176,11 @@ class MtProtoProxyServer(
         serverSocket?.receiveBufferSize = 256 * 1024
         onLog(appContext.getString(R.string.proxy_listening, host, port), LogKind.PLAIN)
 
+        var acceptFailures = 0
         while (running) {
             try {
                 val clientSocket = serverSocket?.accept() ?: break
+                acceptFailures = 0
                 if (!running) {
                     clientSocket.close()
                     break
@@ -202,16 +203,28 @@ class MtProtoProxyServer(
                 serverScope.launch {
                     handleClient(clientSocket)
                 }
-            } catch (e: SocketException) {
-                if (running) {
+            } catch (e: IOException) {
+                if (!running) break
+                val listener = serverSocket
+                if (listener == null || listener.isClosed) {
                     // Listener died without stop() being called — reflect that in `running`
-                    // instead of leaving it stuck at true with no accept loop behind it.
+                    // instead of leaving it stuck at true with no accept loop behind it. The
+                    // service sees start() return while its run is still current and rebinds.
                     running = false
                     onLog("Socket error: ${e.message}", LogKind.ERROR)
+                    break
                 }
-                break
-            } catch (e: IOException) {
-                onLog("IO error: ${e.message}", LogKind.WARNING)
+                // accept() also fails while the socket is still bound: EMFILE once a burst of
+                // sessions has used up the fd table, ECONNABORTED for a client that reset in the
+                // backlog. Both pass. Treating them as fatal took the whole proxy down for good
+                // while the UI still said it was on; back off and keep listening instead.
+                acceptFailures++
+                if (acceptFailures == 1 || acceptFailures % ACCEPT_FAILURE_LOG_EVERY == 0) {
+                    onLog("accept failed (${e.message}) — still listening, retrying", LogKind.WARNING)
+                }
+                val backoff = (ACCEPT_BACKOFF_BASE_MS shl (acceptFailures - 1).coerceAtMost(5))
+                    .coerceAtMost(ACCEPT_BACKOFF_MAX_MS)
+                try { Thread.sleep(backoff) } catch (_: InterruptedException) { break }
             }
         }
     }
@@ -913,6 +926,10 @@ class MtProtoProxyServer(
                         closeReason.compareAndSet("client-gone", "peer") // upstream stopped accepting
                         break
                     }
+                    awaitSendQueueDrain(
+                        queueSize = wsBridge::queueSize,
+                        alive = { running && !clientSocket.isClosed },
+                    )
                     kick.arm()
                 }
             } catch (e: Exception) {
@@ -1168,6 +1185,11 @@ class MtProtoProxyServer(
         const val MAX_CLIENT_HELLO = 4096
         // Max concurrent client connections (loopback proxy; Telegram needs ~15). Flood guard.
         const val MAX_CLIENTS = 128
+        // Accept-failure backoff: 50 ms doubling to 1 s, and one log line per 50 failures so an
+        // fd-exhaustion episode does not flood the log.
+        const val ACCEPT_BACKOFF_BASE_MS = 50L
+        const val ACCEPT_BACKOFF_MAX_MS = 1_000L
+        const val ACCEPT_FAILURE_LOG_EVERY = 50
         // Caesar shift for the bundled CF domain labels. Deliberately weak: it only keeps the
         // domains out of bulk APK string scrapes (issue #39), it is not a secrecy mechanism.
         const val CF_SHIFT = 7
@@ -1190,3 +1212,25 @@ class MtProtoProxyServer(
     }
 
 }
+
+/**
+ * Upload backpressure for a WebSocket relay. [WebSocketBridge.send] only enqueues into OkHttp, and
+ * the loopback side hands us a client's pipelined upload in milliseconds, so without a brake the
+ * queue grows at loopback speed while draining at uplink speed. OkHttp answers a queue past 16 MiB
+ * by closing the socket with 1001, which killed large uploads on slow links mid-file. Holding the
+ * read loop here leaves the backlog in the client's own socket buffer instead, where TCP flow
+ * control throttles Telegram and its timeouts measure real progress.
+ */
+internal suspend fun awaitSendQueueDrain(
+    queueSize: () -> Long,
+    alive: () -> Boolean,
+    highWater: Long = WS_SEND_HIGH_WATER_BYTES,
+    pollMs: Long = WS_SEND_DRAIN_POLL_MS,
+) {
+    while (queueSize() > highWater && alive()) delay(pollMs)
+}
+
+// 1 MiB is several seconds of a slow uplink: enough to keep the socket saturated, far below the
+// 16 MiB at which OkHttp gives up on the connection.
+internal const val WS_SEND_HIGH_WATER_BYTES = 1L shl 20
+private const val WS_SEND_DRAIN_POLL_MS = 25L

@@ -3,6 +3,8 @@ package com.tgwsproxy.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -60,6 +62,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -108,6 +111,7 @@ import com.tgwsproxy.vpn.ByedpiPreset
 import com.tgwsproxy.vpn.ByedpiPresetCatalog
 import com.tgwsproxy.vpn.ByedpiPresetGroup
 import com.tgwsproxy.vpn.DesyncVpnService
+import kotlinx.coroutines.delay
 
 /**
  * Identity of a probed service is its RAW HOSTNAME — never the label we draw next to it.
@@ -346,8 +350,10 @@ private fun HeroUnblockCard(
             maxLines = 2,
         )
         Text(
-            text = if (state.scopeAllApps) {
-                stringResource(R.string.sites_scope_all_apps, excludedCount)
+            text = if (state.scopeAllApps && excludedCount == 0) {
+                stringResource(R.string.sites_scope_all_apps)
+            } else if (state.scopeAllApps) {
+                stringResource(R.string.sites_scope_all_apps_except, excludedCount)
             } else {
                 stringResource(R.string.sites_scope_selected_apps)
             },
@@ -598,11 +604,11 @@ private fun ServicesCard(probe: ProbeUiState, autoTune: AutoTuneUiState) {
     val ig = probe.results.firstOrNull { it.host == HOST_INSTAGRAM }
     val busy = probe.checking || autoTune.running
     PanelCard {
-        ServiceRow(ytLabel, yt, busy, autoTune.hostOk[HOST_YOUTUBE])
+        ServiceRow(ytLabel, yt, busy, autoTune.hostOk[HOST_YOUTUBE], popDelayMs = 0)
         HorizontalDivider(color = Border.copy(alpha = 0.5f), modifier = Modifier.padding(vertical = 2.dp))
-        ServiceRow(ytvLabel, ytv, busy, autoTune.hostOk[HOST_YOUTUBE_VIDEO])
+        ServiceRow(ytvLabel, ytv, busy, autoTune.hostOk[HOST_YOUTUBE_VIDEO], popDelayMs = 90)
         HorizontalDivider(color = Border.copy(alpha = 0.5f), modifier = Modifier.padding(vertical = 2.dp))
-        ServiceRow(igLabel, ig, busy, autoTune.hostOk[HOST_INSTAGRAM])
+        ServiceRow(igLabel, ig, busy, autoTune.hostOk[HOST_INSTAGRAM], popDelayMs = 180)
     }
 }
 
@@ -618,6 +624,8 @@ private fun ServiceRow(
      * to a host we actually tested and lost.
      */
     forced: Boolean?,
+    /** Staggers the check-mark pop across rows so results land one after another, not as a block. */
+    popDelayMs: Long = 0,
 ) {
     val (dotColor, statusText, working) = when {
         checking -> Triple(SurfaceVariant, stringResource(R.string.probe_checking), false)
@@ -629,6 +637,22 @@ private fun ServiceRow(
         else -> Triple(Warning, stringResource(R.string.probe_failed), false)
     }
     val animatedDot by animateColorAsState(targetValue = dotColor, animationSpec = tween(250), label = "serviceDot")
+    val reduceMotion = reducedMotionEnabled()
+    // Starts at 1 for a row that is already green, so opening the screen does not pop everything;
+    // parked at 0 while not working, so the first frame of a new result is not a full-size flash.
+    val checkScale = remember { Animatable(if (working) 1f else 0f) }
+    LaunchedEffect(working) {
+        if (!working) {
+            checkScale.snapTo(0f)
+            return@LaunchedEffect
+        }
+        if (reduceMotion || checkScale.value == 1f) {
+            checkScale.snapTo(1f)
+            return@LaunchedEffect
+        }
+        delay(popDelayMs)
+        checkScale.animateTo(1f, spring(dampingRatio = 0.45f, stiffness = 420f))
+    }
     val statusColor = when {
         working -> Success
         dotColor == Destructive -> Destructive
@@ -660,7 +684,17 @@ private fun ServiceRow(
                     color = TextSecondary
                 )
             } else if (working) {
-                Icon(Icons.Default.Check, null, tint = Success, modifier = Modifier.size(14.dp))
+                Icon(
+                    Icons.Default.Check,
+                    null,
+                    tint = Success,
+                    modifier = Modifier
+                        .size(14.dp)
+                        .graphicsLayer {
+                            scaleX = checkScale.value
+                            scaleY = checkScale.value
+                        },
+                )
             } else {
                 Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(animatedDot))
             }
@@ -698,37 +732,32 @@ private fun LiveStatsCard(state: DesyncVpnService.VpnState) {
         // tabular digits, so the widest of them ("24.80 GB") wants ~88dp, and that grows with the
         // user's text size, which a fixed dp threshold cannot see at all.
         val minColumn = 88.dp * LocalDensity.current.fontScale
+        // Connections on one row, traffic on the other: the old 3+2 grid mixed the two and left
+        // an empty slot at the end of the second row.
+        val active = stringResource(R.string.stat_conns)
+        val ok = stringResource(R.string.stat_connected)
+        val failed = stringResource(R.string.stat_failed)
         BoxWithConstraints(Modifier.fillMaxWidth()) {
-            if (maxWidth / 3 < minColumn) {
-                Column(Modifier.fillMaxWidth()) {
+            val narrow = maxWidth / 3 < minColumn
+            Column(Modifier.fillMaxWidth()) {
+                if (narrow) {
                     Row(Modifier.fillMaxWidth()) {
-                        StatItem(stringResource(R.string.stat_conns), "${state.activeTcp}", Modifier.weight(1f))
-                        StatItem(stringResource(R.string.stat_sent), formatBytesShort(context, state.bytesUp), Modifier.weight(1f))
+                        StatItem(active, "${state.activeTcp}", Modifier.weight(1f))
+                        StatItem(ok, "${state.connOk}", Modifier.weight(1f))
                     }
                     Spacer(Modifier.height(12.dp))
+                    StatItem(failed, "${state.connFail}", Modifier.fillMaxWidth())
+                } else {
                     Row(Modifier.fillMaxWidth()) {
-                        StatItem(stringResource(R.string.stat_received), formatBytesShort(context, state.bytesDown), Modifier.weight(1f))
-                        StatItem(stringResource(R.string.stat_connected), "${state.connOk}", Modifier.weight(1f))
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Row(Modifier.fillMaxWidth()) {
-                        StatItem(stringResource(R.string.stat_failed), "${state.connFail}", Modifier.weight(1f))
-                        Spacer(Modifier.weight(1f))
+                        StatItem(active, "${state.activeTcp}", Modifier.weight(1f))
+                        StatItem(ok, "${state.connOk}", Modifier.weight(1f))
+                        StatItem(failed, "${state.connFail}", Modifier.weight(1f))
                     }
                 }
-            } else {
-                Column(Modifier.fillMaxWidth()) {
-                    Row(Modifier.fillMaxWidth()) {
-                        StatItem(stringResource(R.string.stat_conns), "${state.activeTcp}", Modifier.weight(1f))
-                        StatItem(stringResource(R.string.stat_sent), formatBytesShort(context, state.bytesUp), Modifier.weight(1f))
-                        StatItem(stringResource(R.string.stat_received), formatBytesShort(context, state.bytesDown), Modifier.weight(1f))
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Row(Modifier.fillMaxWidth()) {
-                        StatItem(stringResource(R.string.stat_connected), "${state.connOk}", Modifier.weight(1f))
-                        StatItem(stringResource(R.string.stat_failed), "${state.connFail}", Modifier.weight(1f))
-                        Spacer(Modifier.weight(1f))
-                    }
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth()) {
+                    StatItem(stringResource(R.string.stat_sent), formatBytesShort(context, state.bytesUp), Modifier.weight(1f))
+                    StatItem(stringResource(R.string.stat_received), formatBytesShort(context, state.bytesDown), Modifier.weight(1f))
                 }
             }
         }

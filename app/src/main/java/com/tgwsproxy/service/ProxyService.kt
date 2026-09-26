@@ -91,6 +91,11 @@ class ProxyService : Service() {
          * the CPU, and several offset Telegram pings must not chain into a permanent hold.
          */
         private const val WAKE_LOCK_KEEPALIVE_LINGER_MS = 500L
+        // Listener self-heal: up to 3 rebinds, 1 s / 2 s / 3 s apart. A listener that then served
+        // for 5 min resets the count, so one bad episode a day never adds up to giving up.
+        private const val LISTENER_MAX_REBINDS = 3
+        private const val LISTENER_REBIND_DELAY_MS = 1_000L
+        private const val LISTENER_STABLE_MS = 300_000L
         private const val WAKE_LOCK_QUEUE_POLL_MS = 2_000L
 
         /**
@@ -418,19 +423,37 @@ class ProxyService : Service() {
             pendingStop?.join()
             if (proxyGeneration.get() != generation) return@launch
             try {
-                proxyServer = MtProtoProxyServer(
-                    appContext = applicationContext,
-                    host = host,
-                    port = port,
-                    secret = secret,
-                    onLog = { line, kind -> addLog(line, kind) },
-                    onConnectionChange = { count -> onConnectionsChanged(generation, count) },
-                    onTraffic = { onTraffic(generation) },
-                    cfDomain = _serviceState.value.cfDomain,
-                    cfWorkerDomain = _serviceState.value.cfWorkerDomain,
-                    fakeTlsDomain = fakeTlsDomain
-                )
-                proxyServer?.start()
+                var rebinds = 0
+                while (true) {
+                    val boundAt = SystemClock.uptimeMillis()
+                    val server = MtProtoProxyServer(
+                        appContext = applicationContext,
+                        host = host,
+                        port = port,
+                        secret = secret,
+                        onLog = { line, kind -> addLog(line, kind) },
+                        onConnectionChange = { count -> onConnectionsChanged(generation, count) },
+                        onTraffic = { onTraffic(generation) },
+                        cfDomain = _serviceState.value.cfDomain,
+                        cfWorkerDomain = _serviceState.value.cfWorkerDomain,
+                        fakeTlsDomain = fakeTlsDomain
+                    )
+                    if (proxyGeneration.get() != generation) return@launch
+                    proxyServer = server
+                    server.start()
+                    // start() returns on its own only when the listening socket died under it. If
+                    // this run is still current nobody asked for that, and before this loop the
+                    // proxy sat there with no listener while the UI and the tile both said "on".
+                    if (proxyGeneration.get() != generation) return@launch
+                    if (SystemClock.uptimeMillis() - boundAt >= LISTENER_STABLE_MS) rebinds = 0
+                    if (++rebinds > LISTENER_MAX_REBINDS) {
+                        throw java.io.IOException("listener keeps closing (rebound $LISTENER_MAX_REBINDS times)")
+                    }
+                    addLog("listener closed unexpectedly — rebinding ($rebinds/$LISTENER_MAX_REBINDS)", LogKind.WARNING)
+                    runCatching { server.stop() }
+                    delay(LISTENER_REBIND_DELAY_MS * rebinds)
+                    if (proxyGeneration.get() != generation) return@launch
+                }
             } catch (e: Exception) {
                 // The raw exception text stays in the log for support; the state carries the
                 // version the user can act on.
