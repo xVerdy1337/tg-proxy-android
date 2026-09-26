@@ -23,10 +23,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -72,7 +70,6 @@ import com.tgwsproxy.ui.theme.Destructive
 import com.tgwsproxy.ui.theme.GlassBorder
 import com.tgwsproxy.ui.theme.Primary
 import com.tgwsproxy.ui.theme.Signal
-import com.tgwsproxy.ui.theme.TextPrimary
 import com.tgwsproxy.ui.theme.TextSecondary
 import com.tgwsproxy.ui.theme.SurfaceElevated
 
@@ -171,7 +168,7 @@ internal fun JevioButtonLabel(
 internal fun ColumnScope.JevioHeroError(
     error: String?,
     running: Boolean,
-    onRetry: (() -> Unit)? = null,
+    onRetry: () -> Unit,
 ) {
     if (running || error.isNullOrBlank()) return
     Spacer(Modifier.height(10.dp))
@@ -182,10 +179,8 @@ internal fun ColumnScope.JevioHeroError(
         fontWeight = FontWeight.Medium,
         textAlign = TextAlign.Center,
     )
-    if (onRetry != null) {
-        TextButton(onClick = onRetry) {
-            Text(stringResource(R.string.try_again), color = Destructive)
-        }
+    TextButton(onClick = onRetry) {
+        Text(stringResource(R.string.try_again), color = Destructive)
     }
 }
 
